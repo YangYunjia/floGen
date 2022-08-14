@@ -59,7 +59,7 @@ class ConditionDataset(Dataset):
     >    more:       Aux data\n
     '''
 
-    def __init__(self, file_name, d_c=1, n_c=5, c_mtd='fix', c_map=None, test=98, data_base='data/', ref=False):
+    def __init__(self, file_name, d_c=1, n_c=5, c_mtd='fix', c_map=None, c_no=0, test=98, data_base='data/', ref=False):
 
         super().__init__()
 
@@ -85,7 +85,7 @@ class ConditionDataset(Dataset):
         self.dataset_size = 0
         
         self._check_index()
-        self._select_index(c_mtd=c_mtd, c_map=c_map, test=test)
+        self._select_index(c_mtd=c_mtd, c_map=c_map, test=test, no=c_no)
 
         print("dataset %s of size %d loaded, shape:" % (file_name, len(self)), self.data.shape)
 
@@ -109,8 +109,10 @@ class ConditionDataset(Dataset):
                 self.ref_condis[airfoil_idx] = idx[3 + self.condis_dim: 3 + 2 * self.condis_dim]           # aoa_ref
             
             self.condis_all_num[airfoil_idx] += 1
+        
+        self.ref_condis = torch.from_numpy(self.ref_condis).float()
 
-    def _select_index(self, c_mtd, c_map, test, no=0):
+    def _select_index(self, c_mtd, c_map, test, no):
         '''
         select among the conditions of each airfoil for training
 
@@ -176,8 +178,9 @@ class ConditionDataset(Dataset):
         op_idx = int(idx / self.condis_num)
         # print(idx, cod)
         flowfield   = self.data[idx]
-        condis      = self.cond[idx] - self.ref_condis[op_idx] * int(self.isref)
+        condis      = self.cond[idx]
         refence     = self.refr[op_idx]
+        ref_cond    = self.ref_condis[op_idx]
 
         # else:
         #     flowfield   = self.data[idx*self.condis_num: (idx+1)*self.condis_num]
@@ -188,11 +191,12 @@ class ConditionDataset(Dataset):
         # refence[1] = refence[1]  * int(self.isref)
         sample = {'flowfields': flowfield, 'condis': condis, 
                   'index': op_idx, 'code_index': op_cod,
-                  'ref': refence}  # only the reference of the flowfield is transfered, the airfoil geometry (y) is not.
+                  'ref': refence, 'ref_aoa': ref_cond}  # all the reference of the flowfield is transfered, the airfoil geometry (y) is also.
         # print(sample)
         # input()
         return sample
-
+          
+    
     def get_series(self, idx, ref_idx=None):
 
         st = self.condis_st[idx]
@@ -208,3 +212,14 @@ class ConditionDataset(Dataset):
             ref_aoa     = self.all_index[st + ref_idx, 3:3+self.condis_dim] 
 
         return {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
+
+    
+    
+    
+    def get_index_info(self, i_f, i_c, i_idx):
+        return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
+
+    
+    def get_buffet(self, idx):
+
+        return self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 3), self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 6)

@@ -10,17 +10,13 @@
 '''
 
 
-import numpy as np
-import copy
-
 import torch
 from torch import nn
 from torch.nn import functional as F
 from functools import reduce
 
-from typing import List, Callable, Union, Any, TypeVar, Tuple
-# from torch import tensor as Tensor
-Tensor = TypeVar('torch.tensor')
+from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
+Tensor = NewType('Tensor', torch.tensor)
 
 class encoder(nn.Module):
 
@@ -38,10 +34,10 @@ class encoder(nn.Module):
         self.in_channels = in_channels
         self.last_flat_size = 0
 
-    def forward(self, input: Tensor) -> Tensor:
-        # print(input.size())
+    def forward(self, inpt: Tensor) -> Tensor:
+        # print(inpt.size())
 
-        return torch.flatten(input, start_dim=1)
+        return torch.flatten(inpt, start_dim=1)
 
 class mlpEncoder(encoder):
     '''
@@ -49,7 +45,6 @@ class mlpEncoder(encoder):
     '''
 
     def __init__(self, in_channels, 
-                 conv1d: dict = None,
                  hidden_dims: List = [1024, 512, 128]) -> None:
         
         super().__init__(in_channels)
@@ -66,8 +61,8 @@ class mlpEncoder(encoder):
 
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, input):
-        return self.mlp(torch.flatten(input, start_dim=1))
+    def forward(self, inpt):
+        return self.mlp(torch.flatten(inpt, start_dim=1))
 
 
 class conv1dEncoder(encoder):
@@ -97,8 +92,8 @@ class conv1dEncoder(encoder):
 
         self.convs = nn.Sequential(*layers)
 
-    def forward(self, input):
-        result = self.convs(input)
+    def forward(self, inpt):
+        result = self.convs(inpt)
         # print(result.size())
         # raise
         return super().forward(result)
@@ -147,9 +142,9 @@ class conv2dEncoder(encoder):
 
         self.encoder = nn.Sequential(*modules)
     
-    def forward(self, input):
+    def forward(self, inpt):
 
-        result = self.encoder(input)
+        result = self.encoder(inpt)
 
         return super().forward(result)
     
@@ -200,8 +195,8 @@ class Resnet18Encoder(encoder):
 
         return nn.Sequential(*layers)
 
-    def forward(self, input):
-        result = self.conv1(input)
+    def forward(self, inpt):
+        result = self.conv1(inpt)
         result = self.blocks(result)
 
         # print('Encoder last layer input:', result.size())
@@ -257,8 +252,8 @@ class BasicEncodeBlock(nn.Module):
                     nn.BatchNorm2d(out_channels)
                 )
     
-    def forward(self, input):
-        result = self.main(input) + self.shortcut(input)
+    def forward(self, inpt):
+        result = self.main(inpt) + self.shortcut(inpt)
 
         if not self.preactive:
             result = torch.relu(result)
@@ -286,8 +281,8 @@ class IntpConv2d(nn.Module):
         elif dim == 2:
             self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=1)
 
-    def forward(self, input):
-        result = F.interpolate(input, size=self.size, scale_factor=self.scale_factor, mode=self.mode)
+    def forward(self, inpt):
+        result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode)
         result = self.conv(result)
 
         return result
@@ -328,12 +323,12 @@ class decoder(nn.Module):
                                     kernel_size=3, 
                                     padding=1))
 
-    def forward(self, input: Tensor, **kwargs) -> Tensor:
+    def forward(self, inpt: Tensor, **kwargs) -> Tensor:
 
         if self.fl_type == 'realmesh':
-            input = torch.cat([kwargs['realmesh'], input], dim=1)
+            inpt = torch.cat([kwargs['realmesh'], inpt], dim=1)
         
-        result = self.fl(input)
+        result = self.fl(inpt)
         return result
 
 class mlpDecoder(nn.Module):
@@ -348,7 +343,7 @@ class mlpDecoder(nn.Module):
         
         layers = []
         self.last_flat_size = hidden_dims[0]
-        self.out_sizes = tuple([-1] + out_sizes)
+        self.out_sizes = out_sizes
 
         h0 = in_channels
 
@@ -361,13 +356,13 @@ class mlpDecoder(nn.Module):
 
         out_channels = reduce(lambda x, y: x*y, out_sizes)
 
-        self.fl = nn.Sequential(nn.Linear(h0, out_channels))
+        self.fl = nn.Linear(h0, out_channels)
 
-    def forward(self, input):
+    def forward(self, inpt):
 
-        result = self.fl(self.mlp(input))
+        result = self.fl(self.mlp(inpt))
 
-        return result.view(self.out_sizes)
+        return result.view(tuple([-1] + self.out_sizes))
 
 class conv1dDecoder(nn.Module):
 
@@ -393,9 +388,9 @@ class conv1dDecoder(nn.Module):
 
         self.last_conv = nn.Conv1d(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
     
-    def forward(self, input):
-        input = input.view(self.last_size)
-        result = self.convs(input)
+    def forward(self, inpt):
+        inpt = inpt.view(self.last_size)
+        result = self.convs(inpt)
         return self.last_conv(result)
 
 class Resnet18Decoder(decoder):
@@ -450,16 +445,16 @@ class Resnet18Decoder(decoder):
         
         return nn.Sequential(*layers)
     
-    def forward(self, input):
-        input = input.view(tuple([-1] + self.last_size)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
+    def forward(self, inpt):
+        inpt = inpt.view(tuple([-1] + self.last_size)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
 
-        input = self.conv0(input)
+        inpt = self.conv0(inpt)
 
-        input = self.blocks(input)
+        inpt = self.blocks(inpt)
 
-        # print('Decoder last layer input:', input.size())
+        # print('Decoder last layer input:', inpt.size())
 
-        result = self.conv1(input)
+        result = self.conv1(inpt)
         
         return super().forward(result)
 
@@ -524,8 +519,8 @@ class BasicDecodeBlock(nn.Module):
                     nn.BatchNorm2d(out_channels)
                 )
     
-    def forward(self, input):
-        result = self.main(input) + self.shortcut(input)
+    def forward(self, inpt):
+        result = self.main(inpt) + self.shortcut(inpt)
 
         if not self.preactive:
             result = torch.relu(result)
@@ -584,9 +579,9 @@ class conv2dDecoder(decoder):
 
         self.decoder = nn.Sequential(*modules)
 
-    def forward(self, input):
-        input = input.view(tuple([-1] + self.last_size)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
-        result = self.decoder(input)
+    def forward(self, inpt):
+        inpt = inpt.view(tuple([-1] + self.last_size)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
+        result = self.decoder(inpt)
         return super().forward(result)
 
 

@@ -3,7 +3,11 @@
 the vae model classes(vanilla, conditional, etc.)
 adapted from AntixK, PyTorch-VAE. https://github.com/AntixK/PyTorch-VAE/blob/master/models/vanilla_vae.py
 
+同一个encoder，接不同decoder，1.加上工况，直接预测cl，cd 2.不加工况，直接预测抖振攻角和升阻力
+
 '''
+
+
 
 import torch
 from torch import nn
@@ -12,21 +16,19 @@ from torch.nn import functional as F
 from flowvae.dataset import ConditionDataset
 
 import numpy as np
-import os
 
-from typing import List, Callable, Union, Any, TypeVar, Tuple
+from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 # from torch import tensor as Tensor
 
-Tensor = TypeVar('torch.tensor')
+Tensor = NewType('Tensor', torch.tensor)
 
 # from utils import get_force
 
-from .post import get_aoa, _get_vector, _get_force_cl, WORKCOD
+from .post import get_aoa, _get_vector, _get_force_cl, WORKCOD, get_force_1dc
 
 class frameVAE(nn.Module):
 
     def __init__(self,
-                 in_channels: int,
                  latent_dim: int,
                  fldata: ConditionDataset,
                  encoder,
@@ -42,15 +44,13 @@ class frameVAE(nn.Module):
         
         self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
         self.code_dim = fldata.condis_dim   # the code dimension (same with which in the dataset)
-        self.in_channels = in_channels
+        # self.in_channels = in_channels
 
         self.device = device
 
         self.paras = kwargs
         self.paras['decoder_input_layer'] = decoder_input_layer
         self.paras['code_mode'] = code_mode
-
-        self.init_size = [latent_dim, 331, 75]
 
         self.series_data = {}
         self.set_aux_data(fldata)
@@ -138,26 +138,35 @@ class frameVAE(nn.Module):
                  torch.ones((n_airfoil, 1, n_z))], dim=1).to(self.device)}
 
 
-    def preprocess_data(self):
+    def preprocess_data(self, fldata: ConditionDataset):
         
         self.geom_data = {}
-        print(' === Warning:  preprocess_data is not implemented. If auxilary geometry data is needed, please rewrite vae.preprocess_data')
+        # print(' === Warning:  preprocess_data is not implemented. If auxilary geometry data is needed, please rewrite vae.preprocess_data')
 
-    #     '''
-    #     produce geometry data
-    #     - x01, x0p: the x coordinate data for smooth calculation
-    #     '''
-    #     from cst_modeling.foil import clustcos
+        '''
+        produce geometry data
+        - x01, x0p: the x coordinate data for smooth calculation
+        '''
+        from cst_modeling.foil import clustcos
 
-    #     
-    #     nn = 201
-    #     xx = [clustcos(i, nn) for i in range(nn)]
-    #     all_x = torch.from_numpy(np.concatenate((xx[::-1], xx[1:]), axis=0)).to(self.device).float()
-    #     self.geom_data['xx']  = all_x
-    #     self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
-    #     self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
+        
+        nn = 201
+        xx = [clustcos(i, nn) for i in range(nn)]
+        all_x = torch.from_numpy(np.concatenate((xx[::-1], xx[1:]), axis=0)).to(self.device).float()
+        self.geom_data['xx']  = all_x
+        self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
+        self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
 
-    
+        geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
+        profile = fldata.data[:, 1]
+        self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze(), dev=self.device)
+        print('all_clcd size:',  self.geom_data['all_clcd'].size())
+
+        geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
+        profile = fldata.refr[:, 1]
+        self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze(), dev=self.device)
+        print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
+
     def encode(self, input: Tensor, **kwargs) -> List[Tensor]:
         """
         Encodes the input by passing through the encoder network and returns the latent codes.
@@ -176,7 +185,8 @@ class frameVAE(nn.Module):
             - others:   implicit/ semi-implicit
                         (the first digit of latent dim is recognized as code)
         """
-        result = self.encoder(input[:, :self.in_channels])
+        # input channel control is moved to ml_operate, ori: input[:, :self.in_channel]
+        result = self.encoder(input)
 
         if self.paras['code_mode'] in ['ex']:
             result = torch.cat([result, kwargs['code']], dim=1)
@@ -291,7 +301,7 @@ class frameVAE(nn.Module):
 
             if kwargs['sm_mode'] in ['NS', 'NS_r']:
                 
-                sm_loss_recon = NSres(recons, mesh=input[:, :2, :, :], w_mom=kwargs['moment_weight'], dev=self.device)
+                sm_loss_recon = NSres(recons, mesh=real[:, :2], w_mom=kwargs['moment_weight'], dev=self.device)
 
                 if kwargs['sm_mode'] == 'NS':
 
@@ -304,7 +314,7 @@ class frameVAE(nn.Module):
                     sm_loss = torch.mean(torch.relu(sm_loss_recon))
 
             elif kwargs['sm_mode'] == 'offset':
-                sm_loss = smoothness(recons, mesh=input[:, :2, :, :], offset=kwargs['sm_offset'])
+                sm_loss = smoothness(recons, mesh=real[:, :2], offset=kwargs['sm_offset'])
             
             elif kwargs['sm_mode'] == '1d':
                 x01 = self.geom_data['x01']
@@ -570,8 +580,8 @@ def NSres(field: Tensor, mesh: Tensor = None, w_mom: float = 0.1, dev=None) -> T
     hoz_distance = mesh[:, :, 1:, :] - mesh[:, :, :-1, :]  #   B * 2 * (H-1) * W  //   2 -> x, y
     ver_distance = mesh[:, :, :, 1:] - mesh[:, :, :, :-1]  #   B * 2 * H * (W-1)  //   2 -> x, y
 
-    rotate = torch.tensor([[0.0, -1.0], [1.0, 0.0]]).to(dev)
-    eigenp = torch.tensor([[1.0,  0.0], [0.0, 1.0]]).to(dev)
+    rotate = torch.Tensor([[0.0, -1.0], [1.0, 0.0]]).to(dev)
+    eigenp = torch.Tensor([[1.0,  0.0], [0.0, 1.0]]).to(dev)
 
     hoz_vec = torch.einsum('aj,ijkl->iakl', rotate, hoz_distance)
     ver_vec = torch.einsum('aj,ijkl->iakl', rotate, ver_distance)

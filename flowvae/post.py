@@ -1,5 +1,8 @@
 import numpy as np
 import torch
+
+from sklearn.linear_model import LinearRegression
+from scipy.interpolate import PchipInterpolator as pchip
 # from .vae import VanillaVAE
 # from .ml_operator import AEOperator
 # from .dataset import FlowDataset, CondiFlowDataset
@@ -85,6 +88,13 @@ def _get_force_xy(vec_sl, veclen, area, UV, T, P, j0: int, j1: int, paras, ptype
 def _xy_2_cl(dfp, aoa, dev):
     aoa = torch.FloatTensor([aoa])
     fld = torch.einsum('p,prs,s->r', dfp, metrix_nt2xy.to(dev), torch.Tensor([cos1(aoa), -sin1(aoa)]).to(dev))
+    return fld
+
+def _xy_2_clc(dfp, aoa, dev):
+    metrix_aoa = torch.cat((cos1(aoa).unsqueeze(1), -sin1(aoa).unsqueeze(1)), dim=1)
+    # metrix_nt2xy = metrix_nt2xy.to(dev)
+    metrix_nt2xy = torch.Tensor([[[1.0,0], [0,1.0]], [[0,-1.0], [1.0,0]]]).to(dev)
+    fld = torch.einsum('bp,prs,bs->br', dfp, metrix_nt2xy, metrix_aoa)
     return fld
 
 def _get_force_cl(vec_sl, veclen, area, UV, T, P, j0: int, j1: int, paras, ptype='Cp', dev='cpu'):
@@ -333,17 +343,65 @@ def cal_aoa_error(vae_model, fldata, allcondis, paras, nnobst=0, nnob=50):
 
     return aoaa, daoa
 
-def _get_force_1d_xy(geom, profile):
+def _get_xyforce_1dc(geom, profile):
+    
+    avg_cp  = 0.5 * (profile[:, 1:] + profile[:, :-1])
+    dr      = - (geom[:, :, 1:] - geom[:, :, :-1])
+
+    return torch.einsum('bi,bki->bk', avg_cp, dr)
+
+def _get_xyforce_1d(geom, profile):
     
     avg_cp  = 0.5 * (profile[1:] + profile[:-1])
     dr      = - (geom[:, 1:] - geom[:, :-1])
 
-    return torch.sum(avg_cp * dr, dim=1)
+    return torch.einsum('i,ki->k', avg_cp, dr)
     
-
-def get_force_1d_cl(geom, profile, aoa, dev=None):
-    dfp = _get_force_1d_xy(geom, profile)
+def get_force_1d(geom, profile, aoa, dev=None):
+    # geom = geom.unsquenze
+    dfp = _get_xyforce_1d(geom, profile)
     fld = _xy_2_cl(dfp, aoa, dev)
     fld[1] = -fld[1]
     return fld
 
+def get_force_1dc(geom, profile, aoa, dev=None):
+    dfp = _get_xyforce_1dc(geom, profile)
+    fld = _xy_2_clc(dfp, aoa, dev)
+    fld[:, 1] = -fld[:, 1]
+    return fld
+
+def get_buffet(aoas, clss, cdss, d_aoa=0.1):
+    f_cdcl_aoa_all = pchip(aoas, np.array(clss) / np.array(cdss))
+    f_cl_aoa_all = pchip(aoas, np.array(clss))
+    aoa_refs = list(np.arange(-2, 4, 0.05))
+
+    max_i = np.argmax(f_cdcl_aoa_all(aoa_refs))
+    max_aoa = aoa_refs[max_i]
+    # print(max_i, max_aoa)
+
+    linear_aoas = np.arange(max_aoa - 2.0, max_aoa, 0.1)
+    reg = LinearRegression().fit(linear_aoas.reshape(-1,1), f_cl_aoa_all(linear_aoas))
+    # print(reg.coef_[0], reg.intercept_)
+    reg_k = reg.coef_[0]
+    reg_b = reg.intercept_
+
+    d_b = - d_aoa * reg_k
+
+    # f_cl_aoa = pchip(aoas[max_i:], clss[max_i:])
+    step_aoa = np.arange(max_aoa, aoas[-1], 0.001)
+
+    delta = f_cl_aoa_all(step_aoa) - (reg_k * step_aoa + reg_b + d_b)
+
+    for idx in range(len(delta)-1):
+        if delta[idx] * delta[idx+1] < 0:
+            aoa_buf = step_aoa[idx] + 0.001 * delta[idx] / (delta[idx] - delta[idx+1])
+            cl_buf = f_cl_aoa_all(aoa_buf)
+            break
+    else:
+        print('Warning:  buffet not found')
+        aoa_buf = None
+        cl_buf = None
+
+    # print(aoa_buf, cl_buf)
+
+    return (aoa_buf, cl_buf)

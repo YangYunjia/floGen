@@ -7,14 +7,16 @@ Rewrite the vae operater part of Deng's code
 import torch
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
-import time
-import copy
+
 import sys, os
 from tqdm import tqdm
+
 from .vae import frameVAE
 from .dataset import ConditionDataset
 from .utils import MDCounter
-from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
+# from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
+from .post import get_force_1dc
+
 
 class AEOperator:
     '''
@@ -33,7 +35,8 @@ class AEOperator:
     def __init__(self, opt_name: str, 
                        model: frameVAE, 
                        dataset: ConditionDataset,
-                       input_channels=(None, None), recon_channels=(None, None),
+                       recon_type='field',
+                       input_channels=(None, None), recon_channels=(1, None),
                        num_epochs=50, batch_size=8, 
                        reco_data=False, reco_name='',
                        output_folder="save", 
@@ -44,6 +47,7 @@ class AEOperator:
         self.output_folder = output_folder
         self.set_optname(opt_name)
         self.device = device
+        self.recon_type = recon_type
         self.channel_markers = (input_channels, recon_channels)
         
         self._model = model
@@ -76,7 +80,16 @@ class AEOperator:
                                 for phase in ['train', 'val']}     
         # optimizer
         self._optimizer = None
+        self._optimizer_name = 'Not set'
+        self._optimizer_setting = None
         self._scheduler = None
+        self._scheduler_name = 'Not set'
+        self._scheduler_setting = None
+
+        # runing parameters
+        self.history = {'loss': {'train':MDCounter(), 'val':MDCounter()}, 'lr':[]}
+        self.epoch = 0
+        self.best_loss = 1e4       
 
         self.initial_oprtor()
 
@@ -140,9 +153,9 @@ class AEOperator:
             self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
         self.best_loss = 1e4
 
-    def set_optimizer(self, optimizer_name='SGD', **kwargs):
+    def set_optimizer(self, optimizer_name, **kwargs):
         if optimizer_name not in dir(opt):
-            raise AttributeError(optimizer_name + ' not a vaild pressure method!')
+            raise AttributeError(optimizer_name + ' not a vaild optimizer name!')
         else:
             print('optimizer Using Method: ' + optimizer_name, kwargs)
             opt_class = getattr(opt, optimizer_name)
@@ -153,7 +166,7 @@ class AEOperator:
         if self._scheduler is not None:
             self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
         
-    def set_scheduler(self, scheduler_name='ReduceLROnPlateau', **kwargs):
+    def set_scheduler(self, scheduler_name, **kwargs):
         if scheduler_name not in dir(opt.lr_scheduler):
             raise AttributeError(scheduler_name + ' not a vaild pressure method!')
         else:
@@ -163,10 +176,7 @@ class AEOperator:
             self._scheduler_setting = kwargs
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
-    def train_model(self, restart=False, 
-                          save_check=20, 
-                          save_best=True,
-                          v_tqdm=True):
+    def train_model(self, save_check=20, save_best=True, v_tqdm=True):
 
         if self.paras['code_mode'] in ['ex', 'ae', 'ved']:
             print('*** set code, indx, coef loss to ZERO')
@@ -180,14 +190,21 @@ class AEOperator:
         if os.path.exists('data/preprocessdata'):
             self._model.geom_data = torch.load('data/preprocessdata', map_location=self.device)
         else:
-            self._model.preprocess_data()
+            self._model.preprocess_data(self.all_dataset)
 
 
         #* *** Training section ***
         print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
+        # reference marker
         _is_ref = int(self.all_dataset.isref)
+        # input channel marker
         ipt1, ipt2 = self.channel_markers[0]
-        rst1, rst2 = self.channel_markers[1]
+        # reconstruction type and markers
+        recon_type = self.recon_type
+        if recon_type in ['1d-clcd']:
+            all_x = self.model.geom_data['xx']
+        elif recon_type in ['field']:
+            rst1, rst2 = self.channel_markers[1]
 
         while self.epoch < self.paras['num_epochs']:
 
@@ -217,7 +234,8 @@ class AEOperator:
 
                         indxs = batch_data['index'].reshape((-1,))
                         cods = batch_data['code_index'].reshape((-1,))
-                        labels = batch_data['condis'].reshape((-1, self._model.code_dim)).to(self.device).float()
+                        real_labels = batch_data['condis'].reshape((-1, self._model.code_dim)).to(self.device).float()
+                        delt_labels = real_labels - batch_data['ref_aoa'].reshape((-1, self._model.code_dim)).to(self.device).float() * _is_ref
 
                         # 零参数梯度
                         self._optimizer.zero_grad()
@@ -227,9 +245,9 @@ class AEOperator:
                             
                             #* model forward process
                             if self.paras['code_mode'] in ['ex', 'semi', 'ae']:
-                                result_field = self._model(real_field[:, ipt1: ipt2], code=labels)
+                                result_field = self._model(real_field[:, ipt1: ipt2], code=delt_labels)
                             elif self.paras['code_mode'] in ['ed', 'ved']:
-                                result_field = self._model(refs_field[:, ipt1: ipt2], code=labels)
+                                result_field = self._model(refs_field[:, ipt1: ipt2], code=delt_labels)
                             elif self.paras['code_mode'] in ['im']:
                                 result_field = self._model(real_field[:, ipt1: ipt2])
 
@@ -239,16 +257,29 @@ class AEOperator:
                                 self.paras['loss_parameters'][nn + '_weight'] = (
                                     0.0, self.paras['loss_parameters'][nn + '_weight'])[self.epoch >= self.paras['loss_parameters'][nn + '_epoch']]
                             
+                            if recon_type == 'field':
+                                # A. reconstruct field
+                                real = real_field[:, rst1: rst2]
+                                ref  = refs_field[:, rst1: rst2] * _is_ref
+                            elif recon_type == '1d-clcd':
+                                # B. reconstruct aerodynamic coefficients
+                                geom = torch.cat((all_x.repeat(real_field.size(0), 1).unsqueeze(1), real_field[:, 0].unsqueeze(1)), dim=1)
+                                profile = real_field[:, 1]
+                                real = get_force_1dc(geom, profile, real_labels.squeeze(), dev=self.device) # squeeze is for code dimension, since only the aoa data is need
+                                # TODO this should be done once at beginning
+                                # ref  = torch.zeros_like(real, device=self.device)
+                                ref = self.model.geom_data['ref_clcd'].index_select(0, indxs) * _is_ref
+
                             if self.paras['code_mode'] in ['ed', 'ved']:
                                 # the vae without prior index loss (must be ed mode)
                                 # if not reference, the parameter ref is set to zero by multiply with the flag
-                                loss_dict = self._model.loss_function(real_field[:, rst1: rst2], *result_field,
-                                                                       ref=refs_field[:, rst1: rst2] * _is_ref,
+                                loss_dict = self._model.loss_function(real, *result_field,
+                                                                       ref=ref,
                                                                        **self.paras['loss_parameters'])
                             else:
-                                loss_dict = self._model.series_loss_function(real_field[:, rst1: rst2], *result_field, 
-                                                                             ref=refs_field[:, rst1: rst2] * _is_ref,
-                                                                             real_code=labels,
+                                loss_dict = self._model.series_loss_function(real, *result_field, 
+                                                                             ref=ref,
+                                                                             real_code=delt_labels,
                                                                              real_code_indx=cods,
                                                                              real_indx=indxs,
                                                                              **self.paras['loss_parameters'])
