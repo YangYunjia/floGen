@@ -234,8 +234,8 @@ class AEOperator:
 
                         indxs = batch_data['index'].reshape((-1,))
                         cods = batch_data['code_index'].reshape((-1,))
-                        real_labels = batch_data['condis'].reshape((-1, self._model.code_dim)).to(self.device).float()
-                        delt_labels = real_labels - batch_data['ref_aoa'].reshape((-1, self._model.code_dim)).to(self.device).float() * _is_ref
+                        real_labels = batch_data['condis'].reshape((-1, self._model.code_dim)).to(self.device)
+                        delt_labels = real_labels - batch_data['ref_aoa'].reshape((-1, self._model.code_dim)).to(self.device) * _is_ref
 
                         # 零参数梯度
                         self._optimizer.zero_grad()
