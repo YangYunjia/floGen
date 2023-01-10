@@ -3,12 +3,7 @@
 dist/
 build/
 .vscode/
+test*
 
 Calculation/
 *.txt
-*.ini
-
-example/test/
-
-test*
-.DS*

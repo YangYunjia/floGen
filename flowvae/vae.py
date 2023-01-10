@@ -24,7 +24,7 @@ Tensor = NewType('Tensor', torch.tensor)
 
 # from utils import get_force
 
-from .post import get_aoa, _get_vector, _get_force_cl, WORKCOD, get_force_1dc
+from .post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
 class frameVAE(nn.Module):
 
@@ -34,16 +34,17 @@ class frameVAE(nn.Module):
                  encoder,
                  decoder,
                  decoder_input_layer = 0,
+                 code_dim = 1,
                  code_layer = [],
-                 device = 'cuda:0',
                  code_mode = 'im',
+                 device = 'cuda:0',
                  **kwargs) -> None:
 
 
         super(frameVAE, self).__init__()
         
         self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
-        self.code_dim = fldata.condis_dim   # the code dimension (same with which in the dataset)
+        self.code_dim = code_dim   # the code dimension (same with which in the dataset)
         # self.in_channels = in_channels
 
         self.device = device
@@ -53,7 +54,9 @@ class frameVAE(nn.Module):
         self.paras['code_mode'] = code_mode
 
         self.series_data = {}
-        self.set_aux_data(fldata)
+
+        if fldata is not None:
+            self.set_aux_data(fldata)
 
         # print(in_channels, latent_dim, hidden_dims, kernel_sizes, strides, paddings, max_pools)
         self.encoder = encoder
@@ -142,7 +145,7 @@ class frameVAE(nn.Module):
         
         self.geom_data = {}
         # print(' === Warning:  preprocess_data is not implemented. If auxilary geometry data is needed, please rewrite vae.preprocess_data')
-
+        return
         '''
         produce geometry data
         - x01, x0p: the x coordinate data for smooth calculation
@@ -157,15 +160,17 @@ class frameVAE(nn.Module):
         self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
         self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
 
-        geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
-        profile = fldata.data[:, 1]
-        self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze(), dev=self.device)
-        print('all_clcd size:',  self.geom_data['all_clcd'].size())
+        if fldata is not None:
 
-        geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
-        profile = fldata.refr[:, 1]
-        self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze(), dev=self.device)
-        print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
+            geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
+            profile = fldata.data[:, 1]
+            self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze(), dev=self.device)
+            print('all_clcd size:',  self.geom_data['all_clcd'].size())
+
+            geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
+            profile = fldata.refr[:, 1]
+            self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze(), dev=self.device)
+            print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
 
     def encode(self, input: Tensor, **kwargs) -> List[Tensor]:
         """
@@ -510,8 +515,10 @@ class frameVAE(nn.Module):
             # print(zf.size())
             # print(z)
             # print(torch.Tensor(kwargs['code']).to(self.device).unsqueeze(0).size())
-            zc = torch.Tensor(kwargs['code']).to(self.device).unsqueeze(0).repeat(num_samples, 1)
-            z = torch.cat((zc, zf), dim=1)
+            # zc = 
+            code_output = self.fc_code(torch.Tensor(kwargs['code']).to(self.device).unsqueeze(0).repeat(num_samples, 1))
+            z = torch.cat([code_output, zf], dim=1)
+            # z = torch.cat((zc, zf), dim=1)
             # print(z.size())		 
         
         # z = torch.randn(num_samples, self.latent_dim)
@@ -548,6 +555,22 @@ class frameVAE(nn.Module):
             
             self.new_data['series_avg_latent'][nob] = torch.mean(self.new_data['series_latent'][nob], dim=0)
 
+    def load(self, folder, name=None, fro='cp'):
+        if fro == 'd':
+            saved_model = name
+            self.load_state_dict(saved_model, strict=False)
+        elif fro == 'c':
+            path = folder + '/' + name
+            saved_model = torch.load(path, map_location=self.device)['model_state_dict']
+            self.load_state_dict(saved_model, strict=False)
+        elif fro == 'cp':
+            path = folder + '/checkpoint_epoch_' + str(299)
+            save_dict = torch.load(path, map_location=self.device)
+            self.load_state_dict(save_dict['model_state_dict'], strict=False)
+            self.series_data = save_dict['series_data']
+            self.geom_data = save_dict['geom_data']
+        else:
+            raise AttributeError
 
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0

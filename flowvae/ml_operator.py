@@ -72,12 +72,13 @@ class AEOperator:
                                          'aero_weight':     1e-5,
                                          'aero_epoch':      299}
         
-        self.all_dataset = dataset
-        # split training data
         self.dataset = {}
-        self.split_dataset(recover=reco_data, name=reco_name)
-        self.dataloaders = {phase: DataLoader(self.dataset[phase], batch_size=self.paras['batch_size'], shuffle=self.paras['shuffle'], drop_last=False, num_workers=self.paras['num_workers'], pin_memory=True)
-                                for phase in ['train', 'val']}     
+        if dataset is not None:
+            self.all_dataset = dataset
+            # split training data
+            self.split_dataset(recover=reco_data, name=reco_name)
+            self.dataloaders = {phase: DataLoader(self.dataset[phase], batch_size=self.paras['batch_size'], shuffle=self.paras['shuffle'], drop_last=False, num_workers=self.paras['num_workers'], pin_memory=True)
+                                    for phase in ['train', 'val']}     
         # optimizer
         self._optimizer = None
         self._optimizer_name = 'Not set'
@@ -176,7 +177,28 @@ class AEOperator:
             self._scheduler_setting = kwargs
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
-    def train_model(self, save_check=20, save_best=True, v_tqdm=True):
+    def transfer_model(self, restart_from, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
+        '''
+        load base model and set part of the parameters with grad off
+
+        '''
+        self.load_checkpoint(299, restart_from, load_opt=False, load_data_split=False)
+        self.global_start_epoch = self.epoch
+        self.epoch = 0
+
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        print('------- The layers below are set grad require ------')
+        for ly in grad_require_layers:
+            print(ly, ' :   ', self.model._modules[ly])
+            if reset_param:
+                self.model._modules[ly].apply(reset_paras)
+
+            for param in self.model._modules[ly].parameters():
+                param.requires_grad = True
+    
+    def train_model(self, save_check, save_best=True, v_tqdm=True):
 
         if self.paras['code_mode'] in ['ex', 'ae', 'ved']:
             print('*** set code, indx, coef loss to ZERO')
@@ -292,6 +314,7 @@ class AEOperator:
                             if v_tqdm:
                                 tbar.set_postfix(loss=loss.item(), smt=loss_dict['smooth'].item(), reco=loss_dict['recons'].item(), code=loss_dict['code'].item())
                             
+                            # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
                             #* model backward process (only in training phase)
                             if phase == 'train':
                                 loss.backward()
@@ -354,15 +377,24 @@ class AEOperator:
         elif fro == 'c':
             path = self.output_path + '/' + name
             saved_model = torch.load(path, map_location=self.device)['model_state_dict']
+        elif fro == 'cp':
+            path = self.output_path + '/' + name + '_epoch_' + str(299)
+            save_dict = torch.load(path, map_location=self.device)
+            self.model.load_state_dict(save_dict['model_state_dict'], strict=False)
+            self.model.series_data = save_dict['series_data']
+            self.model.geom_data = save_dict['geom_data']
         else:
             raise AttributeError
         
         self._model.load_state_dict(saved_model, strict=False)
 
-    def load_checkpoint(self, epoch, name='checkpoint', load_opt=True):
-        path = self.output_path + '/' + name + '_epoch_' + str(epoch)
+    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
+        if folder is None:
+            path = self.output_path + '\\checkpoint_epoch_' + str(epoch)
+        else:
+            path = folder + '\\checkpoint_epoch_' + str(epoch)
         if not os.path.exists(path):
-            raise IOError("checkpoint not exist in {}".format(self.output_path))
+            raise IOError("checkpoint not exist in {}".format(path))
         save_dict = torch.load(path, map_location=self.device)
         self.epoch = save_dict['epoch'] + 1
         self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
@@ -372,8 +404,8 @@ class AEOperator:
         self.history = save_dict['history']
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
-
-        self.split_dataset(recover=True, name=self.optname)
+        if load_data_split and len(self.dataset) > 0:
+            self.split_dataset(recover=True, name=self.optname)
         print('checkpoint loaded from' + path)
 
 

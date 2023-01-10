@@ -214,7 +214,8 @@ class ConditionDataset(Dataset):
         return {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
 
     
-    
+    def allnum_condition(self, idx):
+        return self.condis_all_num[idx]
     
     def get_index_info(self, i_f, i_c, i_idx):
         return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
