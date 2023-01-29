@@ -164,12 +164,12 @@ class frameVAE(nn.Module):
 
             geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
             profile = fldata.data[:, 1]
-            self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze(), dev=self.device)
+            self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze())
             print('all_clcd size:',  self.geom_data['all_clcd'].size())
 
             geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
             profile = fldata.refr[:, 1]
-            self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze(), dev=self.device)
+            self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze())
             print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
 
     def encode(self, input: Tensor, **kwargs) -> List[Tensor]:
@@ -443,10 +443,10 @@ class frameVAE(nn.Module):
 
             if aero_weight > 0.0:
                 WORKCOD['AoA'] = iaoa
-                n_coef = _get_force_cl(self.new_data['vec_sl'][isample], 
-                                    self.new_data['veclen'][isample],
-                                    self.new_data['area'][isample],
-                                    irec[2:4, :, :], irec[1, :, :], irec[0, :, :], j0=15, j1=316, paras=WORKCOD, dev=self.device)
+                n_coef = get_force_cl(iaoa, _vec_sl=self.geom_data['vec_sl'][isample], 
+                                    _veclen=self.geom_data['veclen'][isample],
+                                    _area=self.geom_data['area'][isample],
+                                    vel=irec[2:4, :, :], T=irec[1, :, :], P=irec[0, :, :], j0=15, j1=316, paras=WORKCOD)
                 #! HERE we use relative error of lift and drag coefficients
                 #! furture is need modified to absolute error
                 aero_loss += torch.sum(abs(n_coef - self.new_data['coef'][isample][icode]) / self.new_data['coef'][isample][icode])

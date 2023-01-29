@@ -287,7 +287,7 @@ class AEOperator:
                                 # B. reconstruct aerodynamic coefficients
                                 geom = torch.cat((all_x.repeat(real_field.size(0), 1).unsqueeze(1), real_field[:, 0].unsqueeze(1)), dim=1)
                                 profile = real_field[:, 1]
-                                real = get_force_1dc(geom, profile, real_labels.squeeze(), dev=self.device) # squeeze is for code dimension, since only the aoa data is need
+                                real = get_force_1dc(geom, profile, real_labels.squeeze()) # squeeze is for code dimension, since only the aoa data is need
                                 # TODO this should be done once at beginning
                                 # ref  = torch.zeros_like(real, device=self.device)
                                 ref = self.model.geom_data['ref_clcd'].index_select(0, indxs) * _is_ref
