@@ -40,7 +40,7 @@ class AEOperator:
                        num_epochs=50, batch_size=8, 
                        reco_data=False, reco_name='',
                        output_folder="save", 
-                       shuffle=True, num_workers=0,
+                       shuffle=True, ref=False, num_workers=0,
                        init_lr=0.01, 
                        device='cuda:0'):
         
@@ -59,6 +59,7 @@ class AEOperator:
         self.paras['num_workers'] = num_workers
         self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
+        self.paras['ref'] = ref
         self.paras['code_mode'] = model.paras['code_mode']
         self.paras['loss_parameters'] = {'sm_mode':     'NS',
                                          'sm_epoch':        1, 
@@ -220,7 +221,7 @@ class AEOperator:
         #* *** Training section ***
         print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
         # reference marker
-        _is_ref = int(self.all_dataset.isref)
+        _is_ref = int(self.paras['ref'])
         # input channel marker
         ipt1, ipt2 = self.channel_markers[0]
         # reconstruction type and markers

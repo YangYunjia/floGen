@@ -59,7 +59,7 @@ class ConditionDataset(Dataset):
     >    more:       Aux data\n
     '''
 
-    def __init__(self, file_name, d_c=1, n_c=5, c_mtd='fix', c_map=None, c_no=0, test=98, data_base='data/', ref=False):
+    def __init__(self, file_name, d_c=1, n_c=5, c_mtd='fix', c_map=None, c_no=0, test=98, data_base='data/'):
 
         super().__init__()
 
@@ -78,7 +78,6 @@ class ConditionDataset(Dataset):
         self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float)     #   the aoa of the reference flowfield 
         self.condis_num = n_c                               #   amount of conditions used in training for each airfoil
         self.shuffle = False
-        self.isref   = ref
         self.data = None            # flowfield data selected from all data, size: (N_airfoil * N_c, C, H, W)
         self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
         self.refr = None            # reference data, size: (N_airfoil, C, H, W)
