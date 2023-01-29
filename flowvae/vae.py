@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from flowvae.dataset import ConditionDataset
+from .base_model import Encoder, Decoder, _decoder_input
 
 import numpy as np
 
@@ -27,16 +28,35 @@ Tensor = NewType('Tensor', torch.tensor)
 from .post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
 class frameVAE(nn.Module):
+    '''
+    the model of VAE
+
+    paras:
+    ===
+    - `latent_dim`: (int)   the total dimension of latent variable (include code dimension)
+    - `encoder`:    the encoder
+    - `decoder`:    the decoder
+    - `code_mode`:  the mode to introduce condition codes to vae
+        - `ed`:     
+    - `fldata`:     (default = None) a `ConditionDataset` defined with `dataset.py`
+        - only for code modes needs aux place to store avg latent variables
+    - `decoder_input_layer`:    (int, default = 0) the network between latent `z` and the decoder
+        - see the code
+    - `code_dim`:   the code dimension (same with which in the dataset)
+    - `code_layer`
+    
+    
+    '''
 
     def __init__(self,
                  latent_dim: int,
-                 fldata: ConditionDataset,
-                 encoder,
-                 decoder,
-                 decoder_input_layer = 0,
-                 code_dim = 1,
+                 encoder: Encoder,
+                 decoder: Decoder,
+                 code_mode: str,
+                 fldata: ConditionDataset = None,
+                 decoder_input_layer: int = 0,
+                 code_dim: int = 1,
                  code_layer = [],
-                 code_mode = 'im',
                  device = 'cuda:0',
                  **kwargs) -> None:
 
@@ -58,37 +78,30 @@ class frameVAE(nn.Module):
         if fldata is not None:
             self.set_aux_data(fldata)
 
-        # print(in_channels, latent_dim, hidden_dims, kernel_sizes, strides, paddings, max_pools)
         self.encoder = encoder
         self.decoder = decoder
-        # if self.encoder.last_flat_size == self.decoder.last_flat_size and self.encoder.last_flat_size > 0:
-        #     last_flat_size = self.encoder.last_flat_size
-        # else:
-        #     raise RuntimeError("The last flat size given by encoder and decoder is not the same:\n encoder: %d decoder: %d" 
-        #                             % (self.encoder.last_flat_size, self.decoder.last_flat_size))
 
         ld = self.latent_dim
         cd = self.code_dim
         fd = ld - cd
+        lfe = self.encoder.last_flat_size
 
-        lf = self.encoder.last_flat_size
         if code_mode in ['ex']:
             self.fc_mu = nn.Sequential(
-                nn.Linear(lf + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
+                nn.Linear(lfe + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
                 nn.Linear(fd, fd))
             self.fc_var = nn.Sequential(
-                nn.Linear(lf + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
+                nn.Linear(lfe + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
                 nn.Linear(fd, fd))
         elif code_mode in ['ae', 'ed']:
-            self.fc_mu = nn.Linear(lf, fd)
+            self.fc_mu = nn.Linear(lfe, fd)
         elif code_mode in ['ved']:
-            self.fc_mu = nn.Linear(lf, fd)
-            self.fc_var = nn.Linear(lf, fd)    
+            self.fc_mu = nn.Linear(lfe, fd)
+            self.fc_var = nn.Linear(lfe, fd)    
         elif code_mode in ['semi', 'im']:
-            self.fc_mu = nn.Linear(lf, ld)
-            self.fc_var = nn.Linear(lf, ld)
+            self.fc_mu = nn.Linear(lfe, ld)
+            self.fc_var = nn.Linear(lfe, ld)
 
-        lf = self.decoder.last_flat_size
         if code_layer != []:
             ld = ld - cd + code_layer[-1]
             # if another layers are inserted betweem code input and first layer of the decoder
@@ -102,30 +115,7 @@ class frameVAE(nn.Module):
         else:
             self.fc_code = nn.Identity()
         
-        if self.paras['decoder_input_layer'] == 0:
-            self.decoder_input = nn.Identity()
-            
-        elif self.paras['decoder_input_layer'] == 1:
-            self.decoder_input = nn.Linear(ld, lf)
-        
-        elif self.paras['decoder_input_layer'] == 2:
-            self.decoder_input = nn.Sequential(
-                nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
-                nn.Linear(ld*2, lf), nn.BatchNorm1d(lf), nn.LeakyReLU())
-
-        elif self.paras['decoder_input_layer'] == 2.5:
-            self.decoder_input = nn.Sequential(
-                nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
-                nn.Linear(ld, lf), nn.BatchNorm1d(lf), nn.LeakyReLU())
-
-        elif self.paras['decoder_input_layer'] == 3:
-            self.decoder_input = nn.Sequential(
-                nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
-                nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
-                nn.Linear(ld*2, lf), nn.BatchNorm1d(lf), nn.LeakyReLU())
-
-        else:
-            raise KeyError()
+        self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
     
 
     def set_aux_data(self, fldata: ConditionDataset):
@@ -247,25 +237,31 @@ class frameVAE(nn.Module):
         mu, log_var = self.encode(input, **kwargs)
         
         if self.paras['code_mode'] in ['ae', 'ed']:
-            z = mu
-        elif self.paras['code_mode'] in ['ex', 'semi', 'im']:
-            z = self.reparameterize(mu, log_var)
-        elif self.paras['code_mode'] in ['ved']:
-            mu = torch.cat([kwargs['code'], mu], dim=1)
-            #! this is log_var, so std_var=1 means log_var=0
-            log_var = torch.cat([torch.zeros_like(kwargs['code'], device=self.device), log_var], dim=1)
-            z = self.reparameterize(mu, log_var)
+            zf = mu
+            zc = self.fc_code(kwargs['code'])
+            z = torch.cat([zc, zf], dim=1)
         
-        if self.paras['code_mode'] in ['semi']:
-            code_output = self.fc_code(kwargs['code'])
+        elif self.paras['code_mode'] in ['ved']:
+            #! this is log_var, so std_var=1 means log_var=0
+            zc = self.reparameterize(kwargs['code'], torch.zeros_like(kwargs['code'], device=self.device))
+            zf = self.reparameterize(mu, log_var)
+            zc = self.fc_code(zc)
+            z = torch.cat([zc, zf], dim=1)
+        
+        elif self.paras['code_mode'] in ['semi']:
+            z = self.reparameterize(mu, log_var)
+            zc = self.fc_code(kwargs['code'])
             # print("new, old:", kwargs['code'], z[:, 0])
-            z[:, :code_output.size()[1]] = code_output
-        elif self.paras['code_mode'] in ['ex', 'ae', 'ed']:
-            code_output = self.fc_code(kwargs['code'])
-            z = torch.cat([code_output, z], dim=1)
-        elif self.paras['code_mode'] in ['im', 'ved']:
-            pass
-            # TODO: the mode `im` and `ved` is not consist with code layers!
+            z[:, :zc.size()[1]] = zc
+
+        elif self.paras['code_mode'] in ['ex']:
+            zf = self.reparameterize(mu, log_var)
+            zc = self.fc_code(kwargs['code'])
+            z = torch.cat([zc, zf], dim=1)
+
+        elif self.paras['code_mode'] in ['im']:
+            z = self.reparameterize(mu, log_var)
+            # TODO: the mode `im` is not consist with code layers!
 
         return  [self.decode(z), mu, log_var]
 
@@ -329,8 +325,6 @@ class frameVAE(nn.Module):
             else:
                 raise AttributeError()
             
-            # !!!!
-
             loss += sm_weight * sm_loss
         
         origin_loss = {'loss': loss, 'recons':recons_loss, 'smooth':sm_loss}

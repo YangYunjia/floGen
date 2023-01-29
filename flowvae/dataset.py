@@ -173,7 +173,6 @@ class ConditionDataset(Dataset):
 
     def __getitem__(self, idx):
         
-        # if self.shuffle:
         op_cod = idx % self.condis_num
         op_idx = int(idx / self.condis_num)
         # print(idx, cod)
@@ -182,18 +181,10 @@ class ConditionDataset(Dataset):
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
 
-        # else:
-        #     flowfield   = self.data[idx*self.condis_num: (idx+1)*self.condis_num]
-        #     condis      = self.cond[idx*self.condis_num: (idx+1)*self.condis_num]
-        #     refence     = self.refr[idx]
-        #     op_idx = idx
-        #     op_cod = None
-        # refence[1] = refence[1]  * int(self.isref)
         sample = {'flowfields': flowfield, 'condis': condis, 
                   'index': op_idx, 'code_index': op_cod,
                   'ref': refence, 'ref_aoa': ref_cond}  # all the reference of the flowfield is transfered, the airfoil geometry (y) is also.
-        # print(sample)
-        # input()
+
         return sample
           
     

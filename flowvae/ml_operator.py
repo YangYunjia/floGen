@@ -105,25 +105,27 @@ class AEOperator:
     def set_lossparas(self, **kwargs):
         '''
 
-        set the parameters for loss terms when training, the keys include:\n
-              key          default         info
-            sm_mode         'NS'    the mode to calculate smooth loss
-        >>>>> `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
-        >>>>> `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
-        >>>>> `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
-        >>>>> `1d`      one-dimensional data (adapted from Runze)\n
-            sm_epoch        1       (int) the epoch to start counting the smooth loss 
-            sm_weight       0.001   (float)the weight of the smooth loss 
-            sm_offset       2       (int) (need for `offset`) the diag. direction move offset
-            moment_weight   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
-            code_weight     0.1     (float) the weight of code loss, better for 0.1         
-            indx_weight     0.0001  (float) the weight of index KLD loss  
-            indx_epoch      10      (int) the epoch to start counting the index KLD loss 
-            indx_pivot      -1      (int) the method to get avg_latent value
-        >>>>>  if is a positive number, use the latent value of that condition index\n
-        >>>>>  if `-1`, use the averaged value of all condition index
-            aero_weight     1e-5    (float) the weight of aerodynamic loss
-            aero_epoch      299     (int) the epoch to start counting the aero loss 
+        set the parameters for loss terms when training, the keys include:
+        
+        >>> key          default         info
+        
+        - `sm_mode`         'NS'    the mode to calculate smooth loss
+            - `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
+            - `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
+            - `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
+            - `1d`      one-dimensional data (adapted from Runze)\n
+        - `sm_epoch`        1       (int) the epoch to start counting the smooth loss 
+        - `sm_weight`       0.001   (float)the weight of the smooth loss 
+        - `sm_offset`       2       (int) (need for `offset`) the diag. direction move offset
+        - `moment_weight`   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
+        - `code_weight`     0.1     (float) the weight of code loss, better for 0.1         
+        - `indx_weight`     0.0001  (float) the weight of index KLD loss  
+        - `indx_epoch`      10      (int) the epoch to start counting the index KLD loss 
+        - `indx_pivot`      -1      (int) the method to get avg_latent value
+            - if is a positive number, use the latent value of that condition index\n
+            - if `-1`, use the averaged value of all condition index
+        - `aero_weight `    1e-5    (float) the weight of aerodynamic loss
+        - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
 
         '''
         for key in kwargs:
@@ -275,9 +277,9 @@ class AEOperator:
 
                             #* calculating loss
                             # update loss weight for current epoch
-                            for nn in ['sm', 'indx', 'aero']:
-                                self.paras['loss_parameters'][nn + '_weight'] = (
-                                    0.0, self.paras['loss_parameters'][nn + '_weight'])[self.epoch >= self.paras['loss_parameters'][nn + '_epoch']]
+                            for cm in ['sm', 'indx', 'aero']:
+                                self.paras['loss_parameters'][cm + '_weight'] = (
+                                    0.0, self.paras['loss_parameters'][cm + '_weight'])[self.epoch >= self.paras['loss_parameters'][cm + '_epoch']]
                             
                             if recon_type == 'field':
                                 # A. reconstruct field
