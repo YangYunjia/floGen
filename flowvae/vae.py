@@ -75,7 +75,7 @@ class frameVAE(nn.Module):
 
         self.series_data = {}
 
-        if fldata is not None:
+        if code_mode in ['semi', 'im', 'ex', 'ae']:
             self.set_aux_data(fldata)
 
         self.encoder = encoder

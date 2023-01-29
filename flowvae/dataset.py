@@ -22,27 +22,28 @@ class ConditionDataset(Dataset):
     initial params
     ===
 
-    `file_name`:   name of the data file\n
-    `channels`:    (Tuple(int)) the channels of input geometry and flowfields\n
-    `d_c`:         dimension of the condition\n
-    `n_c`:         number of the condition of one airfoil should the dataset give out\n
-    `c_mtd`:       how to choose the condition should give out\n
-    >   `fix` : by the index in `c_map`\n
-    >   `random`: ramdomly selected when initialize the dataset\n
-    `c_map`: (list)\n
-    `shuffle`: (bool) 
-    >   if true, give an data with airfoil_index=index/n_c, condition_index=index%n_c\n
-    >   if false, give a series of data of an airfoil\n
-    `test`: (int) the number of data not involved\n
-    `data_base`: (str)    the fold path of data\n
-    `ref`: (bool) 
-    >   if True, give delta aoa for every output, and give reference flowfield\n
-    >   if false, the aoa is real, and no reference flowfield in getitem
+    - `file_name`:   name of the data file
+    - `channels`:    (Tuple(int)) the channels of input geometry and flowfields
+    - `d_c`:         dimension of the condition
+    - `n_c`:         number of the condition of one airfoil should the dataset give out
+    - `c_mtd`:       how to choose the condition should give out
+        - `fix` : by the index in `c_map`
+        - `random`: ramdomly selected when initialize the dataset
+        - `load`:   load the selection method by the file number `c_no`
+        - `all`:    all the conditions will be used to training
+    - `c_map`: (list)
+    - `c_no`:   (int)
+    - `shuffle`: (bool) 
+        - if true, give an data with airfoil_index=index/n_c, condition_index=index%n_c\n
+        - if false, give a series of data of an airfoil\n
+    - `test`: (int) the number of data not involved\n
+    - `data_base`: (str)    the fold path of data\n
 
     dataset file requirment
     ===
 
     The datafile should contain two parts: the `data.npy` and the `index.npy`
+    
     data.npy
     ----
     shape: `(N_Foils * N_Conditions) x N_Channel x SHAPE_OF_A_SAMPLE`
@@ -59,7 +60,7 @@ class ConditionDataset(Dataset):
     >    more:       Aux data\n
     '''
 
-    def __init__(self, file_name, d_c=1, n_c=5, c_mtd='fix', c_map=None, c_no=0, test=98, data_base='data/'):
+    def __init__(self, file_name, d_c=1, c_mtd='fix', n_c=None, c_map=None, c_no=0, test=98, data_base='data/'):
 
         super().__init__()
 
@@ -78,15 +79,15 @@ class ConditionDataset(Dataset):
         self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float)     #   the aoa of the reference flowfield 
         self.condis_num = n_c                               #   amount of conditions used in training for each airfoil
         self.shuffle = False
-        self.data = None            # flowfield data selected from all data, size: (N_airfoil * N_c, C, H, W)
-        self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
+        # self.data = None            # flowfield data selected from all data, size: (N_airfoil * N_c, C, H, W)
+        # self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
         self.refr = None            # reference data, size: (N_airfoil, C, H, W)
         self.dataset_size = 0
         
         self._check_index()
         self._select_index(c_mtd=c_mtd, c_map=c_map, test=test, no=c_no)
 
-        print("dataset %s of size %d loaded, shape:" % (file_name, len(self)), self.data.shape)
+        print("dataset %s of size %d loaded, shape:" % (file_name, len(self)), self.all_data.shape)
 
     
     def _check_index(self):
@@ -110,6 +111,7 @@ class ConditionDataset(Dataset):
             self.condis_all_num[airfoil_idx] += 1
         
         self.ref_condis = torch.from_numpy(self.ref_condis).float()
+        self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
 
     def _select_index(self, c_mtd, c_map, test, no):
         '''
@@ -138,31 +140,40 @@ class ConditionDataset(Dataset):
             if not os.path.exists(fname):
                 print(' *** WARNING *** Data index file \'%s\' not exist, use random instead!' % fname)
                 c_mtd = 'random'
-        elif c_mtd in ['random', 'all']:
+        elif c_mtd in ['random', 'all', 'exrf']:
             pass
 
         else:
             raise KeyError()
 
-        if c_mtd in ['fix', 'random']:
+        if c_mtd in ['fix', 'random', 'all', 'exrf']:
+            minnc = 1000
+            maxnc = -1
             for i in range(self.airfoil_num - test):
                 if c_mtd == 'random':
                     # print(self.condis_st[i], self.condis_num)
                     c_map = random.sample(range(self.condis_all_num[i]), self.condis_num)
                 elif c_mtd == 'all':
-                    c_map = range(self.condis_num)
-                
-                for j in range(self.condis_num):
-                    self.data_idx.append(c_map[j] + self.condis_st[i])
+                    c_map = list(range(self.condis_all_num[i]))
+                elif c_mtd == 'exrf':
+                    c_map = list(range(self.condis_all_num[i]))
+                    c_map.remove((self.ref_index[i] - self.condis_st[i]))
+                else:
+                    raise KeyError()
+
+                for a_c_map in c_map:
+                    self.data_idx.append(a_c_map + self.condis_st[i])
+
+                minnc = min(len(c_map), minnc)
+                maxnc = max(len(c_map), maxnc)
         else:
             self.data_idx = np.loadtxt(fname, dtype=np.int)
 
-        self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
-        self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 
-        self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
-        self.dataset_size = len(self.data)
+        # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
+        # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 
+        self.dataset_size = len(self.data_idx)
 
-        print(' *** number of conditions:  %d, size of data:' % self.condis_num, self.data.size())
+        print(' *** number of conditions:  %d ~ %d, total size of data: %d ' % (minnc, maxnc, self.dataset_size), self.all_data.shape)
 
     def save_data_idx(self, no):
         np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
@@ -172,11 +183,14 @@ class ConditionDataset(Dataset):
 
     def __getitem__(self, idx):
         
-        op_cod = idx % self.condis_num
-        op_idx = int(idx / self.condis_num)
+        # op_cod = idx % self.condis_num
+        # op_idx = int(idx / self.condis_num)
+        op_idx =  int(self.all_index[self.data_idx[idx], 0])
+        op_cod =  int(self.all_index[self.data_idx[idx], 1])
         # print(idx, cod)
-        flowfield   = self.data[idx]
-        condis      = self.cond[idx]
+        flowfield   = torch.from_numpy(self.all_data[self.data_idx[idx]]).float()
+        condis      = torch.from_numpy(self.all_index[self.data_idx[idx], 3:3+self.condis_dim]).float()
+        # condis      = self.cond[idx]
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
 

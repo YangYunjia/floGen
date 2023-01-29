@@ -356,7 +356,32 @@ def get_flux_1d(xcor: Tensor, ycor: Tensor, pressure: Tensor, xvel: Tensor, yvel
 
     return mass_flux, moment_flux
 
+def sort_by_aoa(_aoas, _clss, _cdss):
+    #* sort aoa datas
+    aoas = []
+    clss = []
+    cdss = []
+    for aoa, cl, cd in zip(_aoas, _clss, _cdss):
+        if len(aoas) == 0 or aoa < aoas[0]:
+            aoas.insert(0, aoa)
+            clss.insert(0, cl)
+            cdss.insert(0, cd)
+        else:
+            for idx in range(len(aoas) - 1):
+                if aoa > aoas[idx] and aoa < aoas[idx + 1]:
+                    aoas.insert(idx + 1, aoa)
+                    clss.insert(idx + 1, cl)
+                    cdss.insert(idx + 1, cd)
+                    break
+            else:
+                aoas.append(aoa)
+                clss.append(cl)
+                cdss.append(cd)
 
+    # print(_aoas, _clss, _cdss)
+    # print(aoas, clss, cdss)
+    # raise
+    return aoas, clss, cdss
 
 def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise'):
 
@@ -403,8 +428,8 @@ def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise'):
             break
     else:
         print('Warning:  buffet not found')
-        aoa_buf = None
-        cl_buf = None
+        aoa_buf = 0.0
+        cl_buf = 0.0
 
     # print(aoa_buf, cl_buf)
 

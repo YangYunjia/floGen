@@ -281,7 +281,7 @@ class IntpConv2d(nn.Module):
             self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=1)
 
     def forward(self, inpt):
-        result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode)
+        result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode, align_corners=False)
         result = self.conv(result)
 
         return result
