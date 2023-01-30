@@ -145,10 +145,11 @@ class ConditionDataset(Dataset):
 
         else:
             raise KeyError()
-
+        
+        minnc = 1000
+        maxnc = -1
         if c_mtd in ['fix', 'random', 'all', 'exrf']:
-            minnc = 1000
-            maxnc = -1
+
             for i in range(self.airfoil_num - test):
                 if c_mtd == 'random':
                     # print(self.condis_st[i], self.condis_num)
@@ -168,6 +169,7 @@ class ConditionDataset(Dataset):
                 maxnc = max(len(c_map), maxnc)
         else:
             self.data_idx = np.loadtxt(fname, dtype=np.int)
+            
 
         # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
         # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 

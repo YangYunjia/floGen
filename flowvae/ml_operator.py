@@ -60,7 +60,7 @@ class AEOperator:
         self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
         self.paras['ref'] = ref
-        self.paras['code_mode'] = model.paras['code_mode']
+        self.paras['code_mode'] = model.cm
         self.paras['loss_parameters'] = {'sm_mode':     'NS',
                                          'sm_epoch':        1, 
                                          'sm_weight':       1, 
@@ -203,7 +203,7 @@ class AEOperator:
     
     def train_model(self, save_check, save_best=True, v_tqdm=True):
 
-        if self.paras['code_mode'] in ['ex', 'ae', 'ved']:
+        if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
             print('*** set code, indx, coef loss to ZERO')
             self.paras['loss_parameters']['code_weight'] = 0.0
         elif self.paras['code_mode'] in ['ed']:
@@ -271,7 +271,7 @@ class AEOperator:
                             #* model forward process
                             if self.paras['code_mode'] in ['ex', 'semi', 'ae']:
                                 result_field = self._model(real_field[:, ipt1: ipt2], code=delt_labels)
-                            elif self.paras['code_mode'] in ['ed', 'ved']:
+                            elif self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
                                 result_field = self._model(refs_field[:, ipt1: ipt2], code=delt_labels)
                             elif self.paras['code_mode'] in ['im']:
                                 result_field = self._model(real_field[:, ipt1: ipt2])
@@ -295,7 +295,7 @@ class AEOperator:
                                 # ref  = torch.zeros_like(real, device=self.device)
                                 ref = self.model.geom_data['ref_clcd'].index_select(0, indxs) * _is_ref
 
-                            if self.paras['code_mode'] in ['ed', 'ved']:
+                            if self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
                                 # the vae without prior index loss (must be ed mode)
                                 # if not reference, the parameter ref is set to zero by multiply with the flag
                                 loss_dict = self._model.loss_function(real, *result_field,

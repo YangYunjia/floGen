@@ -14,7 +14,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from flowvae.dataset import ConditionDataset
-from .base_model import Encoder, Decoder, _decoder_input
+from flowvae.base_model import Encoder, Decoder, _decoder_input
 
 import numpy as np
 
@@ -25,7 +25,7 @@ Tensor = NewType('Tensor', torch.tensor)
 
 # from utils import get_force
 
-from .post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
+from flowvae.post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
 class frameVAE(nn.Module):
     '''
@@ -71,7 +71,7 @@ class frameVAE(nn.Module):
 
         self.paras = kwargs
         self.paras['decoder_input_layer'] = decoder_input_layer
-        self.paras['code_mode'] = code_mode
+        self.cm = code_mode
 
         self.series_data = {}
 
@@ -95,7 +95,7 @@ class frameVAE(nn.Module):
                 nn.Linear(fd, fd))
         elif code_mode in ['ae', 'ed']:
             self.fc_mu = nn.Linear(lfe, fd)
-        elif code_mode in ['ved']:
+        elif code_mode in ['ved', 'ved1']:
             self.fc_mu = nn.Linear(lfe, fd)
             self.fc_var = nn.Linear(lfe, fd)    
         elif code_mode in ['semi', 'im']:
@@ -183,15 +183,15 @@ class frameVAE(nn.Module):
         # input channel control is moved to ml_operate, ori: input[:, :self.in_channel]
         result = self.encoder(input)
 
-        if self.paras['code_mode'] in ['ex']:
+        if self.cm in ['ex']:
             result = torch.cat([result, kwargs['code']], dim=1)
             mu = self.fc_mu(result)
             log_var = self.fc_var(result)
-        elif self.paras['code_mode'] in ['ae', 'ed']:
+        elif self.cm in ['ae', 'ed']:
             mu = self.fc_mu(result)
             log_var = torch.zeros_like(mu)
         # Split the result into mu and var components of the latent Gaussian distribution
-        elif self.paras['code_mode'] in ['im', 'semi', 'ved']:
+        elif self.cm in ['im', 'semi', 'ved', 'ved1']:
             mu = self.fc_mu(result)
             # TODO here log_var's first element should be 0 for im and semi
             log_var = self.fc_var(result)
@@ -236,30 +236,35 @@ class frameVAE(nn.Module):
 
         mu, log_var = self.encode(input, **kwargs)
         
-        if self.paras['code_mode'] in ['ae', 'ed']:
+        if self.cm in ['ae', 'ed']:
             zf = mu
             zc = self.fc_code(kwargs['code'])
             z = torch.cat([zc, zf], dim=1)
         
-        elif self.paras['code_mode'] in ['ved']:
+        elif self.cm in ['ved']:
             #! this is log_var, so std_var=1 means log_var=0
             zc = self.reparameterize(kwargs['code'], torch.zeros_like(kwargs['code'], device=self.device))
             zf = self.reparameterize(mu, log_var)
             zc = self.fc_code(zc)
             z = torch.cat([zc, zf], dim=1)
         
-        elif self.paras['code_mode'] in ['semi']:
+        elif self.cm in ['ved1']:
+            zf = self.reparameterize(mu, log_var)
+            zc = self.fc_code(kwargs['code'])
+            z = torch.cat([zc, zf], dim=1)
+
+        elif self.cm in ['semi']:
             z = self.reparameterize(mu, log_var)
             zc = self.fc_code(kwargs['code'])
             # print("new, old:", kwargs['code'], z[:, 0])
             z[:, :zc.size()[1]] = zc
 
-        elif self.paras['code_mode'] in ['ex']:
+        elif self.cm in ['ex']:
             zf = self.reparameterize(mu, log_var)
             zc = self.fc_code(kwargs['code'])
             z = torch.cat([zc, zf], dim=1)
 
-        elif self.paras['code_mode'] in ['im']:
+        elif self.cm in ['im']:
             z = self.reparameterize(mu, log_var)
             # TODO: the mode `im` is not consist with code layers!
 
@@ -333,13 +338,17 @@ class frameVAE(nn.Module):
         origin_loss['indx'] = torch.FloatTensor([0.0])
         origin_loss['aero'] = torch.FloatTensor([0.0])     
 
-        if self.paras['code_mode'] in ['ved']:
-            mu = args[1][:, self.code_dim:]
-            log_var = args[2][:, self.code_dim:]
+        if self.cm in ['ved', 'ved1']:
+            #! mu and var returned not include code dimensions
+            mu = args[1]
+            log_var = args[2]
             indx_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
+            # print(origin_loss['loss'], indx_loss, kwargs['indx_weight'])
             origin_loss['loss'] += indx_loss * kwargs['indx_weight']
             origin_loss['indx'] = indx_loss
-        
+            # print(origin_loss['loss'], indx_loss)
+            # input()
+
         return origin_loss
     
     def series_loss_function(self, real, *args, **kwargs):
@@ -394,7 +403,7 @@ class frameVAE(nn.Module):
         real_code = kwargs['real_code']
         code_weight = kwargs['code_weight']
 
-        if self.paras['code_mode'] in ['semi', 'im']:
+        if self.cm in ['semi', 'im']:
             
             code_loss = F.mse_loss(mu[:,:self.code_dim], real_code)
 
@@ -425,7 +434,7 @@ class frameVAE(nn.Module):
                 self.series_data['series_latent'][isample, icode, 0] = imu.detach()
                 d_mu = imu - self.series_data['series_avg_latent'][isample, 0]
 
-                if self.paras['code_mode'] in ['ae']:
+                if self.cm in ['ae']:
                     # only MSE loss of mu
                     indx_loss += torch.mean(d_mu**2)
                 else:
@@ -469,55 +478,72 @@ class frameVAE(nn.Module):
         else:
             self.series_data['series_avg_latent'] = self.series_data['series_latent'][:, pivot, :]
 
-    def sample(self,
-               num_samples:int,
-               mode:str = 'rep', **kwargs) -> Tensor:
+    def sample(self, num_samples: int, fmode: str = '', cmode: str = '', 
+               indx: int = None, code: np.array = None, mu: Tensor = None, log_var: Tensor = None) -> Tensor:
         """
         Samples from the latent space and return the corresponding
         image space map.
-        :param num_samples: (Int) Number of samples
-        :param current_device: (Int) Device to run the model
-        :return: (Tensor)
+
+        param:
+        ===
+        - `num_samples`:    number of samples to generate
+        - `fmode`:          how to generate latent for foil `zf`
+            - `db`:         read from database `indx` (only for Frame A)
+            - `dbr`:        read mu and log_var from database `indx` and sample (only for Frame A)
+            - `i`:          input in keyword `mu` 
+            - `id`:         input in keyword `mu` and `log_var` and sample from this distribution
+            - `imu`:        input in keyword `mu` and sample with a Gauss (mu, 1) (for `ved`)
+            - `sn`:         sample from a standard normal distribution
+        - `cmode`:          how to generate latent for code `zc`
+            - `no`:         latent for code is already generated in fmode (for `im`)
+            - `i`:          input in keyword `code`
+            - `ir`:         input in keyword `code` and sample with a Gauss (code, 1)
+
+        return: 
+        ===
+        (Tensor)
         """
+        if self.cm in ['ed']:
+            fmode = 'i'
+            cmode = 'i'
+        elif self.cm in ['ved']:
+            fmode = 'id'
+            cmode = 'ir'
+        elif self.cm in ['ved1']:
+            fmode = 'id'
+            cmode = 'i'
 
-        if mode == 'giv':
-            z = torch.cat((torch.Tensor([kwargs['code']]).to(self.device), self.series_data['series_avg_latent'][kwargs['indx']][0]))
-            # print(z)
-            z = z.unsqueeze(0).repeat(num_samples, 1)
-            # z = torch.einsum('i,j->ij', torch.ones((num_samples,)).to(self.device), z)
+        if fmode == 'db':
+            zf = self.series_data['series_avg_latent'][indx][0].unsqueeze(0).repeat(num_samples, 1)
+        elif fmode == 'i':
+            zf = mu.repeat(num_samples, 1)
         
-        #! should be log_var, not sigma; so default (normal distribution) should be 0
         else:
-            if mode == 'giv_rand':
-                mu = self.series_data['series_avg_latent'][kwargs['indx']][0].unsqueeze(0)
-                log_var = self.series_data['series_avg_latent'][kwargs['indx']][1].unsqueeze(0)
-            elif mode == 'distr':
-                mu = kwargs['mu']
-                log_var = kwargs['log_var']
-            else:
-                mu = torch.zeros((num_samples, self.latent_dim))
-                log_var = torch.zeros((num_samples, self.latent_dim))
+            if fmode == 'dbr':
+                fmu = self.series_data['series_avg_latent'][indx][0].unsqueeze(0).repeat(num_samples, 1)
+                flog_var = self.series_data['series_avg_latent'][indx][1].unsqueeze(0).repeat(num_samples, 1)
+            elif fmode == 'id':
+                fmu = mu.repeat(num_samples, 1)
+                flog_var = log_var.repeat(num_samples, 1)
+            elif fmode == 'sn':
+                #! should be log_var, not sigma; so default (normal distribution) should be 0
+                fmu = torch.zeros((num_samples, self.latent_dim - self.code_dim))
+                flog_var = torch.zeros((num_samples, self.latent_dim - self.code_dim))
             
-            mu = mu.repeat(num_samples, 1)
+            zf = self.reparameterize(fmu, flog_var)
 
-            if log_var is None:
-                zf = mu
-            else:
-                log_var = log_var.repeat(num_samples, 1)
-                zf = self.reparameterize(mu, log_var)
+        if cmode == 'no':
+            samples = self.decode(zf)
+        else:
+            tcode = torch.Tensor(code).to(self.device).unsqueeze(0).repeat(num_samples, 1)
+            if cmode == 'i':
+                zc = tcode
+            elif cmode == 'ir':
+                zc = self.reparameterize(tcode, torch.zeros_like(tcode, device=self.device))
+            
+            z = torch.cat([self.fc_code(zc), zf], dim=1)
+            samples = self.decode(z)
 
-            # print(zf.size())
-            # print(z)
-            # print(torch.Tensor(kwargs['code']).to(self.device).unsqueeze(0).size())
-            # zc = 
-            code_output = self.fc_code(torch.Tensor(kwargs['code']).to(self.device).unsqueeze(0).repeat(num_samples, 1))
-            z = torch.cat([code_output, zf], dim=1)
-            # z = torch.cat((zc, zf), dim=1)
-            # print(z.size())		 
-        
-        # z = torch.randn(num_samples, self.latent_dim)
-
-        samples = self.decode(z)
         return samples
 
     def generate(self, x: Tensor, **kwargs) -> Tensor:
