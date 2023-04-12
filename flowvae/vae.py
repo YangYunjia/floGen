@@ -140,7 +140,7 @@ class frameVAE(nn.Module):
         produce geometry data
         - x01, x0p: the x coordinate data for smooth calculation
         '''
-        from cst_modeling.foil import clustcos
+        from cst_modeling.section import clustcos
 
         
         nn = 201
@@ -506,10 +506,7 @@ class frameVAE(nn.Module):
         if self.cm in ['ed']:
             fmode = 'i'
             cmode = 'i'
-        elif self.cm in ['ved']:
-            fmode = 'id'
-            cmode = 'ir'
-        elif self.cm in ['ved1']:
+        elif self.cm in ['ved', 'ved1']:
             fmode = 'id'
             cmode = 'i'
 

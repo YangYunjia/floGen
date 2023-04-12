@@ -76,7 +76,6 @@ class ConditionDataset(Dataset):
         self.ref_index      = np.zeros((self.airfoil_num,), dtype=np.int)       #   the index of reference flowfield for each airfoil in the serial dataset
         self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float)     #   the aoa of the reference flowfield 
         # self.condis_num = n_c                               #   amount of conditions used in training for each airfoil
-        self.shuffle = False
         # self.data = None            # flowfield data selected from all data, size: (N_airfoil * N_c, C, H, W)
         # self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
         self.refr = None            # reference data, size: (N_airfoil, C, H, W)
@@ -116,8 +115,11 @@ class ConditionDataset(Dataset):
         select among the conditions of each airfoil for training
         '''
         self.data_idx = []
+        self.airfoil_idx = []
 
         print('# selecting data from data.npy #')
+        minnc = 1000
+        maxnc = -1
 
         if c_mtd == 'load':
             fname = self.data_base + self.fname + '_%ddataindex.txt' % no
@@ -126,17 +128,20 @@ class ConditionDataset(Dataset):
             else:
                 self.data_idx = np.loadtxt(fname, dtype=np.int)
 
+            for iidx in self.data_idx:
+                if self.all_index[iidx][0] not in self.airfoil_idx:
+                    self.airfoil_idx.append(self.all_index[iidx][0])
+
         else:
-            minnc = 1000
-            maxnc = -1
+
             if c_mtd in ['fix', 'random', 'all', 'exrf']:
                 
                 if is_last:
-                    train_idx = range(self.airfoil_num - test)
+                    self.airfoil_idx = list(range(self.airfoil_num - test))
                 else:
-                    train_idx = random.sample(range(self.airfoil_num), self.airfoil_num - test)
+                    self.airfoil_idx = random.sample(range(self.airfoil_num), self.airfoil_num - test)
 
-                for i in train_idx:
+                for i in self.airfoil_idx:
                     if c_mtd == 'random':
                         # print(self.condis_st[i], self.condis_num)
                         c_map = random.sample(range(self.condis_all_num[i]), n_c)
