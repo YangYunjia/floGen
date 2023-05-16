@@ -23,6 +23,9 @@ import torch
 
 from sklearn.linear_model import LinearRegression
 from scipy.interpolate import PchipInterpolator as pchip
+from scipy.interpolate import interp1d
+
+import matplotlib.pyplot as plt
 
 from typing import List, NewType, Tuple
 Tensor = NewType('Tensor', torch.tensor)
@@ -212,7 +215,7 @@ def get_force_xy(vec_sl: Tensor, veclen: Tensor, area: Tensor,
     dfv_t = 0.063 / (paras['Minf'] * paras['Re']) * mu * torch.einsum('kj,jk->j', uv_cen, vec_sl) * veclen**2 / area
 
     # cx, cy
-    dfp = torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t.unsqueeze(0), -dfp_n.unsqueeze(0)),dim=0), _rot_metrix, vec_sl)
+    dfp = torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t.unsqueeze(0), -dfp_n.unsqueeze(0)),dim=0), _rot_metrix.to(dfv_t.device), vec_sl)
 
     return dfp
 
@@ -264,7 +267,7 @@ def get_xyforce_1d(geom: Tensor, profile: Tensor):
     dfv_t  = torch.zeros_like(dfp_n)
     dr      = (geom[:, 1:] - geom[:, :-1]).permute(1, 0)
 
-    return torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix, dr)
+    return torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
 
 def get_xyforce_1dc(geom: Tensor, profile: Tensor):
     '''
@@ -286,7 +289,7 @@ def get_xyforce_1dc(geom: Tensor, profile: Tensor):
     dfv_t  = torch.zeros_like(dfp_n)
     dr     = (geom[:, :, 1:] - geom[:, :, :-1]).permute(0, 2, 1)
 
-    return torch.einsum('blj,lpk,bjk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix, dr)
+    return torch.einsum('blj,lpk,bjk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
 
 def get_force_1d(geom: Tensor, profile: Tensor, aoa: float):
     '''
@@ -383,7 +386,13 @@ def sort_by_aoa(_aoas, _clss, _cdss):
     # raise
     return aoas, clss, cdss
 
-def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise'):
+def first_argmin(l):
+    for i in range(1, len(l)-1):
+        if l[i] <= l[i-1] and l[i] <= l[i+1]:
+            return i
+    return -1
+
+def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise', cl_c=0.8, plot=False, intp='pchip'):
 
     # f_idx = 0
     # for idx, cd in enumerate(cdss):
@@ -394,22 +403,34 @@ def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise'):
     # print(np.array(clss[f_idx:]) / np.array(cdss[f_idx:]))
     # plt.plot(clss, cdss)
     # plt.show()
+    if intp == 'pchip':
+        f_cl_aoa_all = pchip(aoas, np.array(clss))
+    elif intp == '1d':
+        f_cl_aoa_all = interp1d(aoas, np.array(clss), bounds_error=False, fill_value='extrapolate')
 
-    f_cl_aoa_all = pchip(aoas, np.array(clss))
     aoa_refs = list(np.arange(-2, 4, 0.01))
     
     if linear == 'cruise':
-        max_i = np.argmin(abs(f_cl_aoa_all(aoa_refs) - 0.8))
+        max_i = first_argmin(abs(f_cl_aoa_all(aoa_refs) - cl_c))
     elif linear == 'maxLD':
         f_cdcl_aoa_all = pchip(aoas, np.array(clss) / np.array(cdss))
-        max_i = np.argmax(f_cdcl_aoa_all(aoa_refs))
+        max_i = first_argmin(-f_cdcl_aoa_all(aoa_refs))
     
     max_aoa = aoa_refs[max_i]
     # print(max_i, max_aoa)
     # input()
 
-    linear_aoas = np.arange(max_aoa - 2.0, max_aoa, 0.1)
-    reg = LinearRegression().fit(linear_aoas.reshape(-1,1), f_cl_aoa_all(linear_aoas))
+    while max_aoa > aoa_refs[max_i] - 1.0:
+        linear_aoas = np.arange(max(aoas[0], max_aoa - 3.0), max_aoa, 0.1).reshape(-1,1)    # modified 2023.5.14, change the upper bound to max_aoa - 0.5
+        f_cl_aoa_linear = f_cl_aoa_all(linear_aoas)
+        reg = LinearRegression().fit(linear_aoas, f_cl_aoa_linear)
+        if reg.score(linear_aoas, f_cl_aoa_linear) > 0.9999:
+            break
+        max_aoa -= 0.01
+    
+    if plot:
+        print(max_aoa, aoa_refs[max_i], f_cl_aoa_all(max_aoa), f_cl_aoa_all(aoa_refs[max_i]))
+        print(reg.score(linear_aoas, f_cl_aoa_linear))
     # print(reg.coef_[0], reg.intercept_)
     reg_k = reg.coef_[0]
     reg_b = reg.intercept_
@@ -417,19 +438,32 @@ def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise'):
     d_b = - d_aoa * reg_k
 
     # f_cl_aoa = pchip(aoas[max_i:], clss[max_i:])
-    step_aoa = np.arange(max_aoa, aoas[-1], 0.001)
+    upp_bound = aoas[-1]+0.3
+    for low_bound in [aoa_refs[max_i]+0.1, max_aoa-0.1]:
+        # modified 2023.5.14, change the upper bound to aoa[-1]+0.5(pchip is valid for extrapolate)
+        # change the lower bound to aoa_cruise + 0.1, if not found, search max_aoa
+        step_aoa = np.arange(low_bound, upp_bound, 0.001)
 
-    delta = f_cl_aoa_all(step_aoa) - (reg_k * step_aoa + reg_b + d_b)
+        delta = f_cl_aoa_all(step_aoa) - (reg_k * step_aoa + reg_b + d_b)
 
-    for idx in range(len(delta)-1):
-        if delta[idx] * delta[idx+1] < 0:
-            aoa_buf = step_aoa[idx] + 0.001 * delta[idx] / (delta[idx] - delta[idx+1])
-            cl_buf = f_cl_aoa_all(aoa_buf)
-            break
-    else:
+        for idx in range(len(delta)-1):
+            if delta[idx] * delta[idx+1] < 0:
+                aoa_buf = step_aoa[idx] + 0.001 * delta[idx] / (delta[idx] - delta[idx+1])
+                cl_buf = f_cl_aoa_all(aoa_buf)
+                break
+        else:
+            aoa_buf = None
+            cl_buf = None
+            continue
+        break
+    if aoa_buf is None:
         print('Warning:  buffet not found')
-        aoa_buf = 0.0
-        cl_buf = 0.0
+        
+    if plot:
+        plt.plot(linear_aoas, f_cl_aoa_all(linear_aoas), '-', c='C0')
+        plt.plot(step_aoa, f_cl_aoa_all(step_aoa), '-', c='C1')
+        plt.plot([0, 4.5], [reg_b + d_b, reg_k * 4.5 + reg_b + d_b], '--', c='k')
+        # plt.show()
 
     # print(aoa_buf, cl_buf)
 

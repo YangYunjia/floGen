@@ -71,7 +71,9 @@ class AEOperator:
                                          'indx_epoch':      10,
                                          'indx_pivot':      -1,
                                          'aero_weight':     1e-5,
-                                         'aero_epoch':      299}
+                                         'aero_epoch':      299,
+                                         'ge_epoch':        1,
+                                         'ge_weight':       0.1}
         
         self.dataset = {}
         if dataset is not None:
@@ -203,6 +205,7 @@ class AEOperator:
     
     def train_model(self, save_check, save_best=True, v_tqdm=True):
 
+        weights = {}
         if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
             print('*** set code, indx, coef loss to ZERO')
             self.paras['loss_parameters']['code_weight'] = 0.0
@@ -233,7 +236,7 @@ class AEOperator:
 
         while self.epoch < self.paras['num_epochs']:
 
-            print('Epoch {}/{}'.format(self.epoch, self.paras['num_epochs'] - 1))
+            print('\nEpoch {}/{}'.format(self.epoch, self.paras['num_epochs'] - 1))
 
             # torch.autograd.set_detect_anomaly(True)
             # 每个epoch都有一个训练和验证阶段
@@ -278,8 +281,8 @@ class AEOperator:
 
                             #* calculating loss
                             # update loss weight for current epoch
-                            for cm in ['sm', 'indx', 'aero']:
-                                self.paras['loss_parameters'][cm + '_weight'] = (
+                            for cm in ['sm', 'indx', 'aero', 'ge']:
+                                weights[cm + '_weight'] = (
                                     0.0, self.paras['loss_parameters'][cm + '_weight'])[self.epoch >= self.paras['loss_parameters'][cm + '_epoch']]
                             
                             if recon_type == 'field':
@@ -300,14 +303,14 @@ class AEOperator:
                                 # if not reference, the parameter ref is set to zero by multiply with the flag
                                 loss_dict = self._model.loss_function(real, *result_field,
                                                                        ref=ref,
-                                                                       **self.paras['loss_parameters'])
+                                                                       **weights)
                             else:
                                 loss_dict = self._model.series_loss_function(real, *result_field, 
                                                                              ref=ref,
                                                                              real_code=delt_labels,
                                                                              real_code_indx=cods,
                                                                              real_indx=indxs,
-                                                                             **self.paras['loss_parameters'])
+                                                                             **weights)
                             loss = loss_dict['loss']
 
                             if not torch.isnan(loss).sum() == 0:
@@ -315,7 +318,7 @@ class AEOperator:
                                 raise Exception()
                             
                             if v_tqdm:
-                                tbar.set_postfix(loss=loss.item(), smt=loss_dict['smooth'].item(), reco=loss_dict['recons'].item(), code=loss_dict['code'].item())
+                                tbar.set_postfix(loss=loss.item(), reco=loss_dict['recons'].item())
                             
                             # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
                             #* model backward process (only in training phase)
@@ -335,8 +338,10 @@ class AEOperator:
                     else:
                         self._scheduler.step()
 
-                print(' loss: %.5f %.5f %.5f %.5f %.5f %.5f' % (epoch_loss['loss'], epoch_loss['recons'], epoch_loss['code'],
-                                                      epoch_loss['indx'], epoch_loss['smooth'], epoch_loss['aero']))
+                output_str = ''
+                for key in epoch_loss.keys():
+                    output_str += '%s=%.5f ' % (key, epoch_loss[key])
+                print(output_str)
 
                 self.history['loss'][phase].append(epoch_loss)
 

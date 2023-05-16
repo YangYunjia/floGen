@@ -71,9 +71,9 @@ class conv1dEncoder(Encoder):
 
     def __init__(self, in_channels, last_size,
                  hidden_dims: List = [32, 64, 128],
-                 kernel_sizes: List = [3, 3, 3],
-                 strides: List = [2, 2, 2],
-                 paddings: List = [1, 1, 1],
+                 kernel_sizes: List = None,
+                 strides: List = None,
+                 paddings: List = None,
                  pool_kernels: List = [3, 3, 3],
                  pool_strides: List = [2, 2, 2]
                  ) -> None:
@@ -85,11 +85,16 @@ class conv1dEncoder(Encoder):
 
         h0 = in_channels
 
+        if kernel_sizes is None: kernel_sizes = [3 for _ in hidden_dims]
+        if strides is None:      strides =      [2 for _ in hidden_dims]
+        if paddings is None:     paddings =     [1 for _ in hidden_dims]
+
         for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
             
             layers.append(nn.Conv1d(in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
             layers.append(nn.LeakyReLU())
-            layers.append(nn.AvgPool1d(kernel_size=kp, stride=sp))
+            if kp > 0:
+                layers.append(nn.AvgPool1d(kernel_size=kp, stride=sp))
             h0 = h
 
         self.convs = nn.Sequential(*layers)

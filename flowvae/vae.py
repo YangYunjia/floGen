@@ -131,17 +131,16 @@ class frameVAE(nn.Module):
                  torch.ones((n_airfoil, 1, n_z))], dim=1).to(self.device)}
 
 
-    def preprocess_data(self, fldata: ConditionDataset):
+    def preprocess_data(self, fldata: ConditionDataset=None):
         
         self.geom_data = {}
         # print(' === Warning:  preprocess_data is not implemented. If auxilary geometry data is needed, please rewrite vae.preprocess_data')
-        return
+        # return
         '''
         produce geometry data
         - x01, x0p: the x coordinate data for smooth calculation
         '''
         from cst_modeling.section import clustcos
-
         
         nn = 201
         xx = [clustcos(i, nn) for i in range(nn)]
@@ -149,18 +148,20 @@ class frameVAE(nn.Module):
         self.geom_data['xx']  = all_x
         self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
         self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
+        self.geom_data['dx'] = all_x[1:] - all_x[:-1]
+        self.geom_data['avgdx'] = torch.mean(self.geom_data['dx']**2)
 
-        if fldata is not None:
+        # if fldata is not None:
 
-            geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
-            profile = fldata.data[:, 1]
-            self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze())
-            print('all_clcd size:',  self.geom_data['all_clcd'].size())
+        #     geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
+        #     profile = fldata.data[:, 1]
+        #     self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze())
+        #     print('all_clcd size:',  self.geom_data['all_clcd'].size())
 
-            geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
-            profile = fldata.refr[:, 1]
-            self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze())
-            print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
+        #     geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
+        #     profile = fldata.refr[:, 1]
+        #     self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze())
+        #     print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
 
     def encode(self, input: Tensor, **kwargs) -> List[Tensor]:
         """
@@ -293,15 +294,17 @@ class frameVAE(nn.Module):
 
         ref = kwargs['ref']
         sm_weight = kwargs['sm_weight']
+        ge_weight = kwargs['ge_weight']
+
+        loss = torch.FloatTensor([0.0]).to(self.device)
+        sm_loss = torch.FloatTensor([0.0]).to(self.device)
+        ge_loss = torch.FloatTensor([0.0]).to(self.device)
 
         # print(recons.size(), ref.size(), real.size())
         # input()
         recons_loss = F.mse_loss(recons + ref, real)
         # the real reconstruction is done by setting ref = 0
-
-        loss = recons_loss
-
-        sm_loss = torch.FloatTensor([0.0])
+        loss = loss + recons_loss
 
         if sm_weight > 0.0:
 
@@ -325,18 +328,18 @@ class frameVAE(nn.Module):
             elif kwargs['sm_mode'] == '1d':
                 x01 = self.geom_data['x01']
                 x0p = self.geom_data['x0p']
-                sm_loss = roughness_penalty(x01, x0p, recons, dev=self.device)
+                sm_loss = roughness_penalty(x01, x0p, recons.squeeze(1), dev=self.device)
 
             else:
                 raise AttributeError()
             
             loss += sm_weight * sm_loss
         
-        origin_loss = {'loss': loss, 'recons':recons_loss, 'smooth':sm_loss}
-
-        origin_loss['code'] = torch.FloatTensor([0.0])
-        origin_loss['indx'] = torch.FloatTensor([0.0])
-        origin_loss['aero'] = torch.FloatTensor([0.0])     
+        if ge_weight > 0.0:
+            ge_loss = gradient_enhance_1d(self.geom_data['dx'], self.geom_data['avgdx'], recons + ref, real)
+            loss += ge_weight * ge_loss
+        
+        origin_loss = {'loss': loss, 'recons':recons_loss, 'smooth':sm_loss, 'grad': ge_loss}    
 
         if self.cm in ['ved', 'ved1']:
             #! mu and var returned not include code dimensions
@@ -537,7 +540,6 @@ class frameVAE(nn.Module):
                 zc = tcode
             elif cmode == 'ir':
                 zc = self.reparameterize(tcode, torch.zeros_like(tcode, device=self.device))
-            
             z = torch.cat([self.fc_code(zc), zf], dim=1)
             samples = self.decode(z)
 
@@ -696,3 +698,13 @@ def roughness_penalty(x01: Tensor, x0p: Tensor, ys: Tensor, dev=None) -> Tensor:
     rs  = rs.sum(dim=1).mean(dim=0) 
 
     return torch.abs(rs)
+
+def gradient_enhance_1d(dx: Tensor, avgdx: Tensor, ys1: Tensor, ys2: Tensor) -> Tensor:
+
+    dx = dx.unsqueeze(0).repeat(ys1.size(0), 1)
+    dys1 = ys1[:, 0, 1:] - ys1[:, 0, :-1]
+    dys2 = ys2[:, 0, 1:] - ys2[:, 0, :-1]
+
+    # print(dx.size(), dys1.size(), dys2.size())
+
+    return F.mse_loss(dys1 / dx, dys2 / dx) * avgdx

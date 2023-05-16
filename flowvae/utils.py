@@ -5,11 +5,37 @@ from torch.utils.data import Subset
 import torch
 
 
-class MDCounter(Counter):
+class MDCounter(dict):
+    '''
+    Remark: if a number added to counter is zero, then it won't be added to it. So we re-write it
+    '''
     def __init__(self, *args, **kwargs):
         super(MDCounter, self).__init__(*args, **kwargs)
         self._cktensor()
         
+    def __add__(self, other):
+        if not isinstance(other, MDCounter):
+            return NotImplemented
+        result = MDCounter()
+        for elem, count in self.items():
+            result[elem] = count + other[elem]
+
+        for elem, count in other.items():
+            if elem not in self:
+                result[elem] = count
+        return result
+
+    def __sub__(self, other):
+        if not isinstance(other, MDCounter):
+            return NotImplemented
+        result = MDCounter()
+        for elem, count in self.items():
+            result[elem] = count - other[elem]
+
+        for elem, count in other.items():
+            if elem not in self:
+                result[elem] = -count
+        return result
 
     def __mul__(self, number):
         for k in self.keys():
