@@ -49,7 +49,11 @@ _rot_metrix = torch.Tensor([[[1.0,0], [0,1.0]], [[0,-1.0], [1.0,0]]])
 
 
 #* function to rotate x-y to aoa
-def _aoa_rot(aoa):
+def _aoa_rot(aoa: Tensor):
+    '''
+    aoa is in size (B, )
+    
+    '''
     aoa = aoa * np.pi / 180
     return torch.cat((torch.cos(aoa).unsqueeze(1), -torch.sin(aoa).unsqueeze(1)), dim=1).squeeze()
 
@@ -81,7 +85,7 @@ def _xy_2_clc(dfp: Tensor, aoa: Tensor):
 
     return:
     ===
-    Tensor: (CD, CL),  with size (B, 2,)
+    Tensor: (CD, CL),  with size (B, 2)
     '''
     return torch.einsum('bp,prs,bs->br', dfp,  _rot_metrix.to(dfp.device), _aoa_rot(aoa).to(dfp.device))
 
@@ -289,7 +293,7 @@ def get_xyforce_1dc(geom: Tensor, profile: Tensor):
     dfv_t  = torch.zeros_like(dfp_n)
     dr     = (geom[:, :, 1:] - geom[:, :, :-1]).permute(0, 2, 1)
 
-    return torch.einsum('blj,lpk,bjk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
+    return torch.einsum('blj,lpk,bjk->bp', torch.cat((dfv_t, -dfp_n), dim=1), _rot_metrix.to(dfv_t.device), dr)
 
 def get_force_1d(geom: Tensor, profile: Tensor, aoa: float):
     '''
@@ -312,7 +316,7 @@ def get_force_1d(geom: Tensor, profile: Tensor, aoa: float):
     dfp = get_xyforce_1d(geom, profile)
     return _xy_2_cl(dfp, aoa)
 
-def get_force_1dc(geom: Tensor, profile: Tensor, aoa: float):
+def get_force_1dc(geom: Tensor, profile: Tensor, aoa: Tensor):
     '''
     batch version of integrate the lift and drag
 
@@ -324,11 +328,11 @@ def get_force_1dc(geom: Tensor, profile: Tensor, aoa: float):
 
         Cp = (p - p_inf) / 0.5 * rho * U^2
     
-    `aoa`:  angle of attack
+    `aoa`:  angle of attack, shape: (B, )
 
     return:
     ===
-    Tensor: (CD, CL)
+    Tensor: (CD, CL),  with size (B, 2)
     '''
     dfp = get_xyforce_1dc(geom, profile)
     return _xy_2_clc(dfp, aoa)
