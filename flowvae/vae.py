@@ -226,7 +226,6 @@ class frameVAE(nn.Module):
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
         '''
         Go through the whole network and get the result
@@ -590,6 +589,26 @@ class frameVAE(nn.Module):
             self.geom_data = save_dict['geom_data']
         else:
             raise AttributeError
+
+class Unet(frameVAE):
+
+    def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
+        super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, device, **kwargs)
+        if not (self.encoder.is_unet and self.decoder.is_unet):
+            raise Exception('Encoder or Decoder does not support U-Net')
+
+    def repeat_feature_maps(self, n):
+        for idx in range(len(self.encoder.feature_maps)):
+            self.encoder.feature_maps[idx] = self.encoder.feature_maps[idx].repeat(n, 1, 1)
+        # print( self.encoder.feature_maps[0].size())
+
+    def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
+        
+        result = self.decoder_input(z)
+        result = self.decoder(result, encoder_feature_map=self.encoder.feature_maps)
+
+        return result
+
 
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0

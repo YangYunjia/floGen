@@ -36,6 +36,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.last_flat_size = 0
+        self.is_unet = False
 
     def forward(self, inpt: Tensor) -> Tensor:
         # print(inpt.size())
@@ -81,6 +82,11 @@ class conv1dEncoder(Encoder):
         super().__init__(in_channels)
         self.last_flat_size = hidden_dims[-1] * last_size[0]
 
+        layers = self.form_layers(in_channels, hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides)
+
+        self.convs = nn.Sequential(*layers)
+
+    def form_layers(self, in_channels, hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
         layers = []
 
         h0 = in_channels
@@ -97,13 +103,62 @@ class conv1dEncoder(Encoder):
                 layers.append(nn.AvgPool1d(kernel_size=kp, stride=sp))
             h0 = h
 
-        self.convs = nn.Sequential(*layers)
+        return layers
 
     def forward(self, inpt):
         result = self.convs(inpt)
         # print(result.size())
         # raise
         return super().forward(result)
+
+class conv1dEncoder_Unet(Encoder):
+
+    def __init__(self, in_channels, last_size,
+                 hidden_dims: List = [32, 64, 128],
+                 kernel_sizes: List = None,
+                 strides: List = None,
+                 paddings: List = None,
+                 pool_kernels: List = None,
+                 pool_strides: List = None
+                 ) -> None:
+        
+        super().__init__(in_channels)
+        self.last_flat_size = hidden_dims[-1] * last_size[0]
+        self.is_unet = True
+        _convs = []
+
+        h0 = in_channels
+
+        if kernel_sizes is None: kernel_sizes = [3 for _ in hidden_dims]
+        if strides is None:      strides =      [2 for _ in hidden_dims]
+        if paddings is None:     paddings =     [1 for _ in hidden_dims]
+        if pool_kernels is None:     pool_kernels =     [3 for _ in hidden_dims]
+        if pool_strides is None:     pool_strides =     [2 for _ in hidden_dims]
+
+        for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
+            layers = []
+            layers.append(nn.Conv1d(in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
+            layers.append(nn.LeakyReLU())
+            if kp > 0:
+                layers.append(nn.AvgPool1d(kernel_size=kp, stride=sp))
+            h0 = h
+            _convs.append(nn.Sequential(*layers))
+        
+        self.convs = nn.ModuleList(_convs)
+
+        # for U-net
+        self.feature_maps = []
+
+    def forward(self, inpt):
+        self.feature_maps = []
+        if self.is_unet: self.feature_maps.append(inpt)
+        for conv in self.convs:
+            inpt = conv(inpt)
+            # print(inpt.size(), len(self.convs))
+            if self.is_unet: self.feature_maps.append(inpt)
+        # print(inpt.size())
+        # raise
+        return super().forward(inpt)
 
 class conv2dEncoder(Encoder):
 
@@ -117,7 +172,7 @@ class conv2dEncoder(Encoder):
                  max_pools: List,
                  **kwargs) -> None:
         
-        super().__init__(in_channels, latent_dim)
+        super().__init__(in_channels)
         modules = []
 
         # for k, s, p, mp in zip(kernel_sizes, strides, paddings, max_pools):
@@ -303,6 +358,7 @@ class Decoder(nn.Module):
         self.last_flat_size = 0         # the flattened data input to decoder
         self.inpt_shape = None          # reshape the flattened input to this shape
         self.out_channels = out_channels
+        self.is_unet = False
 
         #* input mesh at the last layer of decoder
         # self.recon_mesh = recon_mesh
@@ -378,6 +434,12 @@ class conv1dDecoder(Decoder):
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
 
+        layers = self.form_layers(hidden_dims, sizes)
+        self.convs = nn.Sequential(*layers)
+
+        self.last_conv = nn.Conv1d(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+    
+    def form_layers(self, hidden_dims, sizes):
         layers = []
 
         h0 = hidden_dims[0]
@@ -386,15 +448,57 @@ class conv1dDecoder(Decoder):
             layers.append(IntpConv2d(in_channels=h0, out_channels=h, kernel_size=3, dim=1, size=s, mode='linear'))
             layers.append(nn.LeakyReLU())
             h0 = h
+        
+        return layers
 
-        self.convs = nn.Sequential(*layers)
-
-        self.last_conv = nn.Conv1d(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
-    
     def forward(self, inpt: torch.Tensor):
         inpt = inpt.view(self.inpt_shape)
         result = self.convs(inpt)
         return self.last_conv(result)
+
+class conv1dDecoder_Unet(conv1dDecoder):
+
+    def __init__(self, out_channels,
+                 last_size: List[int], 
+                 hidden_dims: Tuple = (128, 64, 32, 16), 
+                 sizes: Tuple = (26, 101, 401), 
+                 encoder_hidden_dims: List[int] = None) -> None:
+        
+        super().__init__(out_channels, last_size, hidden_dims, sizes)
+
+        _convs = []
+        h0 = hidden_dims[0]
+        idx = 0
+        for h, s in zip(hidden_dims[1:], sizes):
+            layers = []
+            h0 += encoder_hidden_dims[idx]
+            idx += 1
+            layers.append(IntpConv2d(in_channels=h0, out_channels=h, kernel_size=3, dim=1, size=s, mode='linear'))
+            layers.append(nn.LeakyReLU())
+            h0 = h
+            _convs.append(nn.Sequential(*layers))
+        
+        self.convs = nn.ModuleList(_convs)
+
+        self.is_unet = True
+        h0 += encoder_hidden_dims[idx]
+        self.is_unet = True
+        self.last_conv = nn.Conv1d(h0, out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, inpt: torch.Tensor, encoder_feature_map: List[nn.Module]):
+        inpt = inpt.view(self.inpt_shape)
+        idx = len(encoder_feature_map) - 1
+
+        for conv in self.convs:
+            # print(inpt.size(), encoder_feature_map[idx].size())
+            inpt = torch.cat((inpt, encoder_feature_map[idx]), dim=1)
+            idx -= 1
+            inpt = conv(inpt)
+
+        # print(inpt.size(), encoder_feature_map[idx].size())
+        inpt = torch.cat((inpt, encoder_feature_map[idx]), dim=1)
+
+        return self.last_conv(inpt)
 
 class Resnet18Decoder(Decoder):
 
