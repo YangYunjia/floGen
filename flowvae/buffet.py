@@ -56,12 +56,22 @@ class Ploter():
 
 class Series():
 
-    def __init__(self, varlist) -> None:
+    def __init__(self, varlist: List = None, datas: Dict = None) -> None:
         
         self.series = {}
         self._length = 0
-        for var in varlist:
-            self.series[var] = []
+        if varlist is not None:
+            for var in varlist:
+                self.series[var] = []
+        elif datas is not None:
+            for var in datas.keys():
+                self.series[var] = datas[var]
+                if self._length > 0 and self._length != len(self.series[var]):
+                    raise RuntimeError('length not match')
+                else:
+                    self._length = len(self.series[var])
+        else:
+            raise ReferenceError('At least varlist and datas should not be none')
     
     def __len__(self):
         return self._length
@@ -753,8 +763,12 @@ class Buffet():
         # self.log('     slope:      %.4f' % (reg_k))
         # self.log('     intercept:  %.4f' % (reg_b))
         # self.log('     error:      %.4f' % (reg.score(linear_aoas, f_cl_aoa_linear)))
+        if 'Cd' in seri.series.keys():
+            CDs = seri.Cd
+        else:
+            CDs = None
 
-        ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=seri.Cd, X1s=seri.X1, cl_c=cl_c)
+        ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=CDs, X1s=seri.X1, cl_c=cl_c)
         AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.mUy)
 
         #* -----------------------------------
@@ -786,11 +800,11 @@ class Buffet():
             plt.plot(seri.AoA, seri.Cl, '-' + p.symbol, c='gray', label=p.name+' lift curve')
             plt.plot(seri.AoA[ll['i_lb']:ll['i_ub']+1], seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name+' linear section')
             plt.plot(step_aoa, f_cl_aoa_all(step_aoa), '--', c=p.color)
-            plt.plot([-2, 4.5], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (4.5 - self.paras['daoa']) + ll['intercept']], '-.', c=plot_color)
+            plt.plot([-2, 4.5], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (4.5 - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
             plt.plot([aoa_buf], [cl_buf], 'x', c='r')
             plt.show()    
 
-        return (aoa_buf, cl_buf)
+        return np.array([[aoa_buf, cl_buf]])
 
     def curve_slope_diff(self, seri: Series, p: Ploter = None):
         dAoA = self.aoadelta

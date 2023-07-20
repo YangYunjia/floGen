@@ -13,10 +13,9 @@ from tqdm import tqdm
 
 from .vae import frameVAE
 from .dataset import ConditionDataset
-from .utils import MDCounter
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .post import get_force_1dc
-
+from .utils import MDCounter
 
 class AEOperator:
     '''
