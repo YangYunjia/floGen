@@ -15,7 +15,7 @@ from torch import nn
 from torch.nn import functional as F
 from functools import reduce
 
-from typing import List, Dict, NewType, Callable
+from typing import Tuple, List, Dict, NewType, Callable
 Tensor = NewType('Tensor', torch.tensor)
 
 class Encoder(nn.Module):
@@ -50,7 +50,7 @@ class mlpEncoder(Encoder):
     def __init__(self, in_channels, 
                  hidden_dims: List = [1024, 512, 128]) -> None:
         
-        super().__init__(in_channels)
+        super().__init__(in_channels, last_size=[1], hidden_dims=hidden_dims)
         self.last_flat_size = hidden_dims[-1]
 
         layers = []
@@ -148,6 +148,7 @@ class convEncoder_Unet(convEncoder):
         # raise
         return super().forward(inpt)
 
+'''
 class conv2dEncoder(Encoder):
 
     def __init__(self,
@@ -195,51 +196,57 @@ class conv2dEncoder(Encoder):
         result = self.encoder(inpt)
 
         return super().forward(result)
-    
+'''
+           
 class Resnet18Encoder(Encoder):
 
     def __init__(self,
                  in_channels: int,
-                 last_size: tuple = None,
-                 hidden_dims: List = [16, 32, 64, 128, 256],
-                 num_blocks: List = [2, 2, 2, 2],
-                 strides: List = [2, 2, 2, 2, 2],
-                 preactive: bool = False,
-                 **kwargs) -> None:
+                 last_size: List[int, int],
+                 hidden_dims: List, #  = [16, 32, 64, 128, 256]
+                 num_blocks: List = None,
+                 strides: List = None,
+                 preactive: bool = False, 
+                 extra_first_conv: Tuple[int, int, int, int] = None,
+                 force_last_size: bool = False) -> None:
         
-        super().__init__(in_channels)
+        super().__init__(in_channels, last_size, hidden_dims)
 
         self.preactive = preactive
 
-        if num_blocks is None:
-            num_blocks = [2 for _ in hidden_dims[1:]]
+        if num_blocks is None: num_blocks = [2 for _ in hidden_dims]
+        if strides is None:    strides    = [2 for _ in hidden_dims]
         
-        if strides is None:
-            strides = [2 for _ in hidden_dims]
-        
-        self.layer_in_channels = hidden_dims[0]
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(self.in_channels, self.layer_in_channels, kernel_size=3, stride=strides[0], padding=1, bias=False),
-            nn.BatchNorm2d(self.layer_in_channels),
-            nn.LeakyReLU()
-        ) 
-        
+        h0 = self.in_channels
+
+        if extra_first_conv is not None:
+            h, k, s, p = extra_first_conv
+            self.conv1 = nn.Sequential(
+                nn.Conv2d(in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=False),
+                nn.BatchNorm2d(h),
+                nn.LeakyReLU()) 
+            h0 = h
+        else:
+            self.conv1 = nn.Identity()
+
         block_layers = []
-        for i in range(4):
-            block_layers.append(self._make_layer(hidden_dims[i+1], num_blocks[i], strides[i+1]))
-        
+        for h, nb, s in zip(hidden_dims, num_blocks, strides):
+            block_layers.append(self._make_layer(in_channels=h0, out_channels=h, num_blocks=nb, stride=s))
+            h0 = h
+
         self.blocks = nn.Sequential(*block_layers)
 
-        if last_size is not None:
+        if force_last_size:
             self.adap = nn.AdaptiveAvgPool2d(last_size)
+        else:
+            self.adap = nn.Identity()
 
-    def _make_layer(self, out_channels, num_blocks, stride):
+    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
 
         for st in strides:
-            layers.append(BasicEncodeBlock(self.layer_in_channels, out_channels, st, self.preactive))
-            self.layer_in_channels = out_channels
+            layers.append(BasicEncodeBlock(in_channels, out_channels, st, self.preactive))
 
         return nn.Sequential(*layers)
 
@@ -359,34 +366,35 @@ class Decoder(nn.Module):
         self.out_channels = out_channels
         self.is_unet = False
 
+'''
         #* input mesh at the last layer of decoder
-        # self.recon_mesh = recon_mesh
-        # self.fl_type = final_layer
+        self.recon_mesh = recon_mesh
+        self.fl_type = final_layer
         # if not reconstruct mesh, minus 2 degrees from reconstruction
-        # fl_type = self.fl_type
-        # if fl_type == 'vanilla':
-        #     fl_in_channels = last_dim
-        # elif fl_type == 'realmesh':
-        #     fl_in_channels = last_dim + 2
-        # else:
-        #     raise AttributeError
+        fl_type = self.fl_type
+        if fl_type == 'vanilla':
+            fl_in_channels = last_dim
+        elif fl_type == 'realmesh':
+            fl_in_channels = last_dim + 2
+        else:
+            raise AttributeError
         
-        # fl_out_channels = out_channels
+        fl_out_channels = out_channels
 
-        # self.fl = nn.Sequential(
-        #                     nn.Conv2d(fl_in_channels, 
-        #                             out_channels=fl_out_channels,
-        #                             kernel_size=3, 
-        #                             padding=1))
+        self.fl = nn.Sequential(
+                            nn.Conv2d(fl_in_channels, 
+                                    out_channels=fl_out_channels,
+                                    kernel_size=3, 
+                                    padding=1))
 
-    # def forward(self, inpt: Tensor, **kwargs) -> Tensor:
+    def forward(self, inpt: Tensor, **kwargs) -> Tensor:
 
-    #     if self.fl_type == 'realmesh':
-    #         inpt = torch.cat([kwargs['realmesh'], inpt], dim=1)
+        if self.fl_type == 'realmesh':
+            inpt = torch.cat([kwargs['realmesh'], inpt], dim=1)
         
-    #     result = self.fl(inpt)
-    #     return result
-    pass
+        result = self.fl(inpt)
+        return result
+'''
 
 class mlpDecoder(nn.Module):
     '''
@@ -465,13 +473,13 @@ class convDecoder(Decoder):
             _convs.append(nn.Sequential(*layers))
             
         self.convs = nn.ModuleList(_convs)
-        self.last_conv = basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        self.fl = basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, inpt: torch.Tensor):
         inpt = inpt.view(self.inpt_shape)
         for conv in self.convs:
             inpt = conv(inpt)
-        return self.last_conv(inpt)
+        return self.fl(inpt)
 
 class convDecoder_Unet(convDecoder):
 
@@ -509,128 +517,129 @@ class convDecoder_Unet(convDecoder):
 class Resnet18Decoder(Decoder):
 
     def __init__(self,
-                 in_channels: int,
-                 last_size: tuple,
-                 hidden_dims: List = [16, 16, 32, 64, 128, 256],
-                 num_blocks: List = [2, 2, 2, 2, 2],
-                 strides: List = [2, 2, 2, 2, 2, 2],
-                 preactive: bool = False,
-                 **kwargs):
+                 out_channels: int,
+                 last_size: List[int, int],
+                 hidden_dims: List, #  = [16, 16, 32, 64, 128, 256], # The order is reversed!
+                 num_blocks: List = None, # = [2, 2, 2, 2, 2],
+                 scales: List = None, # = [2, 2, 2, 2, 2, 2],
+                 output_size: List[int, int] = None, # if is not None, addition layer to interpolate
+                 basic_layers: Dict = {}):
         
-        super().__init__(in_channels, hidden_dims[0])
+        super().__init__(out_channels)
         
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
-        self.preactive = preactive
+        self.basic_layers = basic_layers
 
-        if num_blocks is None:
-            num_blocks = [2 for _ in hidden_dims[1:]]
-        
-        if strides is None:
-            strides = [2 for _ in hidden_dims]
+        if 'preactive' not in basic_layers.keys():   basic_layers['actv'] = False
+        if 'actv' not in basic_layers.keys():        basic_layers['actv'] = nn.LeakyReLU
+        if 'last_actv' not in basic_layers.keys():   basic_layers['last_actv'] = nn.Identity
 
-        self.layer_in_channels = hidden_dims[-1]
+        if num_blocks is None:  num_blocks  = [2 for _ in hidden_dims[1:]]
+        if scales is None:     scales     = [2 for _ in hidden_dims[1:]]
 
-        self.conv0 = nn.Sequential(
-            IntpConv2d(self.layer_in_channels, self.layer_in_channels, kernel_size=3, size=(11,3)),
-            nn.BatchNorm2d(self.layer_in_channels),
-            nn.LeakyReLU()
-        )
+        h0 = hidden_dims[0]
 
         block_layers = []
-        for i in range(len(num_blocks)):
-            block_layers.append(self._make_layer(hidden_dims[-i-2], num_blocks[-i-1], strides[-i-2]))
+        for h, nb, s in zip(hidden_dims[1:], num_blocks, scales):
+            block_layers.append(self._make_layer(in_channels=h0, out_channels=h, num_blocks=nb, scale=s))
+            h0 = h
         
         self.blocks = nn.Sequential(*block_layers)
 
-        self.conv1 = nn.Sequential(
-            IntpConv2d(self.layer_in_channels, self.layer_in_channels, kernel_size=3, size=last_size),
-            nn.BatchNorm2d(self.layer_in_channels),
-            nn.LeakyReLU()
-        )
-        
+        if output_size is not None:
+            self.conv1 = nn.Sequential(
+                IntpConv2d(h0, h0, kernel_size=3, size=output_size),
+                nn.BatchNorm2d(h0),
+                nn.LeakyReLU())
+        else:
+            self.conv1 = nn.Identity()
 
-    def _make_layer(self, out_channels, num_blocks, stride):
-        strides = [stride] + [1] * (num_blocks - 1)
+        # Since the output not strictly inside [0,1], the activation layer 
+        # after the last conv (self.fl) is removed
+        self.fl = nn.Sequential(
+                    nn.Conv2d(h0, out_channels=out_channels, kernel_size=3, padding=1),
+                    basic_layers['last_actv']())
+
+    def _make_layer(self, in_channels, out_channels, num_blocks, scale):
+        scales = [scale] + [1] * (num_blocks - 1)
         layers = []
 
-        for st in strides:
-            layers.append(BasicDecodeBlock(self.layer_in_channels, out_channels, st, self.preactive))
+        for st in scales:
+            layers.append(BasicDecodeBlock(in_channels, out_channels, st, self.basic_layers))
             self.layer_in_channels = out_channels
         
         return nn.Sequential(*layers)
     
-    def forward(self, inpt):
-        inpt = inpt.view(tuple([-1] + self.inpt_shape)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
-
-        inpt = self.conv0(inpt)
-
+    def forward(self, inpt: Tensor):
+        inpt = inpt.view(self.inpt_shape)
         inpt = self.blocks(inpt)
-
         # print('Decoder last layer input:', inpt.size())
 
         result = self.conv1(inpt)
+        result = self.fl(result)
         
-        return super().forward(result)
+        return result
 
 class BasicDecodeBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels, stride=1, preactive=False):
+    def __init__(self, in_channels, out_channels, scale, basic_layers):
 
         super().__init__()
 
-        self.preactive = preactive
+        self.preactive = basic_layers['preactive']
+        self.actv      = basic_layers['actv']
 
-        # out_channels = int(in_channels / stride)
+        # out_channels = int(in_channels / scale)
 
-        if stride == 1:
+        if scale == 1:
 
-            if preactive:
+            if self.preactive:
                 self.main = nn.Sequential(
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                    self.actv(),
+                    nn.Conv2d(in_channels, in_channels, kernel_size=3, scale=1, padding=1, bias=False),
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+                    self.actv(),
+                    nn.Conv2d(in_channels, out_channels, kernel_size=3, scale=1, padding=1, bias=False)
                 )
             else:
                 self.main = nn.Sequential(
-                    nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                    nn.Conv2d(in_channels, in_channels, kernel_size=3, scale=1, padding=1, bias=False),
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                    self.actv(),
+                    nn.Conv2d(in_channels, out_channels, kernel_size=3, scale=1, padding=1, bias=False),
                     nn.BatchNorm2d(out_channels)
                 )
             
             self.shortcut = nn.Sequential()
 
         else:
-            if preactive:
+            if self.preactive:
                 self.main = nn.Sequential(
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                    self.actv(),
+                    nn.Conv2d(in_channels, in_channels, kernel_size=3, scale=1, padding=1, bias=False),
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=stride)
+                    self.actv(),
+                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=scale)
                 )
                 self.shortcut = nn.Sequential(
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=stride)
+                    self.actv(),
+                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=scale)
                 )
             
             else:
                 self.main = nn.Sequential(
-                    nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                    nn.Conv2d(in_channels, in_channels, kernel_size=3, scale=1, padding=1, bias=False),
                     nn.BatchNorm2d(in_channels),
-                    nn.LeakyReLU(),
-                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=stride),
+                    self.actv(),
+                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=scale),
                     nn.BatchNorm2d(out_channels)
                 )
                 self.shortcut = nn.Sequential(
-                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=stride),
+                    IntpConv2d(in_channels, out_channels, kernel_size=3, scale_factor=scale),
                     nn.BatchNorm2d(out_channels)
                 )
     
@@ -638,17 +647,18 @@ class BasicDecodeBlock(nn.Module):
         result = self.main(inpt) + self.shortcut(inpt)
 
         if not self.preactive:
-            result = torch.relu(result)
+            result = self.actv()(result)
 
         return result
 
+'''
 class conv2dDecoder(Decoder):
 
     def __init__(self,
 				 out_channels: int,
                  hidden_dims: List,
                  kernel_sizes: List,
-                 strides: List,
+                 scales: List,
                  paddings: List,
                  max_pools: List,
                  **kwargs) -> None:
@@ -698,7 +708,7 @@ class conv2dDecoder(Decoder):
         inpt = inpt.view(tuple([-1] + self.inpt_shape)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
         result = self.decoder(inpt)
         return super().forward(result)
-
+'''
 
 def _decoder_input(typ: float, ld: int, lfd: int) -> nn.Module:
 
