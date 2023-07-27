@@ -58,17 +58,17 @@ class ConditionDataset(Dataset):
     >    more:       Aux data\n
     '''
 
-    def __init__(self, file_name, d_c=1, c_mtd='fix', n_c=None, c_map=None, c_no=-1, test=-1, data_base='data/', is_last_test=True, chan_take=None):
+    def __init__(self, file_name, d_c=1, c_mtd='fix', n_c=None, c_map=None, c_no=-1, test=-1, data_base='data/', is_last_test=True, channel_take=None):
 
         super().__init__()
 
         self.fname = file_name
         self.data_base = data_base
 
-        if chan_take is None:
+        if channel_take is None:
             self.all_data = np.load(data_base + file_name + 'data.npy')
         else:
-            self.all_data = np.take(np.load(data_base + file_name + 'data.npy'), chan_take, axis=1)
+            self.all_data = np.take(np.load(data_base + file_name + 'data.npy'), channel_take, axis=1)
         self.all_index = np.load(data_base + file_name + 'index.npy')
 
         self.condis_dim = d_c
@@ -163,6 +163,8 @@ class ConditionDataset(Dataset):
                     maxnc = max(len(c_map), maxnc)
             else:
                 raise KeyError()
+            
+            self.save_data_idx(no)
 
         # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
         # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 

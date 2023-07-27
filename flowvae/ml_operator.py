@@ -10,6 +10,7 @@ import torch.optim as opt
 
 import sys, os
 from tqdm import tqdm
+from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 from .vae import frameVAE
 from .dataset import ConditionDataset
@@ -34,18 +35,20 @@ class AEOperator:
     def __init__(self, opt_name: str, 
                        model: frameVAE, 
                        dataset: ConditionDataset,
-                       recon_type='field',
-                       input_channels=(None, None), recon_channels=(1, None),
-                       num_epochs=50, batch_size=8, 
-                       reco_data=False, reco_name='',
+                       recon_type: str = 'field',
+                       input_channels: Tuple[int, int] = (None, None), 
+                       recon_channels: Tuple[int, int] =(1, None),
+                       num_epochs: int = 50,
+                       batch_size: int = 8, 
+                       recover_split: str = None,
+                       split_train_ratio = 0.9,
                        output_folder="save", 
                        shuffle=True, ref=False, num_workers=0,
-                       init_lr=0.01, 
-                       device='cuda:0'):
+                       init_lr=0.01):
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
-        self.device = device
+        self.device = model.device
         self.recon_type = recon_type
         self.channel_markers = (input_channels, recon_channels)
         
@@ -78,8 +81,13 @@ class AEOperator:
         if dataset is not None:
             self.all_dataset = dataset
             # split training data
-            self.split_dataset(recover=reco_data, name=reco_name)
-            self.dataloaders = {phase: DataLoader(self.dataset[phase], batch_size=self.paras['batch_size'], shuffle=self.paras['shuffle'], drop_last=False, num_workers=self.paras['num_workers'], pin_memory=True)
+            self.split_dataset(recover=recover_split, train_r=split_train_ratio)
+            self.dataloaders = {phase: DataLoader(self.dataset[phase], 
+                                                  batch_size=self.paras['batch_size'], 
+                                                  shuffle=self.paras['shuffle'], 
+                                                  drop_last=False, 
+                                                  num_workers=self.paras['num_workers'], 
+                                                  pin_memory=True)
                                     for phase in ['train', 'val']}     
         # optimizer
         self._optimizer = None
@@ -203,6 +211,16 @@ class AEOperator:
                 param.requires_grad = True
     
     def train_model(self, save_check, save_best=True, v_tqdm=True):
+        '''
+        Train the model
+
+        ### param:
+        
+        - `save_check`: (int) the interval between the check point file is saved to the given path `output_path`
+        - `save_best`: (bool) default: `True` whether to save the best model
+        - `v_tqdm`: (bool) default: `True` whether to use `tqdm` to display progress. When writing the IO to files, `tqdm` may lead fault.
+        ''' 
+
 
         weights = {}
         if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
@@ -361,8 +379,6 @@ class AEOperator:
 
         print('Best val Loss: {:4f}'.format(self.best_loss))
 
-        
-
     def save_model(self, name='best_model'):
         path = self.output_path + '/' + name
         torch.save(self._model.state_dict(), path)
@@ -412,15 +428,15 @@ class AEOperator:
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
         if load_data_split and len(self.dataset) > 0:
-            self.split_dataset(recover=True, name=self.optname)
+            self.split_dataset(recover=self.optname)
         print('checkpoint loaded from' + path)
 
 
-    def split_dataset(self, recover, name, test_r=0.0):
+    def split_dataset(self, recover, train_r=0.9, test_r=0.0):
         self.dataset_size = {}
 
-        if recover:
-            path = self.output_folder + '//' + name + '//' + 'dataset_indice'
+        if recover is not None:
+            path = self.output_folder + '//' + recover + '//dataset_indice'
             if not os.path.exists(path):
                 raise IOError("checkpoint not exist in {}".format(self.output_folder))
             dataset_dict = torch.load(path, map_location=self.device)
@@ -428,10 +444,10 @@ class AEOperator:
                 self.dataset[phase] = Subset(self.all_dataset, dataset_dict[phase])
                 self.dataset_size[phase] = len(dataset_dict[phase])
 
-            path = self.output_path + '//'  + 'dataset_indice'
-            if os.path.exists(path):
-                print("Press any key to recover exist dataset division:")
-            torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
+            # path = self.output_path + '//'  + 'dataset_indice'
+            # if os.path.exists(path):
+            #     print("Press any key to recover exist dataset division:")
+            # torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
             
             print("Load Split Dataset length: (Train: %d, Val: %d, Test: %d)" % (self.dataset_size['train'], self.dataset_size['val'], self.dataset_size['test']))
 
@@ -441,11 +457,11 @@ class AEOperator:
             train_val_dataset, self.dataset['test'] = random_split(self.all_dataset, [train_val_size, self.dataset_size['test']])
 
             
-            self.dataset_size['train'] = int(0.9 * train_val_size)
+            self.dataset_size['train'] = int(train_r * train_val_size)
             self.dataset_size['val'] = train_val_size - self.dataset_size['train']
             self.dataset['train'], self.dataset['val'] = random_split(train_val_dataset, [self.dataset_size['train'], self.dataset_size['val']])
 
-            path = self.output_path + '//'  + 'dataset_indice'
+            path = self.output_folder + '//'  + self.optname +  '//dataset_indice'
 
             torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)

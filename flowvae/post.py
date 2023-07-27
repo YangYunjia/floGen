@@ -23,7 +23,7 @@ import torch
 
 
 
-from typing import List, NewType, Tuple
+from typing import List, NewType, Tuple, Dict
 Tensor = NewType('Tensor', torch.tensor)
 
 WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25, 'y_mc':0.0}
@@ -180,7 +180,7 @@ def get_vector(X: Tensor, Y: Tensor, i0: int, i1: int):
 
 def get_force_xy(vec_sl: Tensor, veclen: Tensor, area: Tensor,
                   vel: Tensor, T: Tensor, P: Tensor, 
-                  i0: int, i1: int, paras: dict, ptype: str = 'Cp'):
+                  i0: int, i1: int, paras: Dict, ptype: str = 'Cp'):
     '''
     integrate the force on x and y direction
 
@@ -333,16 +333,29 @@ def get_force_1dc(geom: Tensor, profile: Tensor, aoa: Tensor):
     dfp = get_xyforce_1dc(geom, profile)
     return _xy_2_clc(dfp, aoa)
 
-# def get_massflux_1d(xcor: Tensor, ycor: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor):
-#     dx      = (xcor[1:] - xcor[:-1])
-#     dy      = (ycor[1:] - ycor[:-1])
-#     xvel    = 0.5 * (xvel[1:] + xvel[:-1])
-#     yvel    = 0.5 * (yvel[1:] + yvel[:-1])
-#     rho     = 0.5 * (rho[1:] + rho[:-1])
+def get_flux_1d(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor):
+    '''
+    obtain the mass and momentum flux through a line
 
-def get_flux_1d(xcor: Tensor, ycor: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor):
-    dx      = (xcor[1:] - xcor[:-1])
-    dy      = (ycor[1:] - ycor[:-1])
+    param:
+    ===
+    `geom`:    The geometry (x, y), shape: (2, N)
+    
+    `pressure`: The pressure on every line points, shape: (N, ); should be dimensional pressure profile
+    
+    `xvel`: x-direction velocity on every line points, shape: (N, )
+
+    `yvel`: y-direction velocity on every line points, shape: (N, )
+
+    `rho`: density on every line points, shape: (N, )
+
+    return:
+    ===
+    Tensor: (mass_flux, moment_flux)
+    '''
+    
+    dx      = (geom[0, 1:] - geom[0, :-1])
+    dy      = (geom[1, 1:] - geom[1, :-1])
     pressure = 0.5 * (pressure[1:] + pressure[:-1])
     xvel    = 0.5 * (xvel[1:] + xvel[:-1])
     yvel    = 0.5 * (yvel[1:] + yvel[:-1])

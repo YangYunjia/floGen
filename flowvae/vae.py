@@ -33,18 +33,29 @@ class frameVAE(nn.Module):
 
     paras:
     ===
-    - `latent_dim`: (int)   the total dimension of latent variable (include code dimension)
-    - `encoder`:    the encoder
-    - `decoder`:    the decoder
-    - `code_mode`:  the mode to introduce condition codes to vae
-        - `ed`:     
-    - `fldata`:     (default = None) a `ConditionDataset` defined with `dataset.py`
-        - only for code modes needs aux place to store avg latent variables
-    - `decoder_input_layer`:    (int, default = 0) the network between latent `z` and the decoder
-        - see the code
-    - `code_dim`:   the code dimension (same with which in the dataset)
-    - `code_layer`
-    
+
+    - `latent_dim`| `int` |
+        - the total dimension of latent variable (include code dimension)
+    - `encoder`| | the encoder
+    - `decoder`| | the decoder
+    - `code_mode`| `str` | the mode to introduce condition codes in the concatenator. See the table below.
+    - `code_dim`| `int` | 
+        - **Default**  `1` 
+        - the condition code dimension (same with that in the dataset)
+    - `device`|| 
+        - **Default**  `cuda:0`
+        - training device
+    - `dataset_size`| `Tuple` | 
+        - **Default** `None`
+        - (`code_mode` = `'im'`, `'semi'`, `'ex'`, `'ae'`)
+        - the size to initial the prior latent variable storage. The size should be ($N_f$, $N_c$)
+    - `decoder_input_layer`| `float` | 
+        - **Default**  `0`
+        - the amount of dense connect layers between latent variable `z` and the decoder input, see [Decoder input layers](#decoder-input-layers)|
+    - `code_layer`|`List`|
+        - **Default**  `[]`
+        - (`code_mode` = `'semi'`, `'ex'`, `'ae'`, `'ed'`, `ved`, `ved1`)
+        - The layers between the real condition code input and where it is concatenate to the latent variables, see [Coder input layers](#code-input-layers)
     
     '''
 
@@ -53,7 +64,7 @@ class frameVAE(nn.Module):
                  encoder: Encoder,
                  decoder: Decoder,
                  code_mode: str,
-                 fldata: ConditionDataset = None,
+                 dataset_size: Tuple[int, int] = None,
                  decoder_input_layer: int = 0,
                  code_dim: int = 1,
                  code_layer = [],
@@ -76,7 +87,7 @@ class frameVAE(nn.Module):
         self.series_data = {}
 
         if code_mode in ['semi', 'im', 'ex', 'ae']:
-            self.set_aux_data(fldata)
+            self.set_aux_data(dataset_size)
 
         self.encoder = encoder
         self.decoder = decoder
@@ -118,9 +129,9 @@ class frameVAE(nn.Module):
         self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
     
 
-    def set_aux_data(self, fldata: ConditionDataset):
-        n_airfoil = fldata.airfoil_num
-        n_condi   = fldata.condis_num
+    def set_aux_data(self, dataset_size: Tuple[int, int]):
+        n_airfoil = dataset_size[0]
+        n_condi   = dataset_size[1]
         n_z       = self.latent_dim - self.code_dim
         self.series_data = {
             'series_latent': torch.cat(
