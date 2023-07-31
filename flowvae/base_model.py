@@ -82,8 +82,6 @@ class convEncoder(Encoder):
         
         super().__init__(in_channels, last_size, hidden_dims)
 
-        _convs = []
-
         h0 = in_channels
 
         if kernel_sizes is None: kernel_sizes = [3 for _ in hidden_dims]
@@ -103,18 +101,38 @@ class convEncoder(Encoder):
             if 'pool' not in basic_layers.keys():   basic_layers['pool'] = nn.AvgPool2d
             if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
 
-        layers = []
+        # ** for old version **
+        # layers = []
+        # for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
+        #     layers.append(basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
+        #     if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h))
+        #     layers.append(basic_layers['actv']())
+        #     if kp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
+        #     h0 = h
+        # # DO NOT change to Modular list, otherwise old saves will fails
+        # self.convs = nn.Sequential(*layers)
+        # ** for old version **
+
+        _convs = []
         for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
+            layers = []
             layers.append(basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
             if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h))
             layers.append(basic_layers['actv']())
             if kp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
             h0 = h
-        # DO NOT change to Modular list, otherwise old saves will fails
-        self.convs = nn.Sequential(*layers)
+            _convs.append(nn.Sequential(*layers))
+        
+            self.convs = nn.ModuleList(_convs)
 
     def forward(self, inpt):
-        inpt = self.convs(inpt)
+        for conv in self.convs:
+            inpt = conv(inpt)
+        
+        # ** for old version **
+        # inpt = self.convs(inpt)
+        # ** for old version **
+
         # print(inpt.size(), len(self.convs))
         # raise
         return super().forward(inpt)
@@ -138,13 +156,12 @@ class convEncoder_Unet(convEncoder):
 
     def forward(self, inpt):
         self.feature_maps = []
-        if self.is_unet: self.feature_maps.append(inpt)
+        self.feature_maps.append(inpt)
         for conv in self.convs:
             inpt = conv(inpt)
-            # print(inpt.size(), len(self.convs))
             self.feature_maps.append(inpt)
         # raise
-        return super().forward(inpt)
+        return torch.flatten(inpt, start_dim=1)
 
 '''
 class conv2dEncoder(Encoder):
@@ -455,7 +472,7 @@ class convDecoder(Decoder):
             if 'deconv' not in basic_layers.keys(): basic_layers['deconv'] = IntpConv2d
             #   Another options include `ConvTranspose2d`
             if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-
+        self.basic_layers = basic_layers
         layers = []
 
         h0 = hidden_dims[0]
@@ -499,7 +516,7 @@ class convDecoder_Unet(convDecoder):
             _convs.append(nn.Sequential(*layers))
             
         self.convs = nn.ModuleList(_convs)
-        self.fl = self.basic_layers['conv'](unet_hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        self.last_conv = self.basic_layers['conv'](unet_hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
 
         self.is_unet = True
 

@@ -7,3 +7,4 @@ test*
 
 Calculation/
 *.txt
+*.npy
