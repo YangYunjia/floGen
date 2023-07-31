@@ -77,7 +77,7 @@ class convEncoder(Encoder):
                  pool_kernels: List[int] = None,
                  pool_strides: List[int] = None,
                  dimension: int = 1,
-                 basic_layers: Dict[nn.Module] = {}
+                 basic_layers: Dict = {}
                  ) -> None:
         
         super().__init__(in_channels, last_size, hidden_dims)
@@ -103,21 +103,19 @@ class convEncoder(Encoder):
             if 'pool' not in basic_layers.keys():   basic_layers['pool'] = nn.AvgPool2d
             if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
 
+        layers = []
         for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
-            layers = []
             layers.append(basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
             if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h))
             layers.append(basic_layers['actv']())
             if kp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
             h0 = h
-            _convs.append(nn.Sequential(*layers))
-        
-        self.convs = nn.ModuleList(_convs)
+        # DO NOT change to Modular list, otherwise old saves will fails
+        self.convs = nn.Sequential(*layers)
 
     def forward(self, inpt):
-        for conv in self.convs:
-            inpt = conv(inpt)
-            # print(inpt.size(), len(self.convs))
+        inpt = self.convs(inpt)
+        # print(inpt.size(), len(self.convs))
         # raise
         return super().forward(inpt)
 
@@ -202,12 +200,12 @@ class Resnet18Encoder(Encoder):
 
     def __init__(self,
                  in_channels: int,
-                 last_size: List[int, int],
+                 last_size: List[int],
                  hidden_dims: List, #  = [16, 32, 64, 128, 256]
                  num_blocks: List = None,
                  strides: List = None,
                  preactive: bool = False, 
-                 extra_first_conv: Tuple[int, int, int, int] = None,
+                 extra_first_conv: Tuple[int] = None,
                  force_last_size: bool = False) -> None:
         
         super().__init__(in_channels, last_size, hidden_dims)
@@ -331,7 +329,7 @@ class IntpConv(nn.Module):
         self.size = size
         self.mode = mode
         self.conv = nn.Identity()
-        self.padding = (kernel_size - 1) / 2
+        self.padding = int((kernel_size - 1) / 2)
 
     def forward(self, inpt):
         result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode, align_corners=False)
@@ -437,14 +435,13 @@ class convDecoder(Decoder):
                  sizes: List[int],       # Tuple = (26, 101, 401)
                  kernel_sizes: List[int] = None,
                  dimension: int = 1,
-                 basic_layers: Dict[nn.Module] = {}
+                 basic_layers: Dict = {}
                  ) -> None:
         
         super().__init__(out_channels)
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
-        
-        if kernel_sizes is None: kernel_sizes = [3 for _ in hidden_dims]
+        if kernel_sizes is None: self.kernel_sizes = [3 for _ in hidden_dims]
 
         if dimension == 1:
             if 'conv' not in basic_layers.keys():   basic_layers['conv'] = nn.Conv1d
@@ -458,28 +455,23 @@ class convDecoder(Decoder):
             if 'deconv' not in basic_layers.keys(): basic_layers['deconv'] = IntpConv2d
             #   Another options include `ConvTranspose2d`
             if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-        
-        if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-        
-        _convs = []
+
+        layers = []
+
         h0 = hidden_dims[0]
 
-        for h, s, k in zip(hidden_dims[1:], sizes, kernel_sizes[:-1]):
-            layers = []
+        for h, s, k in zip(hidden_dims[1:], sizes, self.kernel_sizes[:-1]):
             layers.append(basic_layers['deconv'](in_channels=h0, out_channels=h, kernel_size=k, size=s))
-            if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h))
             layers.append(basic_layers['actv']())
             h0 = h
-            _convs.append(nn.Sequential(*layers))
-            
-        self.convs = nn.ModuleList(_convs)
-        self.fl = basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        self.convs = nn.Sequential(*layers)
+
+        self.last_conv = basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, inpt: torch.Tensor):
         inpt = inpt.view(self.inpt_shape)
-        for conv in self.convs:
-            inpt = conv(inpt)
-        return self.fl(inpt)
+        result = self.convs(inpt)
+        return self.last_conv(result)
 
 class convDecoder_Unet(convDecoder):
 
@@ -496,6 +488,18 @@ class convDecoder_Unet(convDecoder):
         # Here cover the value from the initialization of the super class
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
+
+        _convs = []
+
+        for uh, h, s, k in zip(unet_hidden_dims[:-1], hidden_dims[1:], sizes, self.kernel_sizes[:-1]):
+            layers = []
+            layers.append(self.basic_layers['deconv'](in_channels=uh, out_channels=h, kernel_size=k, size=s))
+            if self.basic_layers['bn'] is not None:  layers.append(self.basic_layers['bn'](h))
+            layers.append(self.basic_layers['actv']())
+            _convs.append(nn.Sequential(*layers))
+            
+        self.convs = nn.ModuleList(_convs)
+        self.fl = self.basic_layers['conv'](unet_hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
 
         self.is_unet = True
 
@@ -518,11 +522,11 @@ class Resnet18Decoder(Decoder):
 
     def __init__(self,
                  out_channels: int,
-                 last_size: List[int, int],
+                 last_size: List[int],
                  hidden_dims: List, #  = [16, 16, 32, 64, 128, 256], # The order is reversed!
                  num_blocks: List = None, # = [2, 2, 2, 2, 2],
                  scales: List = None, # = [2, 2, 2, 2, 2, 2],
-                 output_size: List[int, int] = None, # if is not None, addition layer to interpolate
+                 output_size: List[int] = None, # if is not None, addition layer to interpolate
                  basic_layers: Dict = {}):
         
         super().__init__(out_channels)

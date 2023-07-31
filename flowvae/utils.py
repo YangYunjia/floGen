@@ -4,7 +4,7 @@ import os
 from torch.utils.data import Subset
 import torch
 
-from .base_model import conv1dEncoder, conv1dDecoder, conv1dEncoder_Unet, conv1dDecoder_Unet
+from .base_model import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
 from .vae import frameVAE, Unet
 
 class MDCounter(dict):
@@ -101,47 +101,47 @@ def load_encoder_decoder(_id):
     #     _encoder = bm.mlpEncoder(in_channels=802, hidden_dims=[256, 128, 64])
     #     _decoder = bm.mlpDecoder(in_channels=latent_dim, out_channels=401, hidden_dims=[64, 128, 256])
     if _id == 1:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 512, 256, 128])
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 512, 256, 128], sizes=[26, 101, 401])
     elif _id == 2:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 256, 128, 64])
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 256, 128, 64], sizes=[26, 101, 401])
     elif _id == 3:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128])
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128], sizes=[26, 101, 401])
     elif _id == 4:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3,0,3,0], pool_strides=[2,0,2,0])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128])
+        _encoder = convEncoder(in_channels=2, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3,0,3,0], pool_strides=[2,0,2,0])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128], sizes=[26, 101, 401])
     elif _id == 5:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64])
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes=[26, 101, 401])
     elif _id == 51:
-        _encoder = conv1dEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], 
+        _encoder = convEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], 
                                             sizes = (24, 100, 401), encoder_hidden_dims=[256, 128, 64, 2])
     elif _id == 52:
-        _encoder = conv1dEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
-        _decoder = conv1dDecoder_Unet(out_channels=2, last_size=[5], hidden_dims=[256, 128, 64, 64], 
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = convDecoder_Unet(out_channels=2, last_size=[5], hidden_dims=[256, 128, 64, 64], 
                                             sizes = (24, 100, 401), encoder_hidden_dims=[256, 128, 64, 3])
     elif _id == 82:
-        _encoder = conv1dEncoder_Unet(in_channels=3, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3, 3, 0, 0])
-        _decoder = conv1dDecoder_Unet(out_channels=2, last_size=[6], hidden_dims=[256, 128, 128, 64, 64], 
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3, 3, 0, 0])
+        _decoder = convDecoder_Unet(out_channels=2, last_size=[6], hidden_dims=[256, 128, 128, 64, 64], 
                                             sizes = (12, 24, 100, 401), encoder_hidden_dims=[256, 128, 128, 64, 3])
     elif _id == 92:
-        _encoder = conv1dEncoder_Unet(in_channels=3, last_size=[7], hidden_dims=[64, 128, 128, 256, 256], pool_kernels=[3, 0, 0, 0, 0])
-        _decoder = conv1dDecoder_Unet(out_channels=2, last_size=[7], hidden_dims=[256, 256, 128, 128, 64, 64], 
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[7], hidden_dims=[64, 128, 128, 256, 256], pool_kernels=[3, 0, 0, 0, 0])
+        _decoder = convDecoder_Unet(out_channels=2, last_size=[7], hidden_dims=[256, 256, 128, 128, 64, 64], 
                                             sizes = (13, 25, 50, 100, 401), encoder_hidden_dims=[256, 256, 128, 128, 64, 3])
     
     elif _id == 6:
-        _encoder = conv1dEncoder(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
-        _decoder = conv1dDecoder(out_channels=1, last_size=[5], hidden_dims=[128, 64, 32, 32])
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
+        _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[128, 64, 32, 32], sizes=[26, 101, 401])
     elif _id == 61:
-        _encoder = conv1dEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
-        _decoder = conv1dDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[128, 64, 32, 32],
+        _encoder = convEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
+        _decoder = convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[128, 64, 32, 32],
                                             sizes = (24, 100, 401), encoder_hidden_dims=[128, 64, 32, 2])
     elif _id == 72:
-        _encoder = conv1dEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[128, 256, 512])
-        _decoder = conv1dDecoder_Unet(out_channels=2, last_size=[5], hidden_dims=[512, 256, 128, 128], 
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[128, 256, 512])
+        _decoder = convDecoder_Unet(out_channels=2, last_size=[5], hidden_dims=[512, 256, 128, 128], 
                                             sizes = (24, 100, 401), encoder_hidden_dims=[512, 256, 128, 3])
 
     if _id < 20:

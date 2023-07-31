@@ -6,6 +6,7 @@ from scipy.stats import theilslopes
 
 import numpy as np
 import math
+import copy
 
 import matplotlib.pyplot as plt
 
@@ -118,9 +119,20 @@ class Series():
         with open(name, 'w') as f:
             f.writelines(lines)
 
+    def down_sampling(self, x: np.array, method: str):
+        for var in self.series.keys(): 
+            if var == 'AoA': continue
+            # print(var, len(self.series['AoA']), len(self.series[var])) 
+            if method == 'pchip':
+                f = PchipInterpolator(self.series['AoA'], self.series[var])
+            elif method == '1d':
+                f = interp1d(self.series['AoA'], self.series[var], bounds_error=False, fill_value='extrapolate')
+            self.series[var] = f(x)
+        self.series['AoA'] = copy.deepcopy(x)
+
 class Buffet():
 
-    def __init__(self, logtype=0, **kwargs) -> None:
+    def __init__(self, method='lift_curve_break',logtype=0, **kwargs) -> None:
 
         '''
         buffet judger from aerodynamic curves
@@ -139,7 +151,7 @@ class Buffet():
         '''
 
         self.logtype = logtype
-
+        self.method = method
         self.paras = {}
         self.aoadelta = 0.001
         self.process_values = []
@@ -174,13 +186,18 @@ class Buffet():
         if 'crodr' not in kwargs.keys():        self.paras['crodr'] = 2
         if 'crmod' not in kwargs.keys():        self.paras['crmod'] = 'max'
 
-
-
-        
     def log(self, s: str):
 
         if self.logtype > 0:
             print(s)
+
+    def buffet_onset(self, *args, **kwargs):
+
+        if self.method in ['lift_curve_break']: return self.lift_curve_break(*args, **kwargs)
+        elif self.method in ['adaptive_lift_curve_break']: return self.adaptive_lift_curve_break(*args, **kwargs)
+        elif self.method in ['curve_slope_diff']: return self.curve_slope_diff(*args, **kwargs)
+        elif self.method in ['cruve_critical_value']: return self.cruve_critical_value(*args, **kwargs)
+        elif self.method in ['shock_to_maxcuv']: return self.shock_to_maxcuv(*args, **kwargs)
 
     @staticmethod
     def __zero(x):
@@ -439,8 +456,6 @@ class Buffet():
             
             i_ub = np.argmin(np.abs(AoAs - max_aoa)) + 1
             AoA_ub = max_aoa
-
-
 
         slope, intercept, low_slope, high_slope = theilslopes(y[i_lb:i_ub+1], x[i_lb:i_ub+1], alpha=self.paras['lstsa'])
             
@@ -768,8 +783,17 @@ class Buffet():
         else:
             CDs = None
 
-        ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=CDs, X1s=seri.X1, cl_c=cl_c)
-        AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.mUy)
+        if 'X1' in seri.series.keys():
+            X1s = seri.Cd
+        else:
+            X1s = None
+
+        ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=CDs, X1s=X1s, cl_c=cl_c)
+        if 'mUy' in seri.series.keys():
+
+            AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.mUy)
+        else:
+            AoA_sep = ll['AoA_ub'] + 0.5
 
         #* -----------------------------------
         #* find buffet onset

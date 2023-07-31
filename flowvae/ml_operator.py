@@ -35,16 +35,18 @@ class AEOperator:
     def __init__(self, opt_name: str, 
                        model: frameVAE, 
                        dataset: ConditionDataset,
-                       recon_type: str = 'field',
+                       output_folder="save", 
+                       init_lr=0.01, 
+                       num_epochs: int = 50,
+                       split_train_ratio = 0.9,
+                       recover_split: str = None,
+                       batch_size: int = 8, 
+                       shuffle=True,
+                       ref=False,
                        input_channels: Tuple[int, int] = (None, None), 
                        recon_channels: Tuple[int, int] =(1, None),
-                       num_epochs: int = 50,
-                       batch_size: int = 8, 
-                       recover_split: str = None,
-                       split_train_ratio = 0.9,
-                       output_folder="save", 
-                       shuffle=True, ref=False, num_workers=0,
-                       init_lr=0.01):
+                       recon_type: str = 'field'
+                       ):
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
@@ -58,7 +60,7 @@ class AEOperator:
         self.paras = {}
         self.paras['num_epochs'] = num_epochs
         self.paras['batch_size'] = batch_size
-        self.paras['num_workers'] = num_workers
+        self.paras['num_workers'] = 0
         self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
         self.paras['ref'] = ref
