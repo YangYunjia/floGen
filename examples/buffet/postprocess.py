@@ -32,7 +32,7 @@ if __name__ == '__main__':
     # load trained model
     fldata = ConditionDataset('500', n_c=20, c_mtd='load', c_no=0, test=100, data_base='data\\')
     _enc = convEncoder(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
-    _dec = convDecoder(out_channels=1, last_size=[5], hidden_dims=[128, 64, 32, 16], sizes=[26, 101, 401], dimension=1)
+    _dec = convDecoder(out_channels=1, last_size=[5], hidden_dims=[64, 128, 256, 128], sizes=[26, 101, 401], dimension=1)
     vae_model = frameVAE(latent_dim=12, encoder=_enc, decoder=_dec, decoder_input_layer=1, code_mode=code_mode, device=device)
     op = AEOperator(folder, vae_model, fldata, ref=ref, output_folder=ml_dir)    
     op.set_scheduler('LambdaLR', lr_lambda=warmup_lr)
@@ -101,6 +101,7 @@ if __name__ == '__main__':
     plt.plot(buffet_loss[:, 0, 1], buffet_loss[:, 1, 1], 'o')
     plt.show()
 
-    print(np.mean(np.abs(buffet_loss[:, 0, :] - buffet_loss[:, 1, :]), axis=0))
+    print(np.mean(np.abs(buffet_loss[:400, 0, :] - buffet_loss[:400, 1, :]), axis=0))
+    print(np.mean(np.abs(buffet_loss[400:, 0, :] - buffet_loss[400:, 1, :]), axis=0))
 
     
