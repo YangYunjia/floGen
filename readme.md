@@ -45,6 +45,22 @@ Therefore, there's an option in flowVAE to make the model predicting the **diffe
 
 This section introduces how to set up and run the prediction model.
 
+## Installation
+
+You can either fork the code or download the latest .zip to your working folder.
+
+Then, open the command at the working folde and install the `flowvae` with:
+
+```powershell
+python setup.py install
+```
+
+If you want to make some modification to the code, use 
+
+```powershell
+python setup.py develop
+```
+
 ## Dataset establishment
 
 The first thing to do before training is to establish a dataset. The dataset is slightly different from the ordinary one, a **series dataset**.
@@ -71,7 +87,7 @@ where the flowfields for the same $f$ is called one **series**, or one group.
 
 ### Prepare data
 
-The data should be stored in two `.npy` files in advance. (there are some examples in the folder `/app`).
+The data should be stored in two `.npy` files in advance. (there are some examples in the folder `examples`).
 
 #### data
 
@@ -122,7 +138,7 @@ The arguments of the `ConditionalDataset` is:
 |-|-|-|
 |`file_name`|`str`| name of the data file||
 |`d_c`| `int` | dimension of the condition values|
-|`c_mtd`|`str`| for each series, sometimes we want to choose *some* of it for training. This argument decides how to choose the conditions used in training<br/>- `fix` :   by the index in `c_map`<br/>-`random`: randomly select `n_c` conditions when initializing the dataset<br/>`all`:    all the conditions will be used to training<br/>`exrf`:   except the index of prior flowfield conditions<br/>`load`:   load the selection method by the file number `c_no` (use `save_data_idx(c_no)` to save)|
+|`c_mtd`|`str`| for each series, sometimes we want to choose *some* of it for training. This argument decides how to choose the conditions used in training<br/>- `fix` :   by the index in `c_map`<br/>-`random`: randomly select `n_c` conditions when initializing the dataset<br/>- `all`:    all the conditions will be used to training<br/>- `exrf`:   except the index of prior flowfield conditions<br/>- `load`:   load the selection method by the file number `c_no` (use `save_data_idx(c_no)` to save)|
 |`n_c`|`int`| **Default:** `None` <br/> (`c_map` = `random`) <br/> number of the condition of one airfoil should the dataset give out
 |`c_map`| `List` | **Default:** `None` <br/> (`c_map` = `fix`) <br/>fix index number
 |`c_no`| `int` | **Default:** `-1` <br/> (`c_map` = `load`) <br/>  number of saved data index
@@ -188,7 +204,7 @@ To construct the model, we first need to assign the proper encoder and decoder:
 from flowvae.base_model import convEncoder_Unet, convDecoder_Unet
 
 _encoder = convEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-_decoder = convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = (24, 100, 401), encoder_hidden_dims=[256, 128, 64, 2])
+_decoder = convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = [24, 100, 401], encoder_hidden_dims=[256, 128, 64, 2])
 ```
 The table below shows the available encoder and decoder classes.
 
@@ -291,6 +307,10 @@ When using different code concatenate modes, the involved basic loss terms are n
 |index|KL-p|KL-p|KL-p|MSE-p||KL-n|KL-n|
 |code|MSE|MSE|||||
 
+- **KL-p**:  Kullback-Leibler divergence (KL divergence) to the prior latent variables $z_r$. 
+- **MSE-p**:  Mean square error to the prior latent variables $z_r$. 
+- **KL-n**：  KL divergence to the standard normal distribution $\mathcal N(0,1)$.
+
 The physics-based loss terms can be added as you want. It is only related to the reconstructed flowfield.
 
 To manipulate the loss parameters, you can use the following sentence:
@@ -325,8 +345,8 @@ The arguments related to the physics-based loss are:
 Then we need to set the optimizer and the scheduler to train the model. They are based on `torch.optim`, and assigned to the operator as follows:
 
 ```python
-op.set_optimizer(<optimizer_name>, <keywork arguments of the optimizer>)
-op.set_scheduler(<scheduler_name>, <keywork arguments of the scheduler>)
+op.set_optimizer(<optimizer_name>, <keyword arguments of the optimizer>)
+op.set_scheduler(<scheduler_name>, <keyword arguments of the scheduler>)
 ```
 
 Both the `set_optimizer` and `set_scheduler` have the first argument to be the *Class name* in `torch.optim` and `torch.optim.lr_scheduler`. Then the rest arguments should be the keyword arguments of the assigned optimizer and scheduler. Here is an example:
@@ -379,9 +399,41 @@ The arguments
 
 ## Post process
 
-The flowVAE provides several useful functions to post-process the reconstructed flowfield data. Most of them aim to obtain the aerodynamic coefficients of the surfaces in the flowfield. 
+After the model is trained, the flowVAE provides several useful functions to post-process the reconstructed flowfield data. Most of them aim to obtain the aerodynamic coefficients of the surfaces in the flowfield.
 
-First, there are some functions to obtain the angle of attack, lift, and drag from a 2D flowfield. They are listed in the table below:
+### Use the model to predict
+
+First, we need to call the model to predict the flowfield of the new airfoil and/or under new operating conditions. This can be done with the `encode` and `sample` functions in the `frameVAE` class. The `encode` is used to obtain the latent variables (`mu` and `log_var`) from the new prior flowfield, and the `sample` generate the new flowfield with the given operating condition (`code`), and the latent variables. Here is an example:
+
+```python
+#* construct the prior flowfield and prior condition
+aoa_ref = torch,from_numpy(np.array([1.0])) # prior condition is 1.0
+data_ref = torch.from_numpy(np.concatenate(geom, field_ref), axis=0) # prior flowfield
+data_ref = data_ref.float().unsqueeze(0).to(device) # add the batch channel and move to device
+
+#* use the encoder to obtain latent variables (or its distribution)
+mu, log_var = vae_model.encode(data_r)
+
+#* generate the airfoil's new profiles under other operating conditions with the model
+for aoa in aoas:
+    aoa_residual = aoa - aoa_ref # get residual operating conditions
+    field_residual = vae_model.sample(num_samples=1, code=aoa_residual, mu=mu, log_var=log_var) # sample the latent variables and get the residual field
+    field_reconstruct = field_residual + field_ref
+
+```
+
+There are some remarks to the above code:
+
+1. The function `encode` takes the batch version of the input. So don't forget to add the batch channel with `unsqueeze(0)` if the input don't have that channel.
+2. During prediction, no matter what the concatenation strategy is, the decoder only need the latent varialbes of the prior field. So `mu` and `log_var` can obtained in advance, and no need for update during the prediction of one airfoil.
+3. The `vae_model.sample` is automatically adaptive to the concatenation strategy. It means that:
+    - if the strategy is stochmatic, several latent variables will be sampled from the distribution of the l.v. and be input to the decoder, and each of the latent variables will lead to a result reconstruct field. This gives a way to evaluate the uncertainty of the reconstruct field. The number of the samples can be assigned by `num_sample`.
+    - if the strategy is deterministic, no sampling process takes place, and the argument `log_var` will be ignored. It is also no need to assign a `num_sample` greater than one.
+4. The Unet decoder needs feature maps from the encoder, but the batch dimension of the feature maps (usually is 1) may be different from the decoder (equals `num_sample`). The flowVAE provide a function to multiplize the encoder's feature map: `vae_model.repeat_feature_maps(num_sample)`
+
+### Calculate aerodynamic coefficients from the reconstruct fields
+
+There are some functions to obtain the angle of attack, lift, and drag from a 2D flowfield. They are listed in the table below:
 
 |name|description|arguments|returns|
 |-|-|-|-|
@@ -944,3 +996,73 @@ $$\mathcal L_\text{Mass} =\Phi_{\mathrm{m}}=\max \left(0, \sum_{i j} \Phi_{\math
 
 
 # Applications
+
+Here we provide some applications of the flowVAE. You can find the corresponding `.py` files in `examples`, and the data files can be obtained by communicating with the author.
+
+## Buffet onset estimation
+
+Transonic buffet is an dangerous phenomenon happens on the upper surface of the supercritical airfoils, so it is very important to predict the buffet onset (the angle of attack that the buffet happens) for the airfoils. Although transonic buffet is an unsteady phenonmenon, it can be predicted with engineering method based on airfoil's aerodynamic curves. The curves including the lift curve (the curve of the lift coefficients v.s. the angles of attack) and the pitching moment curve.
+
+Here, we use the flowVAE model as a off-design flowfield generator to predict the aerodynamic curves from the cruise flowfield. The flowVAE provide several new Classes to master that job, they are inside `flowvae.app.buffet`, and we also have some examples avilable in `examples/buffet` for establishing dataset, training model, and using the model to predict buffet onset. In the following, we will introduce the Classes in `buffet.py`
+
+### Collecting the series of aerodynamic coefficients
+
+The support class to store a series of aerodynamic coefficients for the prediction of the buffet onset.
+
+For each airfoil, we can construct a `Series` class:
+
+```python
+seri_r = Series(['AoA', 'Cl', 'Cd'])
+```
+
+This means the series as three aerodynamic variables: the angle of attacks (`AoA`), the lift coefficient (`Cl`) and the drag coefficient (`Cd`).
+
+> **Remark**: In `Series`, the key `AoA` is seen as the main key, and must be assigned when initialization.
+
+Then, after we predicting the aerodynamic coefficients of the airfoil under an angle of attack, we can use the following code to add it to the series:
+
+```python
+seri_r.add(x={'AoA': aoa_r, 'Cl': cl_r, 'Cd': cd_r})
+```
+
+The `add` function of `Series` will **automatically** sort the input values with the key `AoA`.
+
+If we already have a array of the coefficients, we can directly assign it to the series with:
+
+```python
+seri_r = Series(['AoA', 'Cl', 'Cd'], datas={'AoA': aoas, 'Cl': clss, 'Cd', cdss})
+```
+
+where `aoas`, `clss`, and `cdss` should be  `np.array`. The sorting will not automatically called in this case, if needed, use
+
+```python
+seri_r.sort()
+```
+
+### Estimating the buffet onset
+
+With the series of aerodynamic coefficients, we can predict the buffet onset with a buffet-onset-estimitor defined as class `Buffet`. It should be initialized with
+
+```python
+buffet_cri = Buffet(method='lift_curve_break', lslmtd=2, lsumtd='error', lsuth2=0.01, intp='1d')
+```
+
+The argument `method` defines how to estimate the buffet onset, and the rest coefficients defines the parameters of this method.
+
+Then, we can predict the onset with:
+
+```python
+buf_r = buffet_cri.buffet_onset(seri_r, cl_c=cl_cruise)
+```
+
+The first argument is the series data of the airfoil, and there may also be some parameters that is related to the airfoil itself. They should be input to the function as well.
+
+The avilable buffet onset estimation method include:
+
+|name|description|
+|-|-|
+|`lift_curve_break`|lift curve break method, estimate the buffet onset with the intersection between the lift curve and the shifted linear section of the lift curve
+|`adaptive_lift_curve_break`|adaptive method to decide the angle of attack to simulate and give the buffet onset with the lift curve break method|
+|`curve_slope_diff`| estimate the buffet onset when the slope of the given curve (i.e., the lift curve or pitching moment curve) changes a given value according to the linear section|
+|`cruve_critical_value`| estimate the buffet onset at the maximum (or the minimum) of a curve  (i.e., the pitching moment curve or the curvature curve of the pitching moment)
+|`shock_to_maxcuv`| estimate the buffet onset when the shock wave on upper surface reach the maximum curvature point of the airfoil geometry|
