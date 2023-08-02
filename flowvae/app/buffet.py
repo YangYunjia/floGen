@@ -93,11 +93,15 @@ class Series():
         for k in x.keys():
             self.series[k].append(x[k])
 
+        self.sort()
+        self._length += 1
+
+    def sort(self):
+        
         ii_sort = np.argsort(self.series['AoA']).tolist()
-        for k in x.keys():
+        for k in self.series.keys():
             self.series[k]= [self.series[k][i] for i in ii_sort]
 
-        self._length += 1
 
     def print_tecplot(self, name='series.dat'):
 
@@ -429,7 +433,6 @@ class Buffet():
 
             i_ub = min(i_ub+add_right, x.shape[0]-1)
             AoA_ub = x[i_ub]
-
         else:
             if self.paras['intp'] == 'pchip':
                 f_cl_aoa_all = PchipInterpolator(AoAs, np.array(CLs))
