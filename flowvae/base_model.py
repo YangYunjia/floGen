@@ -119,7 +119,7 @@ class convEncoder(Encoder):
             layers.append(basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
             if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h))
             layers.append(basic_layers['actv']())
-            if kp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
+            if kp > 0 and sp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
             h0 = h
             _convs.append(nn.Sequential(*layers))
         
@@ -145,10 +145,12 @@ class convEncoder_Unet(convEncoder):
                  strides: List = None,
                  paddings: List = None,
                  pool_kernels: List = None,
-                 pool_strides: List = None
+                 pool_strides: List = None,
+                 dimension: int = 1,
+                 basic_layers: Dict = {}
                  ) -> None:
         
-        super().__init__(in_channels, last_size, hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides)
+        super().__init__(in_channels, last_size, hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides, dimension, basic_layers)
         
         # for U-net
         self.is_unet = True
@@ -160,6 +162,7 @@ class convEncoder_Unet(convEncoder):
         for conv in self.convs:
             inpt = conv(inpt)
             self.feature_maps.append(inpt)
+            # print(inpt.size())
         # raise
         return torch.flatten(inpt, start_dim=1)
 
@@ -496,10 +499,13 @@ class convDecoder_Unet(convDecoder):
                  last_size: List[int], 
                  hidden_dims: List[int], 
                  sizes: List[int], 
-                 encoder_hidden_dims: List[int]) -> None:
+                 encoder_hidden_dims: List[int],
+                 kernel_sizes: List[int] = None,
+                 dimension: int = 1,
+                 basic_layers: Dict = {}) -> None:
         
         unet_hidden_dims = [hidden_dims[i] + encoder_hidden_dims[i] for i in range(len(hidden_dims))]
-        super().__init__(out_channels, last_size, unet_hidden_dims, sizes)
+        super().__init__(out_channels, last_size, unet_hidden_dims, sizes, kernel_sizes, dimension, basic_layers)
 
         # The input shape and last flatten size should use non-unet hidden dimension
         # Here cover the value from the initialization of the super class

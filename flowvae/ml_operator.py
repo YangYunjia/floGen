@@ -77,7 +77,7 @@ class AEOperator:
                                          'aero_weight':     1e-5,
                                          'aero_epoch':      299,
                                          'ge_epoch':        1,
-                                         'ge_weight':       0.1}
+                                         'ge_weight':       0.0}    # default 0.1 before 2023.8.4
         
         self.dataset = {}
         if dataset is not None:

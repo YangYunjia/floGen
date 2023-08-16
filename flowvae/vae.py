@@ -17,7 +17,7 @@ from flowvae.dataset import ConditionDataset
 from flowvae.base_model import Encoder, Decoder, _decoder_input
 
 import numpy as np
-
+import copy
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 # from torch import tensor as Tensor
 
@@ -90,7 +90,10 @@ class frameVAE(nn.Module):
             self.set_aux_data(dataset_size)
 
         self.encoder = encoder
-        self.decoder = decoder
+        if isinstance(decoder, Decoder):
+            self.decoder = decoder
+        elif isinstance(decoder, list):
+            self.decoders = nn.ModuleList(decoder)
 
         ld = self.latent_dim
         cd = self.code_dim
@@ -126,8 +129,14 @@ class frameVAE(nn.Module):
         else:
             self.fc_code = nn.Identity()
         
-        self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
-    
+        if isinstance(decoder, Decoder):
+            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
+        elif isinstance(decoder, list):
+            _decoder_inputs = []
+            for decoder in self.decoders:
+                decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
+                _decoder_inputs.append(decoder_input)
+            self.decoder_inputs = nn.ModuleList(_decoder_inputs)
 
     def set_aux_data(self, dataset_size: Tuple[int, int]):
         n_airfoil = dataset_size[0]
@@ -194,7 +203,6 @@ class frameVAE(nn.Module):
         """
         # input channel control is moved to ml_operate, ori: input[:, :self.in_channel]
         result = self.encoder(input)
-
         if self.cm in ['ex']:
             result = torch.cat([result, kwargs['code']], dim=1)
             mu = self.fc_mu(result)
@@ -605,8 +613,13 @@ class Unet(frameVAE):
 
     def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
         super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, device, **kwargs)
-        if not (self.encoder.is_unet and self.decoder.is_unet):
-            raise Exception('Encoder or Decoder does not support U-Net')
+        if isinstance(decoder, Decoder):
+            if not (self.encoder.is_unet and self.decoder.is_unet):
+                raise Exception('Encoder or Decoder does not support U-Net')
+        elif isinstance(decoder, list):
+            for decoder in self.decoders:
+                if not (self.encoder.is_unet and decoder.is_unet):
+                    raise Exception('Encoder or Decoder does not support U-Net')
 
     def repeat_feature_maps(self, n):
         for idx in range(len(self.encoder.feature_maps)):
@@ -620,6 +633,19 @@ class Unet(frameVAE):
 
         return result
 
+class Md_Unet(Unet):
+
+    def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
+        # if self.split_decoder:
+        results = []
+        for decoder, decoder_input in zip(self.decoders, self.decoder_inputs):
+            result = decoder_input(z)
+            result = decoder(result, encoder_feature_map=self.encoder.feature_maps)
+            results.append(result)
+        # print(result.size())
+        cat_results = torch.cat(results, dim=1)
+        # print(cat_results.size())
+        return cat_results
 
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0

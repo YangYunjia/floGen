@@ -5,7 +5,7 @@ from torch.utils.data import Subset
 import torch
 
 from .base_model import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
-from .vae import frameVAE, Unet
+from .vae import frameVAE, Unet, Md_Unet
 
 class MDCounter(dict):
     '''
@@ -109,6 +109,12 @@ def load_encoder_decoder(_id):
     elif _id == 3:
         _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128], sizes=[26, 101, 401])
+    elif _id == 33:
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = [convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[512, 256, 128, 128], 
+                                        sizes=[24, 100, 401], encoder_hidden_dims=[256, 128, 64, 3]),
+                    convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[512, 256, 128, 128], 
+                                        sizes=[24, 100, 401], encoder_hidden_dims=[256, 128, 64, 3])]
     elif _id == 4:
         _encoder = convEncoder(in_channels=2, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3,0,3,0], pool_strides=[2,0,2,0])
         _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[512, 256, 256, 128], sizes=[26, 101, 401])
@@ -123,6 +129,12 @@ def load_encoder_decoder(_id):
         _encoder = convEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = convDecoder_Unet(out_channels=2, last_size=[5], hidden_dims=[256, 128, 64, 64], 
                                             sizes = (24, 100, 401), encoder_hidden_dims=[256, 128, 64, 3])
+    elif _id == 53:
+        _encoder = convEncoder_Unet(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = [convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], 
+                                            sizes = [24, 100, 401], encoder_hidden_dims=[256, 128, 64, 3]),
+                    convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], 
+                                            sizes = [24, 100, 401], encoder_hidden_dims=[256, 128, 64, 3])]
     elif _id == 82:
         _encoder = convEncoder_Unet(in_channels=3, last_size=[6], hidden_dims=[64, 128, 128, 256], pool_kernels=[3, 3, 0, 0])
         _decoder = convDecoder_Unet(out_channels=2, last_size=[6], hidden_dims=[256, 128, 128, 64, 64], 
@@ -146,6 +158,9 @@ def load_encoder_decoder(_id):
 
     if _id < 20:
         _model_type = frameVAE
+    elif _id in [33, 53]:
+        print('model is Md_Unet')
+        _model_type = Md_Unet
     else:
         _model_type = Unet
 

@@ -153,6 +153,8 @@ class ConditionDataset(Dataset):
                     elif c_mtd == 'exrf':
                         c_map = list(range(self.condis_all_num[i]))
                         c_map.remove((self.ref_index[i] - self.condis_st[i]))
+                    elif c_mtd == 'fix':
+                        pass
                     else:
                         raise KeyError()
 
