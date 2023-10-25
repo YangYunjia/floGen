@@ -27,7 +27,7 @@ Tensor = NewType('Tensor', torch.tensor)
 
 from flowvae.post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
-class frameVAE(nn.Module):
+class EncoderDecoder(nn.Module):
     '''
     the model of VAE
 
@@ -72,7 +72,7 @@ class frameVAE(nn.Module):
                  **kwargs) -> None:
 
 
-        super(frameVAE, self).__init__()
+        super().__init__()
         
         self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
         self.code_dim = code_dim   # the code dimension (same with which in the dataset)
@@ -609,7 +609,27 @@ class frameVAE(nn.Module):
         else:
             raise AttributeError
 
-class Unet(frameVAE):
+class frameVAE(EncoderDecoder):
+
+    def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, dataset_size: Tuple[int, int] = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
+        super().__init__(latent_dim, encoder, decoder, code_mode, dataset_size, decoder_input_layer, code_dim, code_layer, device, **kwargs)
+        print('Warning: the class frameVAE is renamed to EncoderDecoder')
+
+class BranchEncoderDecoder(EncoderDecoder):
+    
+    def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
+        # if self.split_decoder:
+        results = []
+        for decoder, decoder_input in zip(self.decoders, self.decoder_inputs):
+            result = decoder_input(z)
+            result = decoder(result)
+            results.append(result)
+        # print(result.size())
+        cat_results = torch.cat(results, dim=1)
+        # print(cat_results.size())
+        return cat_results
+
+class Unet(EncoderDecoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
         super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, device, **kwargs)
@@ -633,7 +653,7 @@ class Unet(frameVAE):
 
         return result
 
-class Md_Unet(Unet):
+class BranchUnet(Unet):
 
     def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
         # if self.split_decoder:

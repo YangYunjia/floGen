@@ -1,4 +1,4 @@
-from flowvae.vae import frameVAE
+from flowvae.vae import EncoderDecoder
 from flowvae.ml_operator import AEOperator
 from flowvae.dataset import ConditionDataset
 from flowvae.base_model import convDecoder, convEncoder
@@ -20,7 +20,7 @@ if __name__ == '__main__':
     buffet_loss = np.zeros((501, 2, 2))
 
     # define parameters
-    folder = 'test'
+    folder = 'testrun'
     device = 'cuda:0'
     latent_dim = 12
     code_mode = 'ed'
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     fldata = ConditionDataset('500', n_c=20, c_mtd='load', c_no=0, test=100, data_base='data\\')
     _enc = convEncoder(in_channels=2, last_size=[5], hidden_dims=[32, 64, 128])
     _dec = convDecoder(out_channels=1, last_size=[5], hidden_dims=[64, 128, 256, 128], sizes=[26, 101, 401], dimension=1)
-    vae_model = frameVAE(latent_dim=12, encoder=_enc, decoder=_dec, decoder_input_layer=1, code_mode=code_mode, device=device)
+    vae_model = EncoderDecoder(latent_dim=12, encoder=_enc, decoder=_dec, decoder_input_layer=1, code_mode=code_mode, device=device)
     op = AEOperator(folder, vae_model, fldata, ref=ref, output_folder=ml_dir)    
     op.set_scheduler('LambdaLR', lr_lambda=warmup_lr)
     op.load_checkpoint(299)
