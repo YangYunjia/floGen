@@ -58,7 +58,18 @@ class ConditionDataset(Dataset):
     >    more:       Aux data\n
     '''
 
-    def __init__(self, file_name, d_c=1, c_mtd='fix', n_c=None, c_map=None, c_no=-1, test=-1, data_base='data/', is_last_test=True, channel_take=None):
+    def __init__(self, 
+                 file_name, 
+                 d_c=1, 
+                 c_mtd='fix', 
+                 n_c=None, 
+                 c_map=None, 
+                 c_no=-1, 
+                 test=-1, 
+                 data_base='data/', 
+                 is_last_test=True, 
+                 channel_take=None,
+                 extra_ref_channel=[]):
 
         super().__init__()
 
@@ -74,15 +85,17 @@ class ConditionDataset(Dataset):
         self.condis_dim = d_c
         self.airfoil_num = int(self.all_index[-1][0]) + 1   #   amount of airfoils in dataset
         # print(self.all_index[-1][0])
-        self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int)       #   amount of conditions for each airfoil, a array of (N_airfoil, )
-        self.condis_st      = np.zeros((self.airfoil_num,), dtype=np.int)       #   the start index of each airfoil in the serial dataset
-        self.ref_index      = np.zeros((self.airfoil_num,), dtype=np.int)       #   the index of reference flowfield for each airfoil in the serial dataset
-        self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float)     #   the aoa of the reference flowfield 
+        self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int32)       #   amount of conditions for each airfoil, a array of (N_airfoil, )
+        self.condis_st      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the start index of each airfoil in the serial dataset
+        self.ref_index      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the index of reference flowfield for each airfoil in the serial dataset
+        self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float64)     #   the aoa of the reference flowfield 
         # self.condis_num = n_c                               #   amount of conditions used in training for each airfoil
         # self.data = None            # flowfield data selected from all data, size: (N_airfoil * N_c, C, H, W)
         # self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
         self.refr = None            # reference data, size: (N_airfoil, C, H, W)
         self.dataset_size = 0
+        self.extra_ref_channel = extra_ref_channel
+        self.n_extra_ref_channel = len(extra_ref_channel)
         
         self._check_index()
         self._select_index(c_mtd=c_mtd, n_c=n_c, c_map=c_map, test=test, no=c_no, is_last=is_last_test)
@@ -113,6 +126,9 @@ class ConditionDataset(Dataset):
         self.ref_condis = torch.from_numpy(self.ref_condis).float()
         self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
 
+        if self.n_extra_ref_channel > 0:
+            self.extra_refr = np.take(self.all_index, self.extra_ref_channel, axis=1)
+
     def _select_index(self, c_mtd, n_c, c_map, test, no, is_last):
         '''
         select among the conditions of each airfoil for training
@@ -129,7 +145,7 @@ class ConditionDataset(Dataset):
             if not os.path.exists(fname):
                 raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
             else:
-                self.data_idx = np.loadtxt(fname, dtype=np.int)
+                self.data_idx = np.loadtxt(fname, dtype=np.int32)
 
             for iidx in self.data_idx:
                 if self.all_index[iidx][0] not in self.airfoil_idx:
@@ -192,6 +208,13 @@ class ConditionDataset(Dataset):
         # condis      = self.cond[idx]
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
+
+        #! This part is for add a extra reference channel input for geometry -> flowfield prediction problem
+        #! Because the input may not include all the freestream conditions need to generate the flowfield, while
+        #! for ref.flowfield -> target flowfield prediction problem, the extra freestream conditions are implicit
+        #! contained in the refernce input.
+        #! The extra input is added as a uniform new channel for the same size of the geometry
+        # refence   = torch.concatenate([self.extra_refr[op_idx] * torch.ones((self.n_extra_ref_channel, refence.size(1))), refence], dim=0)
 
         sample = {'flowfields': flowfield, 'condis': condis, 
                   'index': op_idx, 'code_index': op_cod,

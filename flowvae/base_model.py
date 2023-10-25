@@ -538,7 +538,6 @@ class convDecoder_Unet(convDecoder):
 
         # print(inpt.size(), encoder_feature_map[idx].size())
         inpt = torch.cat((inpt, encoder_feature_map[idx]), dim=1)
-
         return self.last_conv(inpt)
 
 class Resnet18Decoder(Decoder):

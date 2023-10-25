@@ -222,8 +222,6 @@ class AEOperator:
         - `save_best`: (bool) default: `True` whether to save the best model
         - `v_tqdm`: (bool) default: `True` whether to use `tqdm` to display progress. When writing the IO to files, `tqdm` may lead fault.
         ''' 
-
-
         weights = {}
         if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
             print('*** set code, indx, coef loss to ZERO')
@@ -252,6 +250,12 @@ class AEOperator:
             all_x = self.model.geom_data['xx']
         elif recon_type in ['field']:
             rst1, rst2 = self.channel_markers[1]
+            erc = self.dataset.n_extra_ref_channel
+            if rst1 is None:    rst1 = erc
+            else:   rst1 += erc
+            if rst2 is None:    rst2 = None
+            else:   rst2 += erc
+
 
         while self.epoch < self.paras['num_epochs']:
 
@@ -281,8 +285,8 @@ class AEOperator:
 
                         indxs = batch_data['index'].reshape((-1,))
                         cods = batch_data['code_index'].reshape((-1,))
-                        real_labels = batch_data['condis'].reshape((-1, self._model.code_dim)).to(self.device)
-                        delt_labels = real_labels - batch_data['ref_aoa'].reshape((-1, self._model.code_dim)).to(self.device) * _is_ref
+                        real_labels = batch_data['condis'].to(self.device)
+                        delt_labels = real_labels - batch_data['ref_aoa'].to(self.device) * _is_ref
 
                         # 零参数梯度
                         self._optimizer.zero_grad()
