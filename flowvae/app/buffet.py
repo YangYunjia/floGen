@@ -50,14 +50,28 @@ def first_argmin(l):
 
 class Ploter():
 
-    def __init__(self, name: str = None, symbol: str = 'o', color: str = 'r') -> None:
+    def __init__(self, name: str = None, symbol: str = 'o', color: str = 'r', ref_aoa: float = 0.0) -> None:
         self.name = name
         self.symbol = symbol
         self.color = color
+        self.ref_aoa = ref_aoa
+
+
+def disturb(base_series, n_samples, sigma, variables=['Cl']):
+
+    random_number = np.random.normal(loc=0., scale=sigma, size=(n_samples, len(variables), len(base_series)))
+    disturbed_serires = []
+    for i in range(n_samples):
+        new_series = Series(copy_from=base_series)
+        for ik, k in enumerate(variables):
+            new_series.series[k] = new_series.series[k] * (1 + random_number[i, ik])
+        disturbed_serires.append(new_series)
+    return disturbed_serires
+    
 
 class Series():
 
-    def __init__(self, varlist: List = None, datas: Dict = None) -> None:
+    def __init__(self, varlist: List = None, datas: Dict = None, copy_from=None) -> None:
         
         self.series = {}
         self._length = 0
@@ -71,8 +85,15 @@ class Series():
                     raise RuntimeError('length not match')
                 else:
                     self._length = len(self.series[var])
+        elif copy_from is not None:
+            self.copy_from(copy_from)
         else:
             raise ReferenceError('At least varlist and datas should not be none')
+    
+    def copy_from(self, x):
+        self._length = x._length
+        for k in x.series.keys():
+            self.series[k] = copy.deepcopy(x.series[k])
     
     def __len__(self):
         return self._length
@@ -101,7 +122,6 @@ class Series():
         ii_sort = np.argsort(self.series['AoA']).tolist()
         for k in self.series.keys():
             self.series[k]= [self.series[k][i] for i in ii_sort]
-
 
     def print_tecplot(self, name='series.dat'):
 
@@ -133,6 +153,7 @@ class Series():
                 f = interp1d(self.series['AoA'], self.series[var], bounds_error=False, fill_value='extrapolate')
             self.series[var] = f(x)
         self.series['AoA'] = copy.deepcopy(x)
+        self._length = len(x)
 
 class Buffet():
 
@@ -164,6 +185,7 @@ class Buffet():
             self.paras[key] = kwargs[key]
 
         #* deal with parameters
+        if 'sep_check'   not in kwargs.keys():       self.paras['sep_check'] = False
         if 'AoA_linupp'   not in kwargs.keys():       self.paras['AoA_linupp'] = 1.5
         if 'AoA_min'      not in kwargs.keys():       self.paras['AoA_min']    = -3.0
         if 'AoA_max'      not in kwargs.keys():       self.paras['AoA_max']    = 6.0
@@ -178,7 +200,9 @@ class Buffet():
             elif self.paras['lsumtd'] in ['cruise', 'maxLD']:   self.paras['lsthod'] = 0.9999
         if 'lstsa'  not in kwargs.keys():       self.paras['lstsa']  = 0.95
         if 'lsuth1' not in kwargs.keys():       self.paras['lsuth1'] = 0.0      # linear segment upper bound therhold upper
-        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 1.2      # linear segment upper bound therhold lower
+                                                                    
+        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 2.0         # old 1.2
+        # linear segment upper bound therhold lower
                                                                                 # the u.b. is searched down from start point not less than this value
                                                                                 # to let r2 > 0.9999 (for LRZ is 1.0, for SFY is 0.01)
         if 'lslt' not in kwargs.keys():         self.paras['lslt'] = 3.0        # linear segment length (for LRZ is 3.0, for SFY is 1.0)
@@ -196,13 +220,28 @@ class Buffet():
         if self.logtype > 0:
             print(s)
 
-    def buffet_onset(self, *args, **kwargs):
+    def buffet_onset(self, seri, **kwargs):
 
-        if self.method in ['lift_curve_break']: return self.lift_curve_break(*args, **kwargs)
-        elif self.method in ['adaptive_lift_curve_break']: return self.adaptive_lift_curve_break(*args, **kwargs)
-        elif self.method in ['curve_slope_diff']: return self.curve_slope_diff(*args, **kwargs)
-        elif self.method in ['cruve_critical_value']: return self.cruve_critical_value(*args, **kwargs)
-        elif self.method in ['shock_to_maxcuv']: return self.shock_to_maxcuv(*args, **kwargs)
+        if self.method in ['lift_curve_break']: results = self.lift_curve_break(seri, **kwargs)
+        elif self.method in ['adaptive_lift_curve_break']: results = self.adaptive_lift_curve_break(seri, **kwargs)
+        elif self.method in ['curve_slope_diff']: results = self.curve_slope_diff(seri, **kwargs)
+        elif self.method in ['cruve_critical_value']: results = self.cruve_critical_value(seri, **kwargs)
+        elif self.method in ['shock_to_maxcuv']: results = self.shock_to_maxcuv(seri, **kwargs)
+
+        if self.paras['sep_check']:
+            if self.paras['intp'] == 'pchip':
+                f_cl_aoa_all = PchipInterpolator(seri.AoA, np.array(seri.Cl))
+            elif self.paras['intp'] == '1d':
+                f_cl_aoa_all = interp1d(seri.AoA, np.array(seri.Cl), bounds_error=False, fill_value='extrapolate')
+            
+            AoA_sep = self.incipient_separation(seri)
+            for i in range(3):
+                if results[i, 0] < AoA_sep:
+                    print('AoA buffet onset change from %.4f to %.4f' % (results[i, 0], AoA_sep))
+                    results[i, 0] = AoA_sep
+                    results[i, 1] = f_cl_aoa_all(AoA_sep)
+                    
+        return results
 
     @staticmethod
     def __zero(x):
@@ -446,16 +485,36 @@ class Buffet():
                 f_cdcl_aoa_all = PchipInterpolator(AoAs, np.array(CLs) / np.array(CDs))
                 max_i = first_argmin(-f_cdcl_aoa_all(aoa_refs))
             
-            max_aoa = aoa_refs[max_i] + self.paras['lsuth1']
+
+            # #* this part of code is to find the better `lsthod`,
+            # #* it plot the regression score of different length of linear section
+            # min_aoa = AoAs[i_lb]
+            # max_aoas = np.arange(min_aoa+0.3, min_aoa+4, 0.1)
+            # reg_scores = []
+            # for i_max_aoa in max_aoas:
+            #     linear_aoas = np.arange(min_aoa, i_max_aoa, 0.1).reshape(-1,1)    # modified 2023.5.14, change the upper bound to max_aoa - 0.5
+            #     f_cl_aoa_linear = f_cl_aoa_all(linear_aoas)
+            #     reg = LinearRegression().fit(linear_aoas, f_cl_aoa_linear)
+            #     reg_scores.append(reg.score(linear_aoas, f_cl_aoa_linear))
+
+            # plt.plot(max_aoas, reg_scores, 'gray', lw=0.1)
+            
+            max_aoa = aoa_refs[max_i] + self.paras['lsuth1'] + 0.1
+            min_aoa = AoAs[i_lb]
 
             while max_aoa > aoa_refs[max_i] + self.paras['lsuth1'] - self.paras['lsuth2'] and max_aoa > AoAs[i_lb + 2]:
-                min_aoa = max(AoAs[i_lb], max_aoa - self.paras['lslt'])
+                max_aoa -= 0.1
                 linear_aoas = np.arange(min_aoa, max_aoa, 0.1).reshape(-1,1)    # modified 2023.5.14, change the upper bound to max_aoa - 0.5
                 f_cl_aoa_linear = f_cl_aoa_all(linear_aoas)
                 reg = LinearRegression().fit(linear_aoas, f_cl_aoa_linear)
                 if reg.score(linear_aoas, f_cl_aoa_linear) > self.paras['lsthod']:
                     break
-                max_aoa -= 0.005
+
+            while i_lb > 0 and max_aoa - AoAs[i_lb] < 1.0:
+                print(min_aoa, max_aoa, i_lb)
+                i_lb = max(0, i_lb - 1)
+
+            # plt.plot([max_aoa], [reg.score(linear_aoas, f_cl_aoa_linear)], '+', c='k')
             
             i_ub = max(i_lb + 2, np.argmin(np.abs(AoAs - max_aoa)) + 1)
             AoA_ub = max_aoa
@@ -539,9 +598,12 @@ class Buffet():
             
             else:
             
-                aa = np.arange(A_low, A_upp, 0.001)
+                aa = np.arange(A_low, A_upp+0.001, 0.001)
                 uy = fUy(aa)
-                AoA_uy, _ = Buffet.intersection(aa, np.zeros_like(aa), uy)
+                try:
+                    AoA_uy, _ = Buffet.intersection(aa, np.zeros_like(aa), uy)
+                except IntersectNotFound:
+                    AoA_uy = A_upp
 
         # AoA_uy = float('%.3f'%(int(AoA_uy/0.02)*0.02))
             
@@ -792,8 +854,8 @@ class Buffet():
             X1s = None
 
         ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=CDs, X1s=X1s, cl_c=cl_c)
-        if 'mUy' in seri.series.keys() and self.paras['srst'] in ['sep']:
-            AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.mUy)
+        if 'Cf' in seri.series.keys() and self.paras['srst'] in ['sep']:
+            AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.Cf)
         else:
             AoA_sep = ll['AoA_ub'] + 0.5
 
@@ -840,13 +902,16 @@ class Buffet():
         self.log('     AoA = %.4f ([%.4f, %.4f]), Cl = %.4f ([%.4f, %.4f])' % (bufs[1,0], bufs[0,0], bufs[2,0], bufs[1,1], bufs[0,1], bufs[2,1]))
             
         if p is not None:
-            
-            plt.plot(seri.AoA, seri.Cl, '-' + p.symbol, c='gray', label=p.name+' lift curve')
-            plt.plot(seri.AoA[ll['i_lb']:ll['i_ub']+1], seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name+' linear section')
-            plt.plot(step_aoa, f_cl_aoa_all(step_aoa), '--', c=p.color)
-            plt.plot([-2, 4.5], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (4.5 - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
-            plt.plot(bufs[:,0], bufs[:,1], 'x', c='r')
-            plt.show()    
+            hl_aoa = np.arange(seri.AoA[0], seri.AoA[-1]+0.4, 0.01)
+            aoas = np.array(seri.AoA)
+            plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name)
+            # plt.plot(aoas - p.ref_aoa, seri.X1, p.symbol, c=p.color, label=p.name)
+            # plt.plot(aoas[ll['i_lb']:ll['i_ub']+1] - p.ref_aoa, seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name)
+            plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color)
+            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
+            plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color)
+            plt.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
+            # plt.show()    
 
         return bufs
 
