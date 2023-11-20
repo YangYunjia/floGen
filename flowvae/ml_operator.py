@@ -12,7 +12,7 @@ import sys, os
 from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
-from .vae import frameVAE
+from .vae import EncoderDecoder
 from .dataset import ConditionDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .post import get_force_1dc
@@ -26,14 +26,14 @@ class AEOperator:
     initial params:
     ===
     `opt_name`  (str) name of the problem
-    `model`     (frameVAE) the model to be trained
+    `model`     (EncoderDecoder) the model to be trained
     `dataset`   (ConditionDataset)
     `  
 
 
     '''
     def __init__(self, opt_name: str, 
-                       model: frameVAE, 
+                       model: EncoderDecoder, 
                        dataset: ConditionDataset,
                        output_folder="save", 
                        init_lr=0.01, 
