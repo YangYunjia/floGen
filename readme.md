@@ -118,21 +118,21 @@ For each flowfield, $N_\text{info}$ values can be stored. They should obey the f
 |4+DC~4+2DC| | The condition values of the prior flowfield of its series (The length of this part depends on the dimension of a condition code)|
 |more| |Auxilary data|
 
-### Import dataset with `ConditionalDataset`
+### Import dataset with `ConditionDataset`
 
 The dataset should be constructed before training with the following code:
 
 ```python
-from flowvae.dataset import ConditionalDataset as Cd
+from flowvae.dataset import ConditionDataset as Cd
 
 fldata = Cd(file_name='<yourname>', d_c=1, c_mtd='all', n_c=None, c_map=None, c_no=1, test=100, data_base='data/', is_last_test=True, channel_take=None)
 ```
 
 > **Remark for saving the index**
 > Sometimes we need to save the list of which flowfields we have chosen for training. 
->The `ConditionalDataset` is designed to do so: when `c_mtd` is other than `'load'`, an index list will be saved in the `data_base` folder with the name `<yourname>_<c_no>dataindex.txt`. So next time when you want to use this index map, simply use `c_mtd='load'` and assign the desired `c_no`.
+>The `ConditionDataset` is designed to do so: when `c_mtd` is other than `'load'`, an index list will be saved in the `data_base` folder with the name `<yourname>_<c_no>dataindex.txt`. So next time when you want to use this index map, simply use `c_mtd='load'` and assign the desired `c_no`.
 
-The arguments of the `ConditionalDataset` is:
+The arguments of the `ConditionDataset` is:
 
 |argument|type|description|
 |-|-|-|
@@ -147,9 +147,9 @@ The arguments of the `ConditionalDataset` is:
 |`data_base` | `str` | **Default:** `'\data'` <br/> the folder path of `data.npy` and `index.npy`
 |`channel_take` | `List` | **Default:** `None` <br/> if not None, the assigned channels will be used for training, while the others are left
 
-### Several useful functions of `ConditionalDataset`
+### Several useful functions of `ConditionDataset`
 
-During training, the `ConditionalDataset` act like the origin `Dataset` in Pytorch. There are several extra functions you may interested in for post-process or other circumstances:
+During training, the `ConditionDataset` act like the origin `Dataset` in Pytorch. There are several extra functions you may interested in for post-process or other circumstances:
 
 **`get_series`**
 
