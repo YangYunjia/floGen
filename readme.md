@@ -197,6 +197,7 @@ For each flowfield, $N_\text{info}$ values can be stored. They should obey the f
 |more| |Auxilary data|
 
 ### Import dataset with `ConditionDataset`
+### Import dataset with `ConditionDataset`
 
 The dataset should be constructed before training with the following code:
 
@@ -208,6 +209,7 @@ fldata = Cd(file_name='<yourname>', d_c=1, c_mtd='all', n_c=None, c_map=None, c_
 
 > **Remark for saving the index**
 > Sometimes we need to save the list of which flowfields we have chosen for training. 
+>The `ConditionDataset` is designed to do so: when `c_mtd` is other than `'load'`, an index list will be saved in the `data_base` folder with the name `<yourname>_<c_no>dataindex.txt`. So next time when you want to use this index map, simply use `c_mtd='load'` and assign the desired `c_no`.
 >The `ConditionDataset` is designed to do so: when `c_mtd` is other than `'load'`, an index list will be saved in the `data_base` folder with the name `<yourname>_<c_no>dataindex.txt`. So next time when you want to use this index map, simply use `c_mtd='load'` and assign the desired `c_no`.
 
 The arguments of the `ConditionDataset` is:
@@ -224,8 +226,6 @@ The arguments of the `ConditionDataset` is:
 |`is_last_test` | `bool` | **Default:** `True` <br/> if true, the last samples will be used as test samples; if false, randomly selected
 |`data_base` | `str` | **Default:** `'\data'` <br/> the folder path of `data.npy` and `index.npy`
 |`channel_take` | `List` | **Default:** `None` <br/> if not None, the assigned channels will be used for training, while the others are left
-
-
 
 ### Several useful functions of `ConditionDataset`
 
