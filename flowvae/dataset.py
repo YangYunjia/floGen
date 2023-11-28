@@ -52,7 +52,7 @@ class ConditionDataset(Dataset):
     the information obey the following format:
     >    0:          Index of the foil\n
     >    1:          Index of the condition\n
-    >    2:          Index of the reference condtion of this foil\n
+    >    2:          Index of the reference condtion of this foil (local index)\n
     >    3~3+DC:     The condition values of the current point (Amount: Dimension of a condition)\n
     >    4+DC~4+2DC: The condition values of the reference point (Amount: Dimension of a condition)\n
     >    more:       Aux data\n

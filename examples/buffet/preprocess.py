@@ -3,9 +3,9 @@
 several thing done in preprocess section:
 
 1. the index of data is reorganized, the index information is rewrited to the `index.npy`
-    the size is : (27514, 7), for each flowfield
-    0           1           2           3           4           5           6       7       8
-    foil idx    condi idx   ref idx     ref aoa     ref cl      buffet idx  aoa     cl      cd       
+    the size is : (27514, 9), for each flowfield
+    0           1           2           3      4          5       6    7    8
+    foil idx    condi idx   ref idx     aoa    ref aoa    ref cl  cl   cd   buffet idx       
 
 2. extract wall pressure from the flowfield data
 
