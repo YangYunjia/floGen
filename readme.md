@@ -45,7 +45,7 @@ The dataset has been used in:
     - the cruise point drag coefficient does not exceed 0.1 
 - A total of 1498 samples are obtained in the sampling process
 
-![Alt text](.figure\dataset1airfoils.png)
+![Alt text](.figure/dataset1airfoils.png)
 
 ### Grid 
 
@@ -73,11 +73,11 @@ The infomation of flowfield data are below:
 
 \* all flowfield variables are NON-DIMENSIONAL with freestream condition (in CFL3D's way); values are on mesh points.
 
-![Alt text](.figure\dataset1eqn.png)
+![Alt text](.figure/dataset1eqn.png)
 
 \*\* The index of the flowfield is shown below
 
-![Alt text](.figure\dataset1fig.png)
+![Alt text](.figure/dataset1fig.png)
 
 ### Data format
 
