@@ -68,8 +68,7 @@ class ConditionDataset(Dataset):
                  test=-1, 
                  data_base='data/', 
                  is_last_test=True, 
-                 channel_take=None,
-                 extra_ref_channel=[]):
+                 channel_take=None):
 
         super().__init__()
 
@@ -94,14 +93,15 @@ class ConditionDataset(Dataset):
         # self.cond = None            # condition data (aoa) selected, size: (N_airfoil * N_c, )
         self.refr = None            # reference data, size: (N_airfoil, C, H, W)
         self.dataset_size = 0
-        self.extra_ref_channel = extra_ref_channel
-        self.n_extra_ref_channel = len(extra_ref_channel)
         
         self._check_index()
         self._select_index(c_mtd=c_mtd, n_c=n_c, c_map=c_map, test=test, no=c_no, is_last=is_last_test)
 
         print("dataset %s of size %d loaded, shape:" % (file_name, len(self)), self.all_data.shape)
 
+        self.get_item = self._get_normal_item
+        self._output_force_flag = False
+        self.n_extra_ref_channel = 0
     
     def _check_index(self):
         '''
@@ -125,9 +125,6 @@ class ConditionDataset(Dataset):
         
         self.ref_condis = torch.from_numpy(self.ref_condis).float()
         self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
-
-        if self.n_extra_ref_channel > 0:
-            self.extra_refr = np.take(self.all_index, self.extra_ref_channel, axis=1)
 
     def _select_index(self, c_mtd, n_c, c_map, test, no, is_last):
         '''
@@ -197,7 +194,10 @@ class ConditionDataset(Dataset):
         return self.dataset_size
 
     def __getitem__(self, idx):
-        
+        return self.get_item(idx)
+    
+    def _get_normal_item(self, idx):
+
         # op_cod = idx % self.condis_num
         # op_idx = int(idx / self.condis_num)
         op_idx =  int(self.all_index[self.data_idx[idx], 0])
@@ -209,25 +209,86 @@ class ConditionDataset(Dataset):
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
 
-        #! This part is for add a extra reference channel input for geometry -> flowfield prediction problem
-        #! Because the input may not include all the freestream conditions need to generate the flowfield, while
-        #! for ref.flowfield -> target flowfield prediction problem, the extra freestream conditions are implicit
-        #! contained in the refernce input.
-        #! The extra input is added as a uniform new channel for the same size of the geometry
-        # refence   = torch.concatenate([self.extra_refr[op_idx] * torch.ones((self.n_extra_ref_channel, refence.size(1))), refence], dim=0)
-
         sample = {'flowfields': flowfield, 'condis': condis, 
                   'index': op_idx, 'code_index': op_cod,
                   'ref': refence, 'ref_aoa': ref_cond}  # all the reference of the flowfield is transfered, the airfoil geometry (y) is also.
 
         return sample
-          
     
+    def _get_extra_channel_item(self, idx):
+        '''
+        This part is for add a extra reference channel input for geometry -> flowfield prediction problem
+        Because the input may not include all the freestream conditions need to generate the flowfield, while
+        for ref.flowfield -> target flowfield prediction problem, the extra freestream conditions are implicit
+        contained in the refernce input.
+        The extra input is added as a uniform new channel for the same size of the geometry
+        '''
+        sample = self._get_normal_item(idx)
+        sample['ref'] = torch.concatenate([self.extra_refr[sample['index']] * torch.ones((self.n_extra_ref_channel, sample['ref'].size(1))), sample['ref']], dim=0)
+        return sample
+
+    def _get_force_item(self, idx):
+        
+        op_idx =  int(self.all_index[self.data_idx[idx], 0])
+        op_cod =  int(self.all_index[self.data_idx[idx], 1])
+        force   = torch.from_numpy(self.all_force[self.data_idx[idx]]).float()
+        condis  = torch.from_numpy(self.all_index[self.data_idx[idx], 3:3+self.condis_dim]).float()
+        refence     = self.refr[op_idx]
+        ref_cond    = self.ref_condis[op_idx]
+        ref_force   = self.ref_force[op_idx]
+          
+        sample = {'flowfields': force, 'condis': condis, 
+                  'index': op_idx, 'code_index': op_cod,
+                  'ref': refence, 'ref_aoa': ref_cond, 'ref_force': ref_force}
+        
+        return sample
+        
+    def change_to_force(self, info=''):
+        '''
+        change self.all_data to force of each flowfield
+        the self.refr is remain to be flowfield
+        
+        '''
+        from flowvae.post import clustcos, get_force_1d
+
+        print('Dataset is changed to output force as flowfield...')
+
+        forces = torch.zeros(len(self.all_data), 2)
+
+        nn = 201
+        xx = [clustcos(i, nn) for i in range(nn)]
+        all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+
+        for i, sample in enumerate(self.all_data):
+            geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
+            aoa_r = self.all_index[i, 3 + self.condis_dim]
+            profile_r = sample[1]
+            forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
+                                     torch.from_numpy(profile_r).float(), aoa_r)
+            if info == 'non-dim':
+                forces[i, 0] *= 10
+
+        self.all_force = forces.detach().numpy()
+        self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
+        self.get_item = self._get_force_item
+        self._output_force_flag = True
+
+    def add_extra_ref_channel(self, extra_ref_channel):
+        self.extra_ref_channel = extra_ref_channel
+        self.n_extra_ref_channel = len(extra_ref_channel)
+        self.extra_refr = np.take(self.all_index, self.extra_ref_channel, axis=1)
+        # print(self.extra_refr.repeat())
+        ref_channel_shape = list(self.all_data.shape[2:]) + [1, 1]
+        self.all_data = np.concatenate([np.moveaxis(np.tile(self.extra_refr, (ref_channel_shape)), 0, -1), self.all_data], axis=1)
+        self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
+        # self.get_item = self._get_extra_channel_item
+
     def get_series(self, idx, ref_idx=None):
 
         st = self.condis_st[idx]
         ed = self.condis_st[idx] + self.condis_all_num[idx]
-        flowfield   = self.all_data[st: ed]
+        if self._output_force_flag: flowfield = self.all_force[st: ed]
+        else: flowfield   = self.all_data[st: ed]
         condis      = self.all_index[st: ed, 3:3+self.condis_dim]
 
         if ref_idx is None:
@@ -235,11 +296,14 @@ class ConditionDataset(Dataset):
             ref_aoa     = self.ref_condis[idx]
         else:   
             ref         = self.all_data[st + ref_idx]
-            ref_aoa     = self.all_index[st + ref_idx, 3:3+self.condis_dim] 
+            ref_aoa     = self.all_index[st + ref_idx, 3:3+self.condis_dim]
 
-        return {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
+        samples = {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
+        if self._output_force_flag: 
+            samples['ref_force'] = self.ref_force[idx]
+        
+        return samples 
 
-    
     def allnum_condition(self, idx):
         return self.condis_all_num[idx]
     
