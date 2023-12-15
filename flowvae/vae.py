@@ -90,10 +90,11 @@ class EncoderDecoder(nn.Module):
             self.set_aux_data(dataset_size)
 
         self.encoder = encoder
-        if isinstance(decoder, Decoder):
-            self.decoder = decoder
-        elif isinstance(decoder, list):
+        if isinstance(decoder, list):
             self.decoders = nn.ModuleList(decoder)
+        else:
+            self.decoder = decoder
+
 
         ld = self.latent_dim
         cd = self.code_dim
@@ -129,14 +130,15 @@ class EncoderDecoder(nn.Module):
         else:
             self.fc_code = nn.Identity()
         
-        if isinstance(decoder, Decoder):
-            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
-        elif isinstance(decoder, list):
+        if isinstance(decoder, list):
             _decoder_inputs = []
             for decoder in self.decoders:
                 decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
                 _decoder_inputs.append(decoder_input)
             self.decoder_inputs = nn.ModuleList(_decoder_inputs)
+        else:
+            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
+
 
     def set_aux_data(self, dataset_size: Tuple[int, int]):
         n_airfoil = dataset_size[0]
@@ -160,7 +162,7 @@ class EncoderDecoder(nn.Module):
         produce geometry data
         - x01, x0p: the x coordinate data for smooth calculation
         '''
-        from cst_modeling.section import clustcos
+        from flowvae.post import clustcos
         
         nn = 201
         xx = [clustcos(i, nn) for i in range(nn)]

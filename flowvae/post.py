@@ -44,6 +44,40 @@ WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25,
 _rot_metrix = torch.Tensor([[[1.0,0], [0,1.0]], [[0,-1.0], [1.0,0]]])
 
 
+def clustcos(i: int, nn: int, a0=0.0079, a1=0.96, beta=1.0) -> float:
+    '''
+    Point distribution on x-axis [0, 1]. (More points at both ends)
+    
+    Parameters
+    ----------
+    i: int
+        index of current point (start from 0)
+    nn: int
+        total amount of points
+    a0: float
+        parameter for distributing points near x=0
+    a1: float
+        parameter for distributing points near x=1
+    beta: float
+        parameter for distribution points 
+
+    Returns
+    ---------
+    float
+
+    Examples
+    ---------
+    >>> c = clustcos(i, n, a0, a1, beta)
+
+    '''
+    aa = np.power((1-np.cos(a0*np.pi))/2.0, beta)
+    dd = np.power((1-np.cos(a1*np.pi))/2.0, beta) - aa
+    yt = i/(nn-1.0)
+    a  = np.pi*(a0*(1-yt)+a1*yt)
+    c  = (np.power((1-np.cos(a))/2.0,beta)-aa)/dd
+
+    return c
+
 #* function to rotate x-y to aoa
 def _aoa_rot(aoa: Tensor):
     '''
