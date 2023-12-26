@@ -265,8 +265,11 @@ class ConditionDataset(Dataset):
             profile_r = sample[1]
             forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
                                      torch.from_numpy(profile_r).float(), aoa_r)
-            if info == 'non-dim':
-                forces[i, 0] *= 10
+
+        if info == 'non-dim':
+            param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+            print('>    non-dimensional parameters for Cl/Cd will be %.2f' % param)
+            forces[:, 0] *= param
 
         self.all_force = forces.detach().numpy()
         self.ref_force = np.take(self.all_force, self.ref_index, axis=0)

@@ -240,7 +240,6 @@ class AEOperator:
 
 
         #* *** Training section ***
-        print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
         # reference marker
         _is_ref = int(self.paras['ref'])
 
@@ -263,6 +262,7 @@ class AEOperator:
             else:   rst1 += erc
             if rst2 is not None:    rst2 += erc
 
+        print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
 
         while self.epoch < self.paras['num_epochs']:
 
