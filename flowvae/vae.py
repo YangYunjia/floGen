@@ -221,7 +221,7 @@ class EncoderDecoder(nn.Module):
         # thr output of ae and ex is in dimension 11
         return [mu, log_var]
 
-    def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
+    def decode(self, z: Tensor) -> Tensor:
         """
         Maps the given latent codes
         onto the image space.
@@ -669,6 +669,32 @@ class BranchUnet(Unet):
         # print(cat_results.size())
         return cat_results
 
+class DecoderModel(EncoderDecoder, nn.Module):
+
+    def __init__(self, input_channels: int, decoder: Decoder, decoder_input_layer: float = 1.5) -> None:
+        nn.Module.__init__()
+
+        self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
+
+    def forward(self, input: Tensor):
+
+        return self.decode(input)
+
+class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
+
+    def __init__(self, input_channels: int, decoders: List[Decoder], decoder_input_layer: float = 1.5) -> None:
+        nn.Module.__init__()
+
+        _decoder_inputs = []
+        for decoder in decoders:
+            decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
+            _decoder_inputs.append(decoder_input)
+        self.decoder_inputs = nn.ModuleList(_decoder_inputs)
+
+    def forward(self, input):
+
+        return self.decode(input)
+    
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0
     # if field_size is None:

@@ -743,6 +743,9 @@ def _decoder_input(typ: float, ld: int, lfd: int) -> nn.Module:
         
     elif typ == 1:
         return nn.Linear(ld, lfd)
+        
+    elif typ == 1.5:
+        return nn.Sequential(nn.Linear(ld, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
     
     elif typ == 2:
         return nn.Sequential(
