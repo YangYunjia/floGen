@@ -212,7 +212,7 @@ class ModelOperator():
                                 raise Exception()
                             
                             if v_tqdm:
-                                tbar.set_postfix(loss=loss.item(), reco=loss_dict['recons'].item())
+                                tbar.set_postfix(loss=loss.item())
                             
                             # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
                             #* model backward process (only in training phase)
@@ -263,8 +263,7 @@ class ModelOperator():
     def _load_batch_data(self, batch_data, kwargs):
         for key in batch_data.keys():
             batch_data[key] = batch_data[key].to(self.device)
-        
-        batch_size = batch_data[batch_data.keys()[0]].size(0)
+            batch_size = batch_data[key].size(0)
 
         return batch_data, batch_size
 
@@ -272,7 +271,7 @@ class ModelOperator():
         return self._model(data['input'])
 
     def _calculate_loss(self, data, output, kwargs):
-        return self._model.loss_function(output, data['label'])
+        return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
     
     def _end_of_epoch(self):
         pass
@@ -283,11 +282,11 @@ class ModelOperator():
     
     def save_checkpoint(self, epoch, name='checkpoint', save_dict={}):
         path = self.output_path + '/' + name + '_epoch_' + str(epoch)
-        save_dict['epoch'] = epoch, 
-        save_dict['model_state_dict'] = self._model.state_dict(),
-        save_dict['optimizer_state_dict'] = self._optimizer.state_dict(),
-        save_dict['scheduler_state_dict'] = self._scheduler.state_dict(),
-        save_dict['history'] = self.history,
+        save_dict['epoch'] = epoch
+        save_dict['model_state_dict'] = self._model.state_dict()
+        save_dict['optimizer_state_dict'] = self._optimizer.state_dict()
+        save_dict['scheduler_state_dict'] = self._scheduler.state_dict()
+        save_dict['history'] = self.history
         
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
@@ -301,6 +300,7 @@ class ModelOperator():
             raise IOError("checkpoint not exist in {}".format(path))
         
         save_dict = torch.load(path, map_location=self.device)
+        print(save_dict['epoch'])
         self.epoch = save_dict['epoch'] + 1
         self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
         if load_opt:

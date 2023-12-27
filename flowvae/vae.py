@@ -671,9 +671,10 @@ class BranchUnet(Unet):
 
 class DecoderModel(EncoderDecoder, nn.Module):
 
-    def __init__(self, input_channels: int, decoder: Decoder, decoder_input_layer: float = 1.5) -> None:
+    def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
         nn.Module.__init__()
-
+        self.device = device
+        self.decoder = decoder
         self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
 
     def forward(self, input: Tensor):
@@ -682,13 +683,14 @@ class DecoderModel(EncoderDecoder, nn.Module):
 
 class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 
-    def __init__(self, input_channels: int, decoders: List[Decoder], decoder_input_layer: float = 1.5) -> None:
-        nn.Module.__init__()
-
+    def __init__(self, input_channels: int, decoders: List[Decoder], device: str, decoder_input_layer: float = 1.5) -> None:
+        nn.Module.__init__(self)
+        self.device = device
         _decoder_inputs = []
         for decoder in decoders:
             decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
             _decoder_inputs.append(decoder_input)
+        self.decoders = nn.ModuleList(decoders)
         self.decoder_inputs = nn.ModuleList(_decoder_inputs)
 
     def forward(self, input):

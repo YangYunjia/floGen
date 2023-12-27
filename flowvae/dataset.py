@@ -12,8 +12,79 @@ from torch.utils.data import Dataset
 import numpy as np
 import os
 import random
+from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
+
+class FlowDataset(Dataset):
+
+    def __init__(self, file_name: str,
+                 c_mtd: str = 'fix', 
+                 c_no: int = -1, 
+                 test: int = -1, 
+                 data_base: str = 'data/', 
+                 is_last_test: bool = True, 
+                 field_channel_take: List[int] = None,
+                 param_channel_take: List[int] = None) -> None:
+        
+        super().__init__()
+
+        self.fname = file_name
+        self.data_base = data_base
+        self.all_data = np.load(data_base + file_name + 'data.npy')
+        self.all_index = np.load(data_base + file_name + 'index.npy')
+
+        if field_channel_take is None:
+            self.data = self.all_data
+        else:
+            self.data = np.take(self.all_data, field_channel_take, axis=1)
+        
+        if param_channel_take is None:
+            self.index = self.all_index
+        else:
+            self.index = np.take(self.all_index, param_channel_take, axis=1)
+
+        self.data = torch.from_numpy(self.data).float()
+        self.index = torch.from_numpy(self.index).float()
+        self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test)
 
 
+    def _select_index(self, c_mtd, test, no, is_last):
+        '''
+        select among the conditions of each airfoil for training
+        '''
+        self.data_idx = []
+
+        print('# selecting data from data.npy #')
+
+        if c_mtd == 'load':
+            fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+            if not os.path.exists(fname):
+                raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
+            else:
+                self.data_idx = np.loadtxt(fname, dtype=np.int32)
+
+        else:
+                
+            if is_last:
+                self.data_idx = list(range(self.all_data.shape[0] - test))
+            else:
+                self.data_idx = random.sample(range(self.all_data.shape[0]), self.all_data.shape[0] - test)
+
+            self.save_data_idx(no)
+
+        self.dataset_size = len(self.data_idx)
+
+    def save_data_idx(self, no):
+        np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
+
+    def __len__(self):
+        return self.dataset_size
+    
+    def __getitem__(self, index) -> dict:
+        d_index = self.data_idx[index]
+        inputs  = self.index[d_index]
+        labels  = self.data[d_index]
+        return {'input': inputs, 'label': labels}
+    
 class ConditionDataset(Dataset):
     '''
 
