@@ -16,38 +16,44 @@ from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 class FlowDataset(Dataset):
 
-    def __init__(self, file_name: str,
+    def __init__(self, file_name: str or List[str],
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
                  test: int = -1, 
                  data_base: str = 'data/', 
                  is_last_test: bool = True, 
-                 field_channel_take: List[int] = None,
-                 param_channel_take: List[int] = None) -> None:
+                 input_channel_take: List[int] = None,
+                 output_channel_take: List[int] = None,
+                 index_fname: str = None) -> None:
         
         super().__init__()
 
-        self.fname = file_name
         self.data_base = data_base
-        self.all_data = np.load(data_base + file_name + 'data.npy')
-        self.all_index = np.load(data_base + file_name + 'index.npy')
+        if isinstance(file_name, str):
+            self.all_output = np.load(data_base + file_name + 'data.npy')
+            self.all_input = np.load(data_base + file_name + 'index.npy')
+            self.fname = file_name
+        elif isinstance(file_name, List):
+            self.all_output = np.load(data_base + file_name[0] + '.npy')
+            self.all_input = np.load(data_base + file_name[1] + '.npy')
+            self.fname = file_name[0] + file_name[1]
 
-        if field_channel_take is None:
-            self.data = self.all_data
+        if output_channel_take is None:
+            self.output = self.all_output
         else:
-            self.data = np.take(self.all_data, field_channel_take, axis=1)
+            self.output = np.take(self.all_output, output_channel_take, axis=1)
         
-        if param_channel_take is None:
-            self.index = self.all_index
+        if input_channel_take is None:
+            self.inputs = self.all_input
         else:
-            self.index = np.take(self.all_index, param_channel_take, axis=1)
+            self.inputs = np.take(self.all_input, input_channel_take, axis=1)
 
-        self.data = torch.from_numpy(self.data).float()
-        self.index = torch.from_numpy(self.index).float()
-        self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test)
+        self.inputs = torch.from_numpy(self.inputs).float()
+        self.output = torch.from_numpy(self.output).float()
+        self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
 
 
-    def _select_index(self, c_mtd, test, no, is_last):
+    def _select_index(self, c_mtd, test, no, is_last, fname):
         '''
         select among the conditions of each airfoil for training
         '''
@@ -56,7 +62,8 @@ class FlowDataset(Dataset):
         print('# selecting data from data.npy #')
 
         if c_mtd == 'load':
-            fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+            if fname is None:
+                fname = self.data_base + self.fname + '_%ddataindex.txt' % no
             if not os.path.exists(fname):
                 raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
             else:
@@ -65,9 +72,9 @@ class FlowDataset(Dataset):
         else:
                 
             if is_last:
-                self.data_idx = list(range(self.all_data.shape[0] - test))
+                self.data_idx = list(range(self.all_output.shape[0] - test))
             else:
-                self.data_idx = random.sample(range(self.all_data.shape[0]), self.all_data.shape[0] - test)
+                self.data_idx = random.sample(range(self.all_output.shape[0]), self.all_output.shape[0] - test)
 
             self.save_data_idx(no)
 
@@ -81,8 +88,8 @@ class FlowDataset(Dataset):
     
     def __getitem__(self, index) -> dict:
         d_index = self.data_idx[index]
-        inputs  = self.index[d_index]
-        labels  = self.data[d_index]
+        inputs  = self.inputs[d_index]
+        labels  = self.output[d_index]
         return {'input': inputs, 'label': labels}
     
 class ConditionDataset(Dataset):

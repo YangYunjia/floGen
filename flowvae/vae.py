@@ -696,7 +696,19 @@ class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
     def forward(self, input):
 
         return self.decode(input)
+
+class EncoderModel(nn.Module):
     
+    def __init__(self, output_channels: int, encoder: Encoder, device: str) -> None:
+        super().__init__()
+        self.device = device
+        self.encoder = encoder
+        self.fc_mu = nn.Linear(self.encoder.last_flat_size, output_channels)
+
+    def forward(self, input: Tensor) -> Tensor:
+
+        return self.fc_mu(self.encoder(input))
+
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0
     # if field_size is None:
