@@ -332,10 +332,13 @@ class Buffet():
         return fv(a)
 
     @staticmethod
-    def intersection(x, y1, y2):
+    def intersection(x, y1, y2, mode=0):
+        '''
+        mode > 0, d[i+1] > d[i]
+        '''
         delta = np.array(y2) - np.array(y1)
         for i in range(len(x) - 1):
-            if delta[i] * delta[i+1] < 0.:
+            if delta[i] * delta[i+1] < 0. and (delta[i+1] - delta[i]) * mode >= 0:
                 xs = x[i] + (x[i+1] - x[i]) * delta[i] / (delta[i] - delta[i+1])
                 ys = y1[i] + (y1[i+1] - y1[i]) / (x[i+1] - x[i]) * (xs - x[i])
                 break
@@ -601,7 +604,7 @@ class Buffet():
                 aa = np.arange(A_low, A_upp+0.001, 0.001)
                 uy = fUy(aa)
                 try:
-                    AoA_uy, _ = Buffet.intersection(aa, np.zeros_like(aa), uy)
+                    AoA_uy, _ = Buffet.intersection(aa, np.zeros_like(aa), uy, mode=-1)
                 except IntersectNotFound:
                     AoA_uy = A_upp
 
