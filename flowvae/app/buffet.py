@@ -50,11 +50,12 @@ def first_argmin(l):
 
 class Ploter():
 
-    def __init__(self, name: str = None, symbol: str = 'o', color: str = 'r', ref_aoa: float = 0.0) -> None:
+    def __init__(self, name: str = None, symbol: str = 'o', color: str = 'r', ref_aoa: float = 0.0, instant_plot: bool = False) -> None:
         self.name = name
         self.symbol = symbol
         self.color = color
         self.ref_aoa = ref_aoa
+        self.instant_plot = instant_plot
 
 
 def disturb(base_series, n_samples, sigma, variables=['Cl']):
@@ -514,7 +515,7 @@ class Buffet():
                     break
 
             while i_lb > 0 and max_aoa - AoAs[i_lb] < 1.0:
-                print(min_aoa, max_aoa, i_lb)
+                # print(min_aoa, max_aoa, i_lb)
                 i_lb = max(0, i_lb - 1)
 
             # plt.plot([max_aoa], [reg.score(linear_aoas, f_cl_aoa_linear)], '+', c='k')
@@ -859,6 +860,7 @@ class Buffet():
         ll = self._estimate_linear_lift_curve(seri.AoA, seri.Cl, CDs=CDs, X1s=X1s, cl_c=cl_c)
         if 'Cf' in seri.series.keys() and self.paras['srst'] in ['sep']:
             AoA_sep = self._estimate_incipient_separation(seri.AoA, seri.Cf)
+            # print(seri.Cf, AoA_sep)
         else:
             AoA_sep = ll['AoA_ub'] + 0.5
 
@@ -914,7 +916,8 @@ class Buffet():
             plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
             plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color)
             plt.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
-            # plt.show()    
+            if p.instant_plot:
+                plt.show()    
 
         return bufs
 

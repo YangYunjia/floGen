@@ -167,10 +167,11 @@ def load_encoder_decoder(_id):
         _decoder = mlpDecoder(out_sizes=[2], hidden_dims=hidden_dims)
     
     
-    elif _id in [30, 33, 34, 50, 53, 54, 550, 553, 554, 63, 660, 663, 664]:
+    elif _id in [224, 30, 33, 34, 50, 53, 54, 550, 553, 554, 63, 660, 663, 664]:
 
 
         if _id in [30, 33, 34]: hidden_dims = [512, 256, 128, 128]
+        elif _id in [224]: hidden_dims = [128, 128, 64, 32]
         elif _id in [50, 53, 54]: hidden_dims = [256, 128, 64, 64]
         elif _id in [550, 553, 554]: hidden_dims = [256, 256, 128, 64]
         elif _id in [63]: hidden_dims = [512, 512, 256, 128]
