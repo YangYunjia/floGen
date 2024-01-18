@@ -320,11 +320,10 @@ class ConditionDataset(Dataset):
                   'ref': refence, 'ref_aoa': ref_cond, 'ref_force': ref_force}
         
         return sample
-        
+    
     def change_to_force(self, info=''):
         '''
-        change self.all_data to force of each flowfield
-        the self.refr is remain to be flowfield
+
         
         '''
         from flowvae.post import clustcos, get_force_1d
@@ -339,10 +338,10 @@ class ConditionDataset(Dataset):
 
         for i, sample in enumerate(self.all_data):
             geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
-            aoa_r = self.all_index[i, 3 + self.condis_dim]
-            profile_r = sample[1]
+            aoa  = self.all_index[i, 3]
+            profile = sample[1]
             forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
-                                     torch.from_numpy(profile_r).float(), aoa_r)
+                                     torch.from_numpy(profile).float(), aoa)
 
         if info == 'non-dim':
             param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
@@ -353,6 +352,43 @@ class ConditionDataset(Dataset):
         self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
         self.get_item = self._get_force_item
         self._output_force_flag = True
+
+    '''
+    def change_to_force(self, info=''):
+        # change to the difference between current airfoil and buffet onset
+        
+        from flowvae.post import clustcos, get_force_1d
+
+        print('Dataset is changed to output buffet difference...')
+
+        forces = torch.zeros(len(self.all_data), 2)
+
+        nn = 201
+        xx = [clustcos(i, nn) for i in range(nn)]
+        all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+
+        buffet_data = torch.load('D:\\Deeplearning\\202210LRZdata\\save\\1025_84.blossn6')
+
+        for i, sample in enumerate(self.all_data):
+            geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
+            aoa  = self.all_index[i, 3]
+            profile = sample[1]
+            forces[i, 0] = aoa
+            forces[i, 1] = get_force_1d(torch.from_numpy(geom).float(), 
+                                     torch.from_numpy(profile).float(), aoa)[1] # cl
+            # print(i, forces[i], buffet_data[0, int(self.all_index[i, 0]), 3, 1, 1])
+            forces[i] = forces[i] - buffet_data[0, int(self.all_index[i, 0]), 3, 1, 1]
+
+        if info == 'non-dim':
+            param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+            print('>    non-dimensional parameters aoa / cl will be %.2f' % param)
+            forces[:, 0] *= param
+
+        self.all_force = forces.detach().numpy()
+        self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
+        self.get_item = self._get_force_item
+        self._output_force_flag = True
+    '''
 
     def add_extra_ref_channel(self, extra_ref_channel):
         self.extra_ref_channel = extra_ref_channel
