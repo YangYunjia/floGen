@@ -16,7 +16,11 @@ graph of C-mesh
 
 '''
 
+from sklearn.linear_model import LinearRegression
+from scipy.interpolate import PchipInterpolator as pchip
+from scipy.interpolate import interp1d
 
+import matplotlib.pyplot as plt
 
 import numpy as np
 import torch
@@ -43,6 +47,40 @@ WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25,
 #                                            \ (0,-1)  (1, 0) /     \ -sin(AoA) /
 _rot_metrix = torch.Tensor([[[1.0,0], [0,1.0]], [[0,-1.0], [1.0,0]]])
 
+
+def clustcos(i: int, nn: int, a0=0.0079, a1=0.96, beta=1.0) -> float:
+    '''
+    Point distribution on x-axis [0, 1]. (More points at both ends)
+    
+    Parameters
+    ----------
+    i: int
+        index of current point (start from 0)
+    nn: int
+        total amount of points
+    a0: float
+        parameter for distributing points near x=0
+    a1: float
+        parameter for distributing points near x=1
+    beta: float
+        parameter for distribution points 
+
+    Returns
+    ---------
+    float
+
+    Examples
+    ---------
+    >>> c = clustcos(i, n, a0, a1, beta)
+
+    '''
+    aa = np.power((1-np.cos(a0*np.pi))/2.0, beta)
+    dd = np.power((1-np.cos(a1*np.pi))/2.0, beta) - aa
+    yt = i/(nn-1.0)
+    a  = np.pi*(a0*(1-yt)+a1*yt)
+    c  = (np.power((1-np.cos(a))/2.0,beta)-aa)/dd
+
+    return c
 
 #* function to rotate x-y to aoa
 def _aoa_rot(aoa: Tensor):
@@ -372,3 +410,121 @@ def get_flux_1d(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho:
 
     return mass_flux, moment_flux
 
+
+def sort_by_aoa(_aoas, _clss, _cdss):
+    #* sort aoa datas
+    aoas = []
+    clss = []
+    cdss = []
+    for aoa, cl, cd in zip(_aoas, _clss, _cdss):
+        if len(aoas) == 0 or aoa < aoas[0]:
+            aoas.insert(0, aoa)
+            clss.insert(0, cl)
+            cdss.insert(0, cd)
+        else:
+            for idx in range(len(aoas) - 1):
+                if aoa > aoas[idx] and aoa < aoas[idx + 1]:
+                    aoas.insert(idx + 1, aoa)
+                    clss.insert(idx + 1, cl)
+                    cdss.insert(idx + 1, cd)
+                    break
+            else:
+                aoas.append(aoa)
+                clss.append(cl)
+                cdss.append(cd)
+
+    # print(_aoas, _clss, _cdss)
+    # print(aoas, clss, cdss)
+    # raise
+    return aoas, clss, cdss
+
+def first_argmin(l):
+    for i in range(1, len(l)-1):
+        if l[i] <= l[i-1] and l[i] <= l[i+1]:
+            return i
+    return -1
+
+def get_buffet(aoas, clss, cdss, d_aoa=0.1, linear='cruise', cl_c=0.8, plot=False, intp='pchip', **kwargs):
+
+    # f_idx = 0
+    # for idx, cd in enumerate(cdss):
+    #     if cd > 0:
+    #         f_idx = idx
+    #         break
+    # print(f_idx)
+    # print(np.array(clss[f_idx:]) / np.array(cdss[f_idx:]))
+    # plt.plot(clss, cdss)
+    # plt.show()
+
+    if 'lsuth1' not in kwargs.keys():       kwargs['lsuth1'] = 0.0      # linear segment upper bound therhold upper
+    if 'lsuth2' not in kwargs.keys():       kwargs['lsuth2'] = 1.2      # linear segment upper bound therhold lower
+                                                                            # the u.b. is searched down from start point not less than this value
+                                                                            # to let r2 > 0.9999 (for LRZ is 1.0, for SFY is 0.01)
+    if 'lslt' not in kwargs.keys():         kwargs['lslt'] = 3.0        # linear segment length (for LRZ is 3.0, for SFY is 1.0)
+
+    if intp == 'pchip':
+        f_cl_aoa_all = pchip(aoas, np.array(clss))
+    elif intp == '1d':
+        f_cl_aoa_all = interp1d(aoas, np.array(clss), bounds_error=False, fill_value='extrapolate')
+
+    aoa_refs = list(np.arange(-2, 4, 0.01))
+
+    if linear == 'cruise':
+        max_i = first_argmin(abs(f_cl_aoa_all(aoa_refs) - cl_c))
+    elif linear == 'maxLD':
+        f_cdcl_aoa_all = pchip(aoas, np.array(clss) / np.array(cdss))
+        max_i = first_argmin(-f_cdcl_aoa_all(aoa_refs))
+
+    max_aoa = max_aoa = aoa_refs[max_i] + kwargs['lsuth1']
+    # print(max_i, max_aoa)
+    # input()
+
+    while max_aoa > aoa_refs[max_i] + kwargs['lsuth1'] - kwargs['lsuth2']:
+        min_aoa = max(aoas[0], max_aoa - kwargs['lslt'])
+        linear_aoas = np.arange(min_aoa, max_aoa, 0.1).reshape(-1,1)    # modified 2023.5.14, change the upper bound to max_aoa - 0.5
+        f_cl_aoa_linear = f_cl_aoa_all(linear_aoas)
+        reg = LinearRegression().fit(linear_aoas, f_cl_aoa_linear)
+        if reg.score(linear_aoas, f_cl_aoa_linear) > 0.9999:
+            break
+        max_aoa -= 0.01
+
+    if plot:
+        print(max_aoa, aoa_refs[max_i], f_cl_aoa_all(max_aoa), f_cl_aoa_all(aoa_refs[max_i]))
+        print(reg.score(linear_aoas, f_cl_aoa_linear))
+    # print(reg.coef_[0], reg.intercept_)
+    reg_k = reg.coef_[0]
+    reg_b = reg.intercept_
+
+    d_b = - d_aoa * reg_k
+
+    # f_cl_aoa = pchip(aoas[max_i:], clss[max_i:])
+    upp_bound = aoas[-1]+0.3
+    for low_bound in [aoa_refs[max_i]+0.1, max_aoa-0.1]:
+        # modified 2023.5.14, change the upper bound to aoa[-1]+0.5(pchip is valid for extrapolate)
+        # change the lower bound to aoa_cruise + 0.1, if not found, search max_aoa
+        step_aoa = np.arange(low_bound, upp_bound, 0.001)
+
+        delta = f_cl_aoa_all(step_aoa) - (reg_k * step_aoa + reg_b + d_b)
+
+        for idx in range(len(delta)-1):
+            if delta[idx] * delta[idx+1] < 0:
+                aoa_buf = step_aoa[idx] + 0.001 * delta[idx] / (delta[idx] - delta[idx+1])
+                cl_buf = f_cl_aoa_all(aoa_buf)
+                break
+        else:
+            aoa_buf = None
+            cl_buf = None
+            continue
+        break
+    if aoa_buf is None:
+        print('Warning:  buffet not found')
+
+    if plot:
+        plt.plot(linear_aoas, f_cl_aoa_all(linear_aoas), '-', c='C0')
+        plt.plot(step_aoa, f_cl_aoa_all(step_aoa), '-', c='C1')
+        plt.plot([0, 4.5], [reg_b + d_b, reg_k * 4.5 + reg_b + d_b], '--', c='k')
+        # plt.show()
+
+    # print(aoa_buf, cl_buf)
+
+    return (aoa_buf, cl_buf)

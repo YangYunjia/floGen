@@ -52,6 +52,7 @@ class AEOperator:
         self.set_optname(opt_name)
         self.device = model.device
         self.recon_type = recon_type
+        # channel markers are not include extra reference channels
         self.channel_markers = (input_channels, recon_channels)
         
         self._model = model
@@ -242,19 +243,25 @@ class AEOperator:
         print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
         # reference marker
         _is_ref = int(self.paras['ref'])
-        # input channel marker
+
         ipt1, ipt2 = self.channel_markers[0]
-        # reconstruction type and markers
+        rst1, rst2 = self.channel_markers[1]
+        # reconstruction type
         recon_type = self.recon_type
-        if recon_type in ['1d-clcd']:
-            all_x = self.model.geom_data['xx']
+        if recon_type in ['1d-clcd', 'force']:
+            if self.paras['code_mode'] in ['ex', 'semi', 'ae', 'im']:
+                raise KeyError('Can not use force model in ex, semi, ae, im')
+            self.all_dataset.change_to_force(info='non-dim50')  # change dataset.flowfield to forces 
+                                                                # (currently only applied to 1D distribution )
         elif recon_type in ['field']:
-            rst1, rst2 = self.channel_markers[1]
-            erc = self.dataset.n_extra_ref_channel
+            erc = self.all_dataset.n_extra_ref_channel
+            # input channel marker
+            if ipt1 is not None and erc > 0:    raise ValueError('can not add extra reference channel when input channel markers are assigned')
+            if ipt2 is not None:    ipt2 += erc
+            # reconstruction channel marker
             if rst1 is None:    rst1 = erc
             else:   rst1 += erc
-            if rst2 is None:    rst2 = None
-            else:   rst2 += erc
+            if rst2 is not None:    rst2 += erc
 
 
         while self.epoch < self.paras['num_epochs']:
@@ -282,7 +289,6 @@ class AEOperator:
                         real_field = batch_data['flowfields'].to(self.device)
                         refs_field = batch_data['ref'].to(self.device)
                         # the size of real_field and refs_field should be same, and both have geometry field if given
-
                         indxs = batch_data['index'].reshape((-1,))
                         cods = batch_data['code_index'].reshape((-1,))
                         real_labels = batch_data['condis'].to(self.device)
@@ -312,14 +318,10 @@ class AEOperator:
                                 # A. reconstruct field
                                 real = real_field[:, rst1: rst2]
                                 ref  = refs_field[:, rst1: rst2] * _is_ref
-                            elif recon_type == '1d-clcd':
+                            elif recon_type in ['1d-clcd', 'force']:
                                 # B. reconstruct aerodynamic coefficients
-                                geom = torch.cat((all_x.repeat(real_field.size(0), 1).unsqueeze(1), real_field[:, 0].unsqueeze(1)), dim=1)
-                                profile = real_field[:, 1]
-                                real = get_force_1dc(geom, profile, real_labels.squeeze()) # squeeze is for code dimension, since only the aoa data is need
-                                # TODO this should be done once at beginning
-                                # ref  = torch.zeros_like(real, device=self.device)
-                                ref = self.model.geom_data['ref_clcd'].index_select(0, indxs) * _is_ref
+                                real = real_field
+                                ref  = batch_data['ref_force'].to(self.device) * _is_ref
 
                             if self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
                                 # the vae without prior index loss (must be ed mode)

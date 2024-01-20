@@ -419,7 +419,7 @@ class mlpDecoder(nn.Module):
     encoder for pressure distribution (only mlp is need)
     '''
 
-    def __init__(self, in_channels, out_sizes,
+    def __init__(self, out_sizes,
                  hidden_dims: List = [128, 512, 1024]) -> None:
         
         super().__init__()
@@ -428,9 +428,9 @@ class mlpDecoder(nn.Module):
         self.last_flat_size = hidden_dims[0]
         self.out_sizes = out_sizes
 
-        h0 = in_channels
+        h0 = hidden_dims[0]
 
-        for h in hidden_dims:
+        for h in hidden_dims[1:]:
             layers.append(nn.Linear(h0, h))
             layers.append(nn.LeakyReLU())
             h0 = h
