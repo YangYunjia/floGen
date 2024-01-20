@@ -5,6 +5,7 @@ Rewrite the vae operater part of Deng's code
 
 '''
 import torch
+from torch import nn
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
 
@@ -18,22 +19,13 @@ from .dataset import ConditionDataset
 from .post import get_force_1dc
 from .utils import MDCounter
 
-class AEOperator:
+class ModelOperator():
     '''
-
-    The operator to run a vae model
+    simple operator model for universial models
     
-    initial params:
-    ===
-    `opt_name`  (str) name of the problem
-    `model`     (EncoderDecoder) the model to be trained
-    `dataset`   (ConditionDataset)
-    `  
-
-
     '''
     def __init__(self, opt_name: str, 
-                       model: EncoderDecoder, 
+                       model: nn.Module, 
                        dataset: ConditionDataset,
                        output_folder="save", 
                        init_lr=0.01, 
@@ -42,18 +34,11 @@ class AEOperator:
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle=True,
-                       ref=False,
-                       input_channels: Tuple[int, int] = (None, None), 
-                       recon_channels: Tuple[int, int] =(1, None),
-                       recon_type: str = 'field'
                        ):
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
         self.device = model.device
-        self.recon_type = recon_type
-        # channel markers are not include extra reference channels
-        self.channel_markers = (input_channels, recon_channels)
         
         self._model = model
         self._model.to(self.device)   
@@ -64,21 +49,7 @@ class AEOperator:
         self.paras['num_workers'] = 0
         self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
-        self.paras['ref'] = ref
-        self.paras['code_mode'] = model.cm
-        self.paras['loss_parameters'] = {'sm_mode':     'NS',
-                                         'sm_epoch':        1, 
-                                         'sm_weight':       1, 
-                                         'sm_offset':       2,
-                                         'moment_weight':   0.0,
-                                         'code_weight':     0.1,
-                                         'indx_weight':     0.0001,
-                                         'indx_epoch':      10,
-                                         'indx_pivot':      -1,
-                                         'aero_weight':     1e-5,
-                                         'aero_epoch':      299,
-                                         'ge_epoch':        1,
-                                         'ge_weight':       0.0}    # default 0.1 before 2023.8.4
+        self.paras['loss_parameters'] = {}
         
         self.dataset = {}
         if dataset is not None:
@@ -110,40 +81,10 @@ class AEOperator:
         self.set_optimizer('Adam', lr=self.paras['init_lr'])
         # self.set_scheduler('ReduceLROnPlateau', mode='min', factor=0.1, patience=5)
 
-
     @property
     def model(self):
         return self._model
-
-    def set_lossparas(self, **kwargs):
-        '''
-
-        set the parameters for loss terms when training, the keys include:
-        
-        >>> key          default         info
-        
-        - `sm_mode`         'NS'    the mode to calculate smooth loss
-            - `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
-            - `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
-            - `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
-            - `1d`      one-dimensional data (adapted from Runze)\n
-        - `sm_epoch`        1       (int) the epoch to start counting the smooth loss 
-        - `sm_weight`       0.001   (float)the weight of the smooth loss 
-        - `sm_offset`       2       (int) (need for `offset`) the diag. direction move offset
-        - `moment_weight`   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
-        - `code_weight`     0.1     (float) the weight of code loss, better for 0.1         
-        - `indx_weight`     0.0001  (float) the weight of index KLD loss  
-        - `indx_epoch`      10      (int) the epoch to start counting the index KLD loss 
-        - `indx_pivot`      -1      (int) the method to get avg_latent value
-            - if is a positive number, use the latent value of that condition index\n
-            - if `-1`, use the averaged value of all condition index
-        - `aero_weight `    1e-5    (float) the weight of aerodynamic loss
-        - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
-
-        '''
-        for key in kwargs:
-            self.paras['loss_parameters'][key] = kwargs[key]
-
+    
     def set_optname(self, opt_name):
         self.optname = opt_name
 
@@ -192,254 +133,6 @@ class AEOperator:
             self._scheduler_setting = kwargs
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
-    def transfer_model(self, restart_from, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
-        '''
-        load base model and set part of the parameters with grad off
-
-        '''
-        self.load_checkpoint(299, restart_from, load_opt=False, load_data_split=False)
-        self.global_start_epoch = self.epoch
-        self.epoch = 0
-
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        print('------- The layers below are set grad require ------')
-        for ly in grad_require_layers:
-            print(ly, ' :   ', self.model._modules[ly])
-            if reset_param:
-                self.model._modules[ly].apply(reset_paras)
-
-            for param in self.model._modules[ly].parameters():
-                param.requires_grad = True
-    
-    def train_model(self, save_check, save_best=True, v_tqdm=True):
-        '''
-        Train the model
-
-        ### param:
-        
-        - `save_check`: (int) the interval between the check point file is saved to the given path `output_path`
-        - `save_best`: (bool) default: `True` whether to save the best model
-        - `v_tqdm`: (bool) default: `True` whether to use `tqdm` to display progress. When writing the IO to files, `tqdm` may lead fault.
-        ''' 
-        weights = {}
-        if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
-            print('*** set code, indx, coef loss to ZERO')
-            self.paras['loss_parameters']['code_weight'] = 0.0
-        elif self.paras['code_mode'] in ['ed']:
-            print('*** set code, indx, coef loss to ZERO')
-            self.paras['loss_parameters']['code_weight'] = 0.0
-            self.paras['loss_parameters']['indx_weight'] = 0.0
-            self.paras['loss_parameters']['aero_weight'] = 0.0
-
-        if os.path.exists('data/preprocessdata'):
-            self._model.geom_data = torch.load('data/preprocessdata', map_location=self.device)
-        else:
-            self._model.preprocess_data(self.all_dataset)
-
-
-        #* *** Training section ***
-        print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
-        # reference marker
-        _is_ref = int(self.paras['ref'])
-
-        ipt1, ipt2 = self.channel_markers[0]
-        rst1, rst2 = self.channel_markers[1]
-        # reconstruction type
-        recon_type = self.recon_type
-        if recon_type in ['1d-clcd', 'force']:
-            if self.paras['code_mode'] in ['ex', 'semi', 'ae', 'im']:
-                raise KeyError('Can not use force model in ex, semi, ae, im')
-            self.all_dataset.change_to_force(info='non-dim50')  # change dataset.flowfield to forces 
-                                                                # (currently only applied to 1D distribution )
-        elif recon_type in ['field']:
-            erc = self.all_dataset.n_extra_ref_channel
-            # input channel marker
-            if ipt1 is not None and erc > 0:    raise ValueError('can not add extra reference channel when input channel markers are assigned')
-            if ipt2 is not None:    ipt2 += erc
-            # reconstruction channel marker
-            if rst1 is None:    rst1 = erc
-            else:   rst1 += erc
-            if rst2 is not None:    rst2 += erc
-
-
-        while self.epoch < self.paras['num_epochs']:
-
-            print('\nEpoch {}/{}'.format(self.epoch, self.paras['num_epochs'] - 1))
-
-            # torch.autograd.set_detect_anomaly(True)
-            # 每个epoch都有一个训练和验证阶段
-            for phase in ['train', 'val']:
-                if phase == 'train':
-                    self._model.train()  # Set model to training mode
-                else:
-                    self._model.eval()   # Set model to evaluate mode
-
-                running_loss = MDCounter()
-
-                # 迭代数据.
-                sys.stdout.flush()
-                with tqdm(self.dataloaders[phase], ncols = 100) as tbar:
-                    if not v_tqdm:
-                        tbar = self.dataloaders[phase]
-                    
-                    for batch_data in tbar:
-                        
-                        real_field = batch_data['flowfields'].to(self.device)
-                        refs_field = batch_data['ref'].to(self.device)
-                        # the size of real_field and refs_field should be same, and both have geometry field if given
-                        indxs = batch_data['index'].reshape((-1,))
-                        cods = batch_data['code_index'].reshape((-1,))
-                        real_labels = batch_data['condis'].to(self.device)
-                        delt_labels = real_labels - batch_data['ref_aoa'].to(self.device) * _is_ref
-
-                        # 零参数梯度
-                        self._optimizer.zero_grad()
-
-                        # 前向, track history if only in train
-                        with torch.set_grad_enabled(phase == 'train'):
-                            
-                            #* model forward process
-                            if self.paras['code_mode'] in ['ex', 'semi', 'ae']:
-                                result_field = self._model(real_field[:, ipt1: ipt2], code=delt_labels)
-                            elif self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
-                                result_field = self._model(refs_field[:, ipt1: ipt2], code=delt_labels)
-                            elif self.paras['code_mode'] in ['im']:
-                                result_field = self._model(real_field[:, ipt1: ipt2])
-
-                            #* calculating loss
-                            # update loss weight for current epoch
-                            for cm in ['sm', 'indx', 'aero', 'ge']:
-                                weights[cm + '_weight'] = (
-                                    0.0, self.paras['loss_parameters'][cm + '_weight'])[self.epoch >= self.paras['loss_parameters'][cm + '_epoch']]
-                            
-                            if recon_type == 'field':
-                                # A. reconstruct field
-                                real = real_field[:, rst1: rst2]
-                                ref  = refs_field[:, rst1: rst2] * _is_ref
-                            elif recon_type in ['1d-clcd', 'force']:
-                                # B. reconstruct aerodynamic coefficients
-                                real = real_field
-                                ref  = batch_data['ref_force'].to(self.device) * _is_ref
-
-                            if self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
-                                # the vae without prior index loss (must be ed mode)
-                                # if not reference, the parameter ref is set to zero by multiply with the flag
-                                loss_dict = self._model.loss_function(real, *result_field,
-                                                                       ref=ref,
-                                                                       **weights)
-                            else:
-                                loss_dict = self._model.series_loss_function(real, *result_field, 
-                                                                             ref=ref,
-                                                                             real_code=delt_labels,
-                                                                             real_code_indx=cods,
-                                                                             real_indx=indxs,
-                                                                             **weights)
-                            loss = loss_dict['loss']
-
-                            if not torch.isnan(loss).sum() == 0:
-                                print("NAN")
-                                raise Exception()
-                            
-                            if v_tqdm:
-                                tbar.set_postfix(loss=loss.item(), reco=loss_dict['recons'].item())
-                            
-                            # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
-                            #* model backward process (only in training phase)
-                            if phase == 'train':
-                                loss.backward()
-                                self._optimizer.step()
-
-                        # loss.item() gives the value of the tensor, multiple in the later is for weighted average
-                        running_loss += MDCounter(loss_dict) * real_field.size(0)
-
-                epoch_loss = running_loss / self.dataset_size[phase]
-                
-                if phase == 'train':
-                    self.history['lr'].append(self._optimizer.param_groups[0]['lr'])
-                    if self._scheduler_name in ['ReduceLROnPlateau']:
-                        self._scheduler.step(epoch_loss['loss'])
-                    else:
-                        self._scheduler.step()
-
-                output_str = ''
-                for key in epoch_loss.keys():
-                    output_str += '%s=%.5f ' % (key, epoch_loss[key])
-                print(output_str)
-
-                self.history['loss'][phase].append(epoch_loss)
-
-                # 深度复制mo
-                if phase == 'val' and epoch_loss['loss'] < self.best_loss:
-                    self.best_loss = epoch_loss['loss']
-                    if save_best:
-                        self.save_model()
-            
-            
-            if self.paras['code_mode'] in ['ex', 'semi', 'im', 'ae']:
-                self._model.cal_avg_latent(pivot=self.paras['loss_parameters']['indx_pivot'])
-            
-            if (self.epoch + 1) % save_check == 0:
-                self.save_checkpoint(epoch=self.epoch)
-
-            self.epoch += 1
-
-        print('Best val Loss: {:4f}'.format(self.best_loss))
-
-    def save_model(self, name='best_model'):
-        path = self.output_path + '/' + name
-        torch.save(self._model.state_dict(), path)
-    
-    def save_checkpoint(self, epoch, name='checkpoint'):
-        path = self.output_path + '/' + name + '_epoch_' + str(epoch)
-        torch.save({'epoch': epoch, 
-                    'model_state_dict': self._model.state_dict(),
-                    'optimizer_state_dict': self._optimizer.state_dict(),
-                    'scheduler_state_dict': self._scheduler.state_dict(),
-                    'history': self.history,
-                    'series_data': self._model.series_data,
-                    'geom_data': self._model.geom_data}, path)
-        print('checkpoint saved to' + path)
-    
-    def load_model(self, name, fro='c'):
-        if fro == 'd':
-            saved_model = name
-        elif fro == 'c':
-            path = self.output_path + '/' + name
-            saved_model = torch.load(path, map_location=self.device)['model_state_dict']
-        elif fro == 'cp':
-            path = self.output_path + '/' + name + '_epoch_' + str(299)
-            save_dict = torch.load(path, map_location=self.device)
-            self.model.load_state_dict(save_dict['model_state_dict'], strict=False)
-            self.model.series_data = save_dict['series_data']
-            self.model.geom_data = save_dict['geom_data']
-        else:
-            raise AttributeError
-        
-        self._model.load_state_dict(saved_model, strict=False)
-
-    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
-        if folder is None:
-            path = self.output_path + '\\checkpoint_epoch_' + str(epoch)
-        else:
-            path = folder + '\\checkpoint_epoch_' + str(epoch)
-        if not os.path.exists(path):
-            raise IOError("checkpoint not exist in {}".format(path))
-        save_dict = torch.load(path, map_location=self.device)
-        self.epoch = save_dict['epoch'] + 1
-        self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
-        if load_opt:
-            self._optimizer.load_state_dict(save_dict['optimizer_state_dict'])
-            self._scheduler.load_state_dict(save_dict['scheduler_state_dict'])
-        self.history = save_dict['history']
-        self._model.series_data = save_dict['series_data']
-        self._model.geom_data = save_dict['geom_data']
-        if load_data_split and len(self.dataset) > 0:
-            self.split_dataset(recover=self.optname)
-        print('checkpoint loaded from' + path)
-
-
     def split_dataset(self, recover, train_r=0.9, test_r=0.0):
         self.dataset_size = {}
 
@@ -474,6 +167,407 @@ class AEOperator:
             torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
             print("Random Split Dataset length: (Train: %d, Val: %d, Test: %d)" % (self.dataset_size['train'], self.dataset_size['val'], self.dataset_size['test']))
+
+    def train_model(self, save_check, save_best=True, v_tqdm=True):
+
+        load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
+        #* *** Training section ***
+        print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
+
+        while self.epoch < self.paras['num_epochs']:
+
+            print('\nEpoch {}/{}'.format(self.epoch, self.paras['num_epochs'] - 1))
+            load_kwargs, forward_kwargs, loss_kwargs = self._start_of_epoch(load_kwargs, forward_kwargs, loss_kwargs)
+            # torch.autograd.set_detect_anomaly(True)
+            # 每个epoch都有一个训练和验证阶段
+            for phase in ['train', 'val']:
+                if phase == 'train':
+                    self._model.train()  # Set model to training mode
+                else:
+                    self._model.eval()   # Set model to evaluate mode
+
+                running_loss = MDCounter()
+                # 迭代数据.
+                sys.stdout.flush()
+                with tqdm(self.dataloaders[phase], ncols = 100) as tbar:
+                    if not v_tqdm:
+                        tbar = self.dataloaders[phase]
+                    
+                    for batch_data in tbar:
+
+                        data, batch_size = self._load_batch_data(batch_data, load_kwargs)
+                        # 零参数梯度
+                        self._optimizer.zero_grad()
+
+                        # 前向, track history if only in train
+                        with torch.set_grad_enabled(phase == 'train'):
+
+                            output = self._forward_model(data, forward_kwargs)
+
+                            loss_dict = self._calculate_loss(data, output, loss_kwargs)
+                            loss = loss_dict['loss']
+
+                            if not torch.isnan(loss).sum() == 0:
+                                print("NAN")
+                                raise Exception()
+                            
+                            if v_tqdm:
+                                tbar.set_postfix(loss=loss.item())
+                            
+                            # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
+                            #* model backward process (only in training phase)
+                            if phase == 'train':
+                                loss.backward()
+                                self._optimizer.step()
+
+                        # loss.item() gives the value of the tensor, multiple in the later is for weighted average
+                        running_loss += MDCounter(loss_dict) * batch_size
+
+                epoch_loss = running_loss / self.dataset_size[phase]
+                
+                if phase == 'train':
+                    self.history['lr'].append(self._optimizer.param_groups[0]['lr'])
+                    if self._scheduler_name in ['ReduceLROnPlateau']:
+                        self._scheduler.step(epoch_loss['loss'])
+                    else:
+                        self._scheduler.step()
+
+                output_str = ''
+                for key in epoch_loss.keys():
+                    output_str += '%s=%.5f ' % (key, epoch_loss[key])
+                print(output_str)
+
+                self.history['loss'][phase].append(epoch_loss)
+
+                if phase == 'val' and epoch_loss['loss'] < self.best_loss:
+                    self.best_loss = epoch_loss['loss']
+                    if save_best:
+                        self.save_model()
+
+            self._end_of_epoch()
+            if (self.epoch + 1) % save_check == 0:
+                self.save_checkpoint(epoch=self.epoch)
+            self.epoch += 1
+
+        print('Best val Loss: {:4f}'.format(self.best_loss))
+
+    def _init_training(self):
+        load_kwargs = {}
+        forward_kwargs = {}
+        loss_kwargs = {}
+        return load_kwargs, forward_kwargs, loss_kwargs
+
+    def _start_of_epoch(self, load_kwargs, forward_kwargs, loss_kwargs):
+        return load_kwargs, forward_kwargs, loss_kwargs
+
+    def _load_batch_data(self, batch_data, kwargs):
+        for key in batch_data.keys():
+            batch_data[key] = batch_data[key].to(self.device)
+            batch_size = batch_data[key].size(0)
+
+        return batch_data, batch_size
+
+    def _forward_model(self, data, kwargs):
+        return self._model(data['input'])
+
+    def _calculate_loss(self, data, output, kwargs):
+        return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
+    
+    def _end_of_epoch(self):
+        pass
+
+    def save_model(self, name='best_model'):
+        path = self.output_path + '/' + name
+        torch.save(self._model.state_dict(), path)
+    
+    def save_checkpoint(self, epoch, name='checkpoint', save_dict={}):
+        path = self.output_path + '/' + name + '_epoch_' + str(epoch)
+        save_dict['epoch'] = epoch
+        save_dict['model_state_dict'] = self._model.state_dict()
+        save_dict['optimizer_state_dict'] = self._optimizer.state_dict()
+        save_dict['scheduler_state_dict'] = self._scheduler.state_dict()
+        save_dict['history'] = self.history
+        
+        torch.save(save_dict, path)
+        print('checkpoint saved to' + path)
+    
+    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
+        if folder is None:
+            path = self.output_path + '\\checkpoint_epoch_' + str(epoch)
+        else:
+            path = folder + '\\checkpoint_epoch_' + str(epoch)
+        if not os.path.exists(path):
+            raise IOError("checkpoint not exist in {}".format(path))
+        
+        save_dict = torch.load(path, map_location=self.device)
+        print(save_dict['epoch'])
+        self.epoch = save_dict['epoch'] + 1
+        self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
+        if load_opt:
+            self._optimizer.load_state_dict(save_dict['optimizer_state_dict'])
+            self._scheduler.load_state_dict(save_dict['scheduler_state_dict'])
+        self.history = save_dict['history']
+
+        if load_data_split and len(self.dataset) > 0:
+            self.split_dataset(recover=self.optname)
+        print('checkpoint loaded from' + path)
+
+        return save_dict
+
+class AEOperator(ModelOperator):
+    '''
+
+    The operator to run a vae model
+    
+    initial params:
+    ===
+    `opt_name`  (str) name of the problem
+    `model`     (EncoderDecoder) the model to be trained
+    `dataset`   (ConditionDataset)
+    `  
+
+
+    '''
+    def __init__(self, opt_name: str, 
+                       model: EncoderDecoder, 
+                       dataset: ConditionDataset,
+                       output_folder="save", 
+                       init_lr=0.01, 
+                       num_epochs: int = 50,
+                       split_train_ratio = 0.9,
+                       recover_split: str = None,
+                       batch_size: int = 8, 
+                       shuffle=True,
+                       ref=False,
+                       input_channels: Tuple[int, int] = (None, None), 
+                       recon_channels: Tuple[int, int] =(1, None),
+                       recon_type: str = 'field'
+                       ):
+        
+        super().__init__(opt_name=opt_name,
+                         model=model,
+                         dataset=dataset,
+                         output_folder=output_folder,
+                         init_lr=init_lr,
+                         num_epochs=num_epochs,
+                         split_train_ratio=split_train_ratio,
+                         recover_split=recover_split,
+                         batch_size=batch_size,
+                         shuffle=shuffle)
+        
+        self.recon_type = recon_type
+        # channel markers are not include extra reference channels
+        self.channel_markers = (input_channels, recon_channels)
+        
+        self.paras['ref'] = ref
+        self.paras['code_mode'] = model.cm
+        self.paras['loss_parameters'] = {'sm_mode':     'NS',
+                                         'sm_epoch':        1, 
+                                         'sm_weight':       1, 
+                                         'sm_offset':       2,
+                                         'moment_weight':   0.0,
+                                         'code_weight':     0.1,
+                                         'indx_weight':     0.0001,
+                                         'indx_epoch':      10,
+                                         'indx_pivot':      -1,
+                                         'aero_weight':     1e-5,
+                                         'aero_epoch':      299,
+                                         'ge_epoch':        1,
+                                         'ge_weight':       0.0}    # default 0.1 before 2023.8.4
+
+    def set_lossparas(self, **kwargs):
+        '''
+
+        set the parameters for loss terms when training, the keys include:
+        
+        >>> key          default         info
+        
+        - `sm_mode`         'NS'    the mode to calculate smooth loss
+            - `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
+            - `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
+            - `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
+            - `1d`      one-dimensional data (adapted from Runze)\n
+        - `sm_epoch`        1       (int) the epoch to start counting the smooth loss 
+        - `sm_weight`       0.001   (float)the weight of the smooth loss 
+        - `sm_offset`       2       (int) (need for `offset`) the diag. direction move offset
+        - `moment_weight`   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
+        - `code_weight`     0.1     (float) the weight of code loss, better for 0.1         
+        - `indx_weight`     0.0001  (float) the weight of index KLD loss  
+        - `indx_epoch`      10      (int) the epoch to start counting the index KLD loss 
+        - `indx_pivot`      -1      (int) the method to get avg_latent value
+            - if is a positive number, use the latent value of that condition index\n
+            - if `-1`, use the averaged value of all condition index
+        - `aero_weight `    1e-5    (float) the weight of aerodynamic loss
+        - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
+
+        '''
+        for key in kwargs:
+            self.paras['loss_parameters'][key] = kwargs[key]
+
+    def transfer_model(self, restart_from, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
+        '''
+        load base model and set part of the parameters with grad off
+
+        '''
+        self.load_checkpoint(299, restart_from, load_opt=False, load_data_split=False)
+        self.global_start_epoch = self.epoch
+        self.epoch = 0
+
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        print('------- The layers below are set grad require ------')
+        for ly in grad_require_layers:
+            print(ly, ' :   ', self.model._modules[ly])
+            if reset_param:
+                self.model._modules[ly].apply(reset_paras)
+
+            for param in self.model._modules[ly].parameters():
+                param.requires_grad = True
+
+    def _init_training(self):
+        
+        if self.paras['code_mode'] in ['ex', 'ae', 'ved', 'ved1']:
+            print('*** set code, indx, coef loss to ZERO')
+            self.paras['loss_parameters']['code_weight'] = 0.0
+        elif self.paras['code_mode'] in ['ed']:
+            print('*** set code, indx, coef loss to ZERO')
+            self.paras['loss_parameters']['code_weight'] = 0.0
+            self.paras['loss_parameters']['indx_weight'] = 0.0
+            self.paras['loss_parameters']['aero_weight'] = 0.0
+
+        if os.path.exists('data/preprocessdata'):
+            self._model.geom_data = torch.load('data/preprocessdata', map_location=self.device)
+        else:
+            self._model.preprocess_data(self.all_dataset)
+
+        ipt1, ipt2 = self.channel_markers[0]
+        rst1, rst2 = self.channel_markers[1]
+        # reconstruction type
+        if self.recon_type in ['1d-clcd', 'force']:
+            if self.paras['code_mode'] in ['ex', 'semi', 'ae', 'im']:
+                raise KeyError('Can not use force model in ex, semi, ae, im')
+            self.all_dataset.change_to_force(info='non-dim')  # change dataset.flowfield to forces 
+                                                                # (currently only applied to 1D distribution )
+        elif self.recon_type in ['field']:
+            erc = self.all_dataset.n_extra_ref_channel
+            # input channel marker
+            if ipt1 is not None and erc > 0:    raise ValueError('can not add extra reference channel when input channel markers are assigned')
+            if ipt2 is not None:    ipt2 += erc
+            # reconstruction channel marker
+            if rst1 is None:    rst1 = erc
+            else:   rst1 += erc
+            if rst2 is not None:    rst2 += erc
+        
+        # reference marker
+        load_kwargs = {'is_ref':    int(self.paras['ref'])}
+        forward_kwargs = {'ipt':    (ipt1, ipt2)}
+        loss_kwargs = {'is_ref':    int(self.paras['ref']),
+                       'rst':       (rst1, rst2)}
+
+        return load_kwargs, forward_kwargs, loss_kwargs
+
+    def _load_batch_data(self, batch_data, kwargs):
+
+        data = {
+            'real_field' : batch_data['flowfields'].to(self.device),
+            'refs_field' : batch_data['ref'].to(self.device),
+            # the size of real_field and refs_field should be same, and both have geometry field if given
+            'indxs' : batch_data['index'].reshape((-1,)),
+            'cods' : batch_data['code_index'].reshape((-1,)),
+            'real_labels' : batch_data['condis'].to(self.device),
+            'delt_labels' : batch_data['condis'].to(self.device) - batch_data['ref_aoa'].to(self.device) * kwargs['is_ref']
+        }
+        if self.recon_type in ['1d-clcd', 'force']:
+            data['ref_force'] = batch_data['ref_force'].to(self.device)
+
+        batch_size = data['real_field'].size(0)
+        return data, batch_size
+
+    def _forward_model(self, data, kwargs):
+        real_field = data['real_field']
+        refs_field = data['refs_field']
+        delt_labels = data['delt_labels']
+        ipt1, ipt2 = kwargs['ipt']
+
+        if self.paras['code_mode'] in ['ex', 'semi', 'ae']:
+            result_field = self._model(real_field[:, ipt1: ipt2], code=delt_labels)
+        elif self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
+            result_field = self._model(refs_field[:, ipt1: ipt2], code=delt_labels)
+        elif self.paras['code_mode'] in ['im']:
+            result_field = self._model(real_field[:, ipt1: ipt2])
+        
+        return result_field
+
+    def _calculate_loss(self, data, output, kwargs):
+        weights = {}
+        for cm in ['sm', 'indx', 'aero', 'ge']:
+            weights[cm + '_weight'] = (
+                0.0, self.paras['loss_parameters'][cm + '_weight'])[self.epoch >= self.paras['loss_parameters'][cm + '_epoch']]
+        
+        real_field = data['real_field']
+        refs_field = data['refs_field']
+
+        if self.recon_type == 'field':
+            rst1, rst2 = kwargs['rst']
+            # A. reconstruct field
+            real = real_field[:, rst1: rst2]
+            ref  = refs_field[:, rst1: rst2] * kwargs['is_ref']
+        elif self.recon_type in ['1d-clcd', 'force']:
+            # B. reconstruct aerodynamic coefficients
+            real = real_field
+            ref  = data['ref_force'] * kwargs['is_ref']
+
+        if self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
+            # the vae without prior index loss (must be ed mode)
+            # if not reference, the parameter ref is set to zero by multiply with the flag
+            loss_dict = self._model.loss_function(real, *output,
+                                                    ref=ref,
+                                                    **weights)
+        else:
+            delt_labels = data['delt_labels']
+            cods = data['cods']
+            indxs = data['indxs']
+            loss_dict = self._model.series_loss_function(real, *output, 
+                                                            ref=ref,
+                                                            real_code=delt_labels,
+                                                            real_code_indx=cods,
+                                                            real_indx=indxs,
+                                                            **weights)
+        return loss_dict
+    
+    def _end_of_epoch(self):
+        if self.paras['code_mode'] in ['ex', 'semi', 'im', 'ae']:
+            self._model.cal_avg_latent(pivot=self.paras['loss_parameters']['indx_pivot'])
+
+    def save_checkpoint(self, epoch, name='checkpoint'):
+        save_dict = {'series_data': self._model.series_data,
+                    'geom_data': self._model.geom_data}
+        super().save_checkpoint(epoch=epoch, name=name, save_dict=save_dict)
+    
+    def load_model(self, name, fro='c'):
+        if fro == 'd':
+            saved_model = name
+        elif fro == 'c':
+            path = self.output_path + '/' + name
+            saved_model = torch.load(path, map_location=self.device)['model_state_dict']
+        elif fro == 'cp':
+            path = self.output_path + '/' + name + '_epoch_' + str(299)
+            save_dict = torch.load(path, map_location=self.device)
+            self.model.load_state_dict(save_dict['model_state_dict'], strict=False)
+            self.model.series_data = save_dict['series_data']
+            self.model.geom_data = save_dict['geom_data']
+        else:
+            raise AttributeError
+        
+        self._model.load_state_dict(saved_model, strict=False)
+
+    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
+
+        save_dict = super().load_checkpoint(epoch=epoch, folder=folder, 
+                                            load_opt=load_opt, load_data_split=load_data_split)
+        self._model.series_data = save_dict['series_data']
+        self._model.geom_data = save_dict['geom_data']
 
 def reset_paras(layer):
     if 'reset_parameters' in dir(layer):

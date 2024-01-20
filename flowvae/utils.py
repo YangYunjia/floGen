@@ -113,10 +113,10 @@ def load_encoder_decoder(_id):
     elif _id == 5:
         _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes=[26, 101, 401])
-    # elif _id == 50:
-        # _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
-        # _decoder = [convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = [24, 100, 401]),
-        #             convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = [24, 100, 401])]
+    elif _id == 50:
+        _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
+        _decoder = [convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = [24, 100, 401]),
+                    convDecoder(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], sizes = [24, 100, 401])]
     elif _id == 51:
         _encoder = convEncoder_Unet(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = convDecoder_Unet(out_channels=1, last_size=[5], hidden_dims=[256, 128, 64, 64], 
@@ -149,22 +149,29 @@ def load_encoder_decoder(_id):
     if _id < 20:
         _model_type = EncoderDecoder
 
+    elif _id in [50]:
+        _model_type = BranchEncoderDecoder
+
     elif _id > 95 and _id < 105:
         _model_type = EncoderDecoder
 
         if _id == 100: hidden_dims = [128, 256, 128]
+        elif _id == 102: hidden_dims = [512, 512, 256]
         elif _id == 101: hidden_dims = [256, 512, 256]
         elif _id == 99: hidden_dims = [64, 128, 64]
         elif _id == 98: hidden_dims = [32, 64, 32]
         elif _id == 97: hidden_dims = [32, 32]
+        elif _id == 96: hidden_dims = [32]
 
         _encoder = convEncoder(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = mlpDecoder(out_sizes=[2], hidden_dims=hidden_dims)
     
-    elif _id in [30, 33, 34, 50, 53, 54, 550, 553, 554, 63, 660, 663, 664]:
+    
+    elif _id in [224, 30, 33, 34, 50, 53, 54, 550, 553, 554, 63, 660, 663, 664]:
 
 
         if _id in [30, 33, 34]: hidden_dims = [512, 256, 128, 128]
+        elif _id in [224]: hidden_dims = [128, 128, 64, 32]
         elif _id in [50, 53, 54]: hidden_dims = [256, 128, 64, 64]
         elif _id in [550, 553, 554]: hidden_dims = [256, 256, 128, 64]
         elif _id in [63]: hidden_dims = [512, 512, 256, 128]
@@ -185,8 +192,6 @@ def load_encoder_decoder(_id):
             _encoder = convEncoder(in_channels=2, last_size=[5], hidden_dims=[64, 128, 256])
             _decoder = [convDecoder(out_channels=1, last_size=[5], hidden_dims=hidden_dims, sizes = [24, 100, 401]),
                         convDecoder(out_channels=1, last_size=[5], hidden_dims=hidden_dims, sizes = [24, 100, 401])]
-        
-
 
     else:
         _model_type = Unet
