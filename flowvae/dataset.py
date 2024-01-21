@@ -83,6 +83,13 @@ class FlowDataset(Dataset):
     def save_data_idx(self, no):
         np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
 
+    def normalize(self) -> None:
+        self.inputs = self.inputs.detach().numpy()
+        output_min = np.min(self.inputs, axis=0)
+        output_max = np.max(self.inputs, axis=0)
+        print('dataset input is normalized with', output_min, output_max)
+        self.inputs = torch.from_numpy((self.inputs - output_min) / (output_max - output_min)).float()
+
     def __len__(self):
         return self.dataset_size
     
@@ -91,6 +98,7 @@ class FlowDataset(Dataset):
         inputs  = self.inputs[d_index]
         labels  = self.output[d_index]
         return {'input': inputs, 'label': labels}
+    
     
 class ConditionDataset(Dataset):
     '''
