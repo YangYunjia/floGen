@@ -18,6 +18,79 @@ from functools import reduce
 from typing import Tuple, List, Dict, NewType, Callable
 Tensor = NewType('Tensor', torch.tensor)
 
+
+class IntpConv(nn.Module):
+
+    '''
+    Use a `F.interpolate` layer and a `nn.Conv2d` layer to resize the image.
+
+    paras
+    ===
+
+
+    '''
+
+    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.size = size
+        self.mode = mode
+        self.conv = nn.Identity()
+        self.padding = int((kernel_size - 1) / 2)
+
+    def forward(self, inpt):
+        result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode, align_corners=False)
+        result = self.conv(result)
+        return result
+
+class IntpConv1d(IntpConv):
+
+    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
+        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
+        if mode is None:    self.mode = 'linear'
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding)
+
+class IntpConv2d(IntpConv):
+
+    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
+        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
+        if mode is None:    self.mode = 'bilinear'
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding)
+
+class Convbottleneck(nn.Module):
+
+    def __init__(self, h0, out_channels, kernel_size = 3, stride = 1, padding = 1, last_actv = False, basic_layers = {}) -> None:
+        super().__init__()
+
+        layers = []
+        layers.append(basic_layers['conv'](h0, out_channels=h0, kernel_size=kernel_size, stride=stride, padding=padding))
+        if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h0))
+        layers.append(basic_layers['actv']())
+        layers.append(basic_layers['conv'](h0, out_channels=out_channels, kernel_size=1, stride=1, padding=0))
+        if basic_layers['bn'] is not None:  layers.append(basic_layers['bn'](h0))
+        if last_actv:                       layers.append(basic_layers['actv']())
+
+        self.convs = nn.Sequential(*layers)
+
+    def forward(self, input):
+        return self.convs(input)
+
+default_basic_layers_1d = {
+    'conv':     nn.Conv1d,
+    'actv':     nn.LeakyReLU,
+    'deconv':   IntpConv1d,
+    'pool':     nn.AvgPool1d,
+    'bn':       None
+}
+
+default_basic_layers_2d = {
+    'conv':     nn.Conv2d,
+    'actv':     nn.LeakyReLU,
+    'deconv':   IntpConv2d,
+    'pool':     nn.AvgPool2d,
+    'bn':       None
+}
+
 class Encoder(nn.Module):
 
     def __init__(self,
@@ -90,16 +163,10 @@ class convEncoder(Encoder):
         if pool_kernels is None:     pool_kernels =     [3 for _ in hidden_dims]
         if pool_strides is None:     pool_strides =     [2 for _ in hidden_dims]
 
-        if dimension == 1:
-            if 'conv' not in basic_layers.keys():   basic_layers['conv'] = nn.Conv1d
-            if 'actv' not in basic_layers.keys():   basic_layers['actv'] = nn.LeakyReLU
-            if 'pool' not in basic_layers.keys():   basic_layers['pool'] = nn.AvgPool1d
-            if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-        elif dimension == 2:
-            if 'conv' not in basic_layers.keys():   basic_layers['conv'] = nn.Conv2d
-            if 'actv' not in basic_layers.keys():   basic_layers['actv'] = nn.LeakyReLU
-            if 'pool' not in basic_layers.keys():   basic_layers['pool'] = nn.AvgPool2d
-            if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
+        if dimension == 1:   self.basic_layers = default_basic_layers_1d
+        elif dimension == 2: self.basic_layers = default_basic_layers_2d
+
+        for key in basic_layers: self.basic_layers[key] = basic_layers[key]
 
         # ** for old version **
         # layers = []
@@ -332,44 +399,6 @@ class BasicEncodeBlock(nn.Module):
 
         return result
 
-class IntpConv(nn.Module):
-
-    '''
-    Use a `F.interpolate` layer and a `nn.Conv2d` layer to resize the image.
-
-    paras
-    ===
-
-
-    '''
-
-    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
-        super().__init__()
-        self.scale_factor = scale_factor
-        self.size = size
-        self.mode = mode
-        self.conv = nn.Identity()
-        self.padding = int((kernel_size - 1) / 2)
-
-    def forward(self, inpt):
-        result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode, align_corners=False)
-        result = self.conv(result)
-        return result
-
-class IntpConv1d(IntpConv):
-
-    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
-        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
-        if mode is None:    self.mode = 'linear'
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding)
-
-class IntpConv2d(IntpConv):
-
-    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
-        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
-        if mode is None:    self.mode = 'bilinear'
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding)
-
 class Decoder(nn.Module):
 
     def __init__(self,
@@ -454,7 +483,8 @@ class convDecoder(Decoder):
                  hidden_dims: List[int], # Tuple = (128, 64, 32, 16)
                  sizes: List[int],       # Tuple = (26, 101, 401)
                  kernel_sizes: List[int] = None,
-                 dimension: int = 1,
+                 dimension: int = 1, 
+                 last_conv: str = 'normal',
                  basic_layers: Dict = {}
                  ) -> None:
         
@@ -463,30 +493,27 @@ class convDecoder(Decoder):
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
         if kernel_sizes is None: self.kernel_sizes = [3 for _ in hidden_dims]
 
-        if dimension == 1:
-            if 'conv' not in basic_layers.keys():   basic_layers['conv'] = nn.Conv1d
-            if 'actv' not in basic_layers.keys():   basic_layers['actv'] = nn.LeakyReLU
-            if 'deconv' not in basic_layers.keys(): basic_layers['deconv'] = IntpConv1d
-            #   Another options include `ConvTranspose1d`
-            if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-        elif dimension == 2:
-            if 'conv' not in basic_layers.keys():   basic_layers['conv'] = nn.Conv2d
-            if 'actv' not in basic_layers.keys():   basic_layers['actv'] = nn.LeakyReLU
-            if 'deconv' not in basic_layers.keys(): basic_layers['deconv'] = IntpConv2d
-            #   Another options include `ConvTranspose2d`
-            if 'bn'   not in basic_layers.keys():   basic_layers['bn']   = None
-        self.basic_layers = basic_layers
+        if dimension == 1:   self.basic_layers = default_basic_layers_1d
+        elif dimension == 2: self.basic_layers = default_basic_layers_2d
+
+        for key in basic_layers: self.basic_layers[key] = basic_layers[key]
+
         layers = []
 
         h0 = hidden_dims[0]
 
         for h, s, k in zip(hidden_dims[1:], sizes, self.kernel_sizes[:-1]):
-            layers.append(basic_layers['deconv'](in_channels=h0, out_channels=h, kernel_size=k, size=s))
-            layers.append(basic_layers['actv']())
+            layers.append(self.basic_layers['deconv'](in_channels=h0, out_channels=h, kernel_size=k, size=s))
+            layers.append(self.basic_layers['actv']())
             h0 = h
         self.convs = nn.Sequential(*layers)
 
-        self.last_conv = basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        if last_conv == 'normal':
+            self.last_conv = self.basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        elif last_conv == 'bottleneck':
+            self.last_conv = Convbottleneck(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1,
+                                            last_actv=False, basic_layers=self.basic_layers)
+
 
     def forward(self, inpt: torch.Tensor):
         inpt = inpt.view(self.inpt_shape)
@@ -738,31 +765,42 @@ class conv2dDecoder(Decoder):
 
 def _decoder_input(typ: float, ld: int, lfd: int) -> nn.Module:
 
-    if typ == 0:
-        return nn.Identity()
+    if isinstance(typ, int):
+        if typ == 0:
+            return nn.Identity()
+            
+        elif typ == 1:
+            return nn.Linear(ld, lfd)
+            
+        elif typ == 1.5:
+            return nn.Sequential(nn.Linear(ld, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
         
-    elif typ == 1:
-        return nn.Linear(ld, lfd)
-        
-    elif typ == 1.5:
-        return nn.Sequential(nn.Linear(ld, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
+        elif typ == 2:
+            return nn.Sequential(
+                nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
+                nn.Linear(ld*2, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
+
+        elif typ == 2.5:
+            return nn.Sequential(
+                nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
+                nn.Linear(ld, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
+
+        elif typ == 3:                      
+            return nn.Sequential(
+                nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
+                nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
+                nn.Linear(ld*2, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
+
+        else:
+            raise KeyError()
     
-    elif typ == 2:
-        return nn.Sequential(
-            nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
-            nn.Linear(ld*2, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
+    elif isinstance(typ, list):
+        layers = []
+        h0 = ld
+        for h in typ + [lfd]:
+            layers.append(nn.Linear(h0, h))
+            if default_basic_layers_1d['bn'] is not None:   layers.append(default_basic_layers_1d['bn'](h))
+            layers.append(default_basic_layers_1d['actv']())
+            h0 = h
 
-    elif typ == 2.5:
-        return nn.Sequential(
-            nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
-            nn.Linear(ld, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
-
-    elif typ == 3:
-        return nn.Sequential(
-            nn.Linear(ld, ld), nn.BatchNorm1d(ld), nn.LeakyReLU(),
-            nn.Linear(ld, ld*2), nn.BatchNorm1d(ld*2), nn.LeakyReLU(),
-            nn.Linear(ld*2, lfd), nn.BatchNorm1d(lfd), nn.LeakyReLU())
-
-    else:
-        raise KeyError()
-
+        return nn.Sequential(*layers)
