@@ -15,12 +15,24 @@ import random
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 class FlowDataset(Dataset):
+    '''
+    This class formulate a normal input-output-pair dataset
+
+    ### params
+
+    - `file_name` (`str` or `List[str]`):  the data name
+        - if input is a str, the output will be `%file_name%data.npy`; the input will be `%file_name%index.npy`
+        - if input is a list, the output will be `%file_name[0]%.npy`; the input will be `%file_name[1]%.npy`
+    
+    
+    
+    '''
 
     def __init__(self, file_name: str or List[str],
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
                  test: int = -1, 
-                 data_base: str = 'data/', 
+                 data_base: str = 'data', 
                  is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
@@ -30,12 +42,12 @@ class FlowDataset(Dataset):
 
         self.data_base = data_base
         if isinstance(file_name, str):
-            self.all_output = np.load(data_base + file_name + 'data.npy')
-            self.all_input = np.load(data_base + file_name + 'index.npy')
+            self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
+            self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
             self.fname = file_name
         elif isinstance(file_name, List):
-            self.all_output = np.load(data_base + file_name[0] + '.npy')
-            self.all_input = np.load(data_base + file_name[1] + '.npy')
+            self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
+            self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
             self.fname = file_name[0] + file_name[1]
 
         if output_channel_take is None:

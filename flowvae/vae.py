@@ -672,7 +672,7 @@ class BranchUnet(Unet):
 class DecoderModel(EncoderDecoder, nn.Module):
 
     def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
-        nn.Module.__init__()
+        nn.Module.__init__(self)
         self.device = device
         self.decoder = decoder
         self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)

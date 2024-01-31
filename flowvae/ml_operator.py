@@ -271,6 +271,7 @@ class ModelOperator():
         return self._model(data['input'])
 
     def _calculate_loss(self, data, output, kwargs):
+        # print(output.size(), data['label'].size())
         return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
     
     def _end_of_epoch(self):
