@@ -156,6 +156,15 @@ class Series():
         self.series['AoA'] = copy.deepcopy(x)
         self._length = len(x)
 
+    def delete_duplicate(self, therhold):
+        new_idxs = [0]
+        for idx in range(1, len(self.AoA)):
+            if (self.AoA[idx] - self.AoA[new_idxs[-1]]) >= therhold:
+                new_idxs.append(idx)
+        for var in self.series.keys(): 
+            self.series[var] = np.take(self.series[var], new_idxs)
+
+
 class Buffet():
 
     def __init__(self, method='lift_curve_break',logtype=0, **kwargs) -> None:
@@ -909,12 +918,14 @@ class Buffet():
         if p is not None:
             hl_aoa = np.arange(seri.AoA[0], seri.AoA[-1]+0.4, 0.01)
             aoas = np.array(seri.AoA)
-            plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name)
+            # plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name) #!
             # plt.plot(aoas - p.ref_aoa, seri.X1, p.symbol, c=p.color, label=p.name)
             # plt.plot(aoas[ll['i_lb']:ll['i_ub']+1] - p.ref_aoa, seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name)
-            plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color)
-            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
-            plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color)
+            # plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color) #!
+            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], 
+                     [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], 
+                     '-.', c=p.color, lw=0.8)
+            # plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color) #!
             plt.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
             if p.instant_plot:
                 plt.show()    
