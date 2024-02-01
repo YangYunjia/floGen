@@ -27,7 +27,66 @@ Tensor = NewType('Tensor', torch.tensor)
 
 from flowvae.post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
-class EncoderDecoder(nn.Module):
+class AutoEncoder(nn.Module):
+
+    def __init__(self,         
+                 latent_dim: int,
+                 encoder: Encoder = None,
+                 decoder: Decoder = None,
+                 decoder_input_layer: int = 0,
+                 device = 'cuda:0',
+                 **kwargs) -> None:
+        super().__init__()
+
+        self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
+        # self.in_channels = in_channels
+        self.paras = kwargs
+        self.paras['decoder_input_layer'] = decoder_input_layer
+        self.device = device
+
+        if encoder is None:
+            pass
+        else:
+            self.encoder = encoder
+            self.fc_mu = nn.Linear(self.encoder.last_flat_size, latent_dim)
+
+        if decoder is None:
+            pass
+        elif isinstance(decoder, list):
+            _decoder_inputs = []
+            self.decoders = nn.ModuleList(decoder)
+            for decoder in self.decoders:
+                decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
+                _decoder_inputs.append(decoder_input)
+            self.decoder_inputs = nn.ModuleList(_decoder_inputs)
+        else:
+            self.decoder = decoder
+            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
+
+    def encode(self, input: Tensor) -> Tensor:
+
+        return self.fc_mu(self.encoder(input))
+
+    def decode(self, z: Tensor) -> Tensor:
+        """
+        Maps the given latent codes
+        onto the image space.
+        :param z: (Tensor) [B x D]
+        :return: (Tensor) [B x C x H x W]
+        """
+        result = self.decoder_input(z)
+        # output_padding 可以用来补齐在卷积编码器中向下取整的损失
+        result = self.decoder(result)
+        # print(result.size())
+        
+        return result
+
+    def forward(self, inputs: Tensor) -> List[Tensor]:
+
+        mu = self.encode(inputs)
+        return [self.decode(mu), mu]
+
+class EncoderDecoder(AutoEncoder):
     '''
     the model of VAE
 
@@ -72,29 +131,14 @@ class EncoderDecoder(nn.Module):
                  **kwargs) -> None:
 
 
-        super().__init__()
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, device, **kwargs)
         
-        self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
-        self.code_dim = code_dim   # the code dimension (same with which in the dataset)
-        # self.in_channels = in_channels
-
-        self.device = device
-
-        self.paras = kwargs
-        self.paras['decoder_input_layer'] = decoder_input_layer
+        self.code_dim = code_dim
         self.cm = code_mode
-
         self.series_data = {}
 
         if code_mode in ['semi', 'im', 'ex', 'ae']:
             self.set_aux_data(dataset_size)
-
-        self.encoder = encoder
-        if isinstance(decoder, list):
-            self.decoders = nn.ModuleList(decoder)
-        else:
-            self.decoder = decoder
-
 
         ld = self.latent_dim
         cd = self.code_dim
@@ -130,16 +174,6 @@ class EncoderDecoder(nn.Module):
         else:
             self.fc_code = nn.Identity()
         
-        if isinstance(decoder, list):
-            _decoder_inputs = []
-            for decoder in self.decoders:
-                decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
-                _decoder_inputs.append(decoder_input)
-            self.decoder_inputs = nn.ModuleList(_decoder_inputs)
-        else:
-            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
-
-
     def set_aux_data(self, dataset_size: Tuple[int, int]):
         n_airfoil = dataset_size[0]
         n_condi   = dataset_size[1]
@@ -220,20 +254,6 @@ class EncoderDecoder(nn.Module):
 
         # thr output of ae and ex is in dimension 11
         return [mu, log_var]
-
-    def decode(self, z: Tensor) -> Tensor:
-        """
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x C x H x W]
-        """
-        result = self.decoder_input(z)
-        # output_padding 可以用来补齐在卷积编码器中向下取整的损失
-        result = self.decoder(result)
-        # print(result.size())
-        
-        return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """
@@ -669,13 +689,10 @@ class BranchUnet(Unet):
         # print(cat_results.size())
         return cat_results
 
-class DecoderModel(EncoderDecoder, nn.Module):
+class DecoderModel(AutoEncoder):
 
     def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
-        nn.Module.__init__(self)
-        self.device = device
-        self.decoder = decoder
-        self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
+        super().__init__(latent_dim=input_channels, decoder=decoder, decoder_input_layer=decoder_input_layer, device=device)
 
     def forward(self, input: Tensor):
 
@@ -697,13 +714,10 @@ class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 
         return self.decode(input)
 
-class EncoderModel(nn.Module):
+class EncoderModel(AutoEncoder):
     
     def __init__(self, output_channels: int, encoder: Encoder, device: str) -> None:
-        super().__init__()
-        self.device = device
-        self.encoder = encoder
-        self.fc_mu = nn.Linear(self.encoder.last_flat_size, output_channels)
+        super().__init__(latent_dim=output_channels, encoder=encoder, device=device)
 
     def forward(self, input: Tensor) -> Tensor:
 
@@ -722,15 +736,15 @@ class EncoderDecoderLSTM(nn.Module):
 
     def forward(self, inputs):
 
-        nb, _ = inputs.size()
+        nb = inputs.size()[0]
 
         lstm_input = self.encoder(inputs)
         lstm_input = torch.unsqueeze(lstm_input, dim=1)
         lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
         lstm_output = self.lstm(lstm_input)[0]
-        decoder_input = torch.reshape(lstm_output, tuple([nb*self.nt, lstm_output.size(2)] + self.lstm.image_size))
+        decoder_input = torch.reshape(lstm_output, (-1, *lstm_output.size()[2:]))
         decoder_output = self.decoder(decoder_input)
-        decoder_output = torch.reshape(decoder_output, (nb, self.nt, decoder_output.size(1), decoder_output.size(2)))
+        decoder_output = torch.reshape(decoder_output, (nb, self.nt, *decoder_output.size()[1:]))
         decoder_output = torch.transpose(decoder_output, 2, 1)
 
         return decoder_output

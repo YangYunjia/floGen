@@ -315,6 +315,12 @@ class ModelOperator():
 
         return save_dict
 
+class BasicAEOperator(ModelOperator):
+
+    def _calculate_loss(self, data, output, kwargs):
+        # print(output.size(), data['label'].size())
+        return {'loss': torch.nn.functional.mse_loss(output[0], data['label'])}
+
 class AEOperator(ModelOperator):
     '''
 
