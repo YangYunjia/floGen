@@ -709,6 +709,32 @@ class EncoderModel(nn.Module):
 
         return self.fc_mu(self.encoder(input))
 
+class EncoderDecoderLSTM(nn.Module):
+    
+    def __init__(self, lstm, encoder, decoder, nt) -> None:
+        super().__init__()
+
+        self.lstm  = lstm
+        self.encoder = encoder
+        self.decoder = decoder
+        self.device = 'cuda:0'
+        self.nt = nt
+
+    def forward(self, inputs):
+
+        nb, _ = inputs.size()
+
+        lstm_input = self.encoder(inputs)
+        lstm_input = torch.unsqueeze(lstm_input, dim=1)
+        lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
+        lstm_output = self.lstm(lstm_input)[0]
+        decoder_input = torch.reshape(lstm_output, (nb*self.nt, lstm_output.size(2), lstm_output.size(3)))
+        decoder_output = self.decoder(decoder_input)
+        decoder_output = torch.reshape(decoder_output, (nb, self.nt, decoder_output.size(1), decoder_output.size(2)))
+        decoder_output = torch.transpose(decoder_output, 2, 1)
+
+        return decoder_output
+
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0
     # if field_size is None:

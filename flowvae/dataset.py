@@ -75,7 +75,7 @@ class FlowDataset(Dataset):
 
         if c_mtd == 'load':
             if fname is None:
-                fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
             if not os.path.exists(fname):
                 raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
             else:
@@ -93,7 +93,7 @@ class FlowDataset(Dataset):
         self.dataset_size = len(self.data_idx)
 
     def save_data_idx(self, no):
-        np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
+        np.savetxt(os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no), self.data_idx, fmt='%d')
 
     def normalize(self) -> None:
         self.inputs = self.inputs.detach().numpy()
