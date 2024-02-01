@@ -728,7 +728,7 @@ class EncoderDecoderLSTM(nn.Module):
         lstm_input = torch.unsqueeze(lstm_input, dim=1)
         lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
         lstm_output = self.lstm(lstm_input)[0]
-        decoder_input = torch.reshape(lstm_output, (nb*self.nt, lstm_output.size(2), lstm_output.size(3)))
+        decoder_input = torch.reshape(lstm_output, tuple([nb*self.nt, lstm_output.size(2)] + self.lstm.image_size))
         decoder_output = self.decoder(decoder_input)
         decoder_output = torch.reshape(decoder_output, (nb, self.nt, decoder_output.size(1), decoder_output.size(2)))
         decoder_output = torch.transpose(decoder_output, 2, 1)

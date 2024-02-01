@@ -19,6 +19,8 @@ from torch.autograd import Variable
 from typing import Tuple, List, Dict, NewType, Callable
 Tensor = NewType('Tensor', torch.tensor)
 
+import copy
+
 def _check_kernel_size_consistency(kernel_size):
     if not (isinstance(kernel_size, tuple) or
             (isinstance(kernel_size, list) and all([isinstance(elem, tuple) for elem in kernel_size]))):
@@ -101,6 +103,15 @@ default_basic_layers_2d = {
     'bn':       None
 }
 
+def _update_basic_layer(basic_layers, dimension = 1):
+
+    if dimension == 1:   basic_layers_n = copy.deepcopy(default_basic_layers_1d)
+    elif dimension == 2: basic_layers_n = copy.deepcopy(default_basic_layers_2d)
+
+    for key in basic_layers: basic_layers_n[key] = basic_layers[key]
+
+    return basic_layers_n
+
 class Encoder(nn.Module):
 
     def __init__(self,
@@ -173,10 +184,7 @@ class convEncoder(Encoder):
         if pool_kernels is None:     pool_kernels =     [3 for _ in hidden_dims]
         if pool_strides is None:     pool_strides =     [2 for _ in hidden_dims]
 
-        if dimension == 1:   self.basic_layers = default_basic_layers_1d
-        elif dimension == 2: self.basic_layers = default_basic_layers_2d
-
-        for key in basic_layers: self.basic_layers[key] = basic_layers[key]
+        self.basic_layers = _update_basic_layer(basic_layers, dimension)
 
         # ** for old version **
         # layers = []
@@ -503,10 +511,7 @@ class convDecoder(Decoder):
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
         if kernel_sizes is None: self.kernel_sizes = [3 for _ in hidden_dims]
 
-        if dimension == 1:   self.basic_layers = default_basic_layers_1d
-        elif dimension == 2: self.basic_layers = default_basic_layers_2d
-
-        for key in basic_layers: self.basic_layers[key] = basic_layers[key]
+        self.basic_layers = _update_basic_layer(basic_layers, dimension)
 
         layers = []
 
@@ -773,7 +778,13 @@ class conv2dDecoder(Decoder):
         return super().forward(result)
 '''
 
-def _decoder_input(typ: float, ld: int, lfd: int) -> nn.Module:
+def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layers: dict = {}, drop_out: float = 0.) -> nn.Module:
+
+    return _decoder_input(hidden_dims, in_features, out_features, basic_layers, drop_out)
+
+def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}, drop_out: float = 0.) -> nn.Module:
+
+    basic_layers = _update_basic_layer(basic_layers)
 
     if isinstance(typ, int):
         if typ == 0:
@@ -809,8 +820,9 @@ def _decoder_input(typ: float, ld: int, lfd: int) -> nn.Module:
         h0 = ld
         for h in typ + [lfd]:
             layers.append(nn.Linear(h0, h))
-            if default_basic_layers_1d['bn'] is not None:   layers.append(default_basic_layers_1d['bn'](h))
-            layers.append(default_basic_layers_1d['actv']())
+            if basic_layers['bn'] is not None:   layers.append(basic_layers['bn'](h))
+            if drop_out > 0.:   layers.append(nn.Dropout(p=drop_out))
+            layers.append(basic_layers['actv']())
             h0 = h
 
         return nn.Sequential(*layers)
@@ -821,14 +833,59 @@ Citation: https://github.com/ndrplz/ConvLSTM_pytorch/blob/master/convlstm.py
 
 '''
 
-class ConvLSTMCell(nn.Module):
+class BasicLSTMCell(nn.Module):
+
+    def __init__(self, input_dim: int, hidden_dim: int) -> None:
+
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.gate = nn.Identity()
+        self.drop_out = nn.Identity()
+
+    def forward(self, input_tensor, cur_state):
+        h_cur, c_cur = cur_state
+
+        combined = torch.cat([self.drop_out(input_tensor), h_cur], dim=1)  # concatenate along channel axis
+
+        combined_gate = self.gate(combined)
+        cc_i, cc_f, cc_o, cc_g = torch.split(combined_gate, self.hidden_dim, dim=1)
+        i = torch.sigmoid(cc_i)
+        f = torch.sigmoid(cc_f)
+        o = torch.sigmoid(cc_o)
+        g = torch.tanh(cc_g)
+
+        c_next = f * c_cur + i * g
+        h_next = o * torch.tanh(c_next)
+
+        return [h_next, c_next]
+
+    def init_hidden(self, batch_size, image_size):
+        hidden_sizes = tuple([batch_size, self.hidden_dim] + image_size)
+        return (Variable(torch.zeros(hidden_sizes, device=self.gate.weight.device)),
+                Variable(torch.zeros(hidden_sizes, device=self.gate.weight.device)))
+
+class LSTMCell(BasicLSTMCell):
+
+    def __init__(self, input_dim: int, hidden_dim: int, drop_out: float = 0.2, bias: bool = True):
+
+        super().__init__(input_dim, hidden_dim)
+
+        self.gate = nn.Linear(in_features=self.input_dim + self.hidden_dim,
+                              out_features=4 * self.hidden_dim,
+                              bias=bias)
+        if drop_out > 0.:
+            self.drop_out = nn.Dropout(p=drop_out)
+
+class ConvLSTMCell(BasicLSTMCell):
 
     def __init__(self, input_dim: int,
                        hidden_dim: int,
                        kernel_size: int = 3, 
                        stride: int = 1, 
                        padding: int = 1, 
-                       bias = True):
+                       bias: bool = True):
         """
         Initialize ConvLSTM cell. (for 1D conv)
 
@@ -844,40 +901,14 @@ class ConvLSTMCell(nn.Module):
             Whether or not to add the bias.
         """
 
-        super().__init__()
+        super().__init__(input_dim, hidden_dim)
 
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-
-        self.conv = nn.Conv1d(in_channels=self.input_dim + self.hidden_dim,
+        self.gate = nn.Conv1d(in_channels=self.input_dim + self.hidden_dim,
                               out_channels=4 * self.hidden_dim,
                               kernel_size=kernel_size,
                               stride=stride,
                               padding=padding,
                               bias=bias)
-
-    def forward(self, input_tensor, cur_state):
-        h_cur, c_cur = cur_state
-
-        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
-
-        combined_conv = self.conv(combined)
-        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
-        i = torch.sigmoid(cc_i)
-        f = torch.sigmoid(cc_f)
-        o = torch.sigmoid(cc_o)
-        g = torch.tanh(cc_g)
-
-        c_next = f * c_cur + i * g
-        h_next = o * torch.tanh(c_next)
-
-        return [h_next, c_next]
-
-    def init_hidden(self, batch_size, image_size):
-        hidden_sizes = tuple([batch_size, self.hidden_dim] + image_size)
-        return (Variable(torch.zeros(hidden_sizes, device=self.conv.weight.device)),
-                Variable(torch.zeros(hidden_sizes, device=self.conv.weight.device)))
-
 
 class BiConvLSTMCell(ConvLSTMCell):
 
@@ -891,37 +922,23 @@ class BiConvLSTMCell(ConvLSTMCell):
                  bias=True):
         super().__init__(input_dim, hidden_dim, kernel_size, stride, padding, bias)
 
-        self.conv_concat = nn.Conv1d(in_channels=2 * hidden_dim,
+        self.concat = nn.Conv1d(in_channels=2 * hidden_dim,
                                 out_channels=hidden_dim,
                                 kernel_size=kernel_size_cat,
                                 stride=stride_cat,
                                 padding=padding_cat,
                                 bias=bias)
 
-class ConvGRUCell(nn.Module):
+class BasicGRUCell(nn.Module):
 
-    def __init__(self, input_dim: int,
-                       hidden_dim: int,
-                       kernel_size: int = 3, 
-                       stride: int = 1, 
-                       padding: int = 1, 
-                       bias: bool = True) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.conv_gates = nn.Identity()  # for update_gate,reset_gate respectively
+        self.conv_can  = nn.Identity()  # for candidate neural memory 
+        self.drop_out = nn.Identity()
 
-        self.conv_gates = nn.Conv1d(in_channels=input_dim + hidden_dim,
-                                    out_channels=2 * self.hidden_dim,  # for update_gate,reset_gate respectively
-                                    kernel_size=kernel_size,
-                                    padding=padding,
-                                    bias=bias)
-
-        self.conv_can = nn.Conv1d(in_channels=input_dim + hidden_dim,
-                              out_channels=self.hidden_dim, # for candidate neural memory
-                              kernel_size=kernel_size,
-                              padding=padding,
-                              bias=bias)
-        
     def init_hidden(self, batch_size, image_size):
         hidden_sizes = tuple([batch_size, self.hidden_dim] + image_size)
         return [Variable(torch.zeros(hidden_sizes, device=self.conv_gates.weight.device))]
@@ -938,6 +955,7 @@ class ConvGRUCell(nn.Module):
             next hidden state
         """
         h_cur = cur_state[0]
+        input_tensor = self.drop_out(input_tensor)
         combined = torch.cat([input_tensor, h_cur], dim=1)
         combined_conv = self.conv_gates(combined)
 
@@ -952,6 +970,48 @@ class ConvGRUCell(nn.Module):
         h_next = (1 - update_gate) * h_cur + update_gate * cnm
         return [h_next]
 
+class GRUCell(BasicGRUCell):
+
+    def __init__(self, input_dim: int, hidden_dim: int, drop_out: float = 0.2, bias: bool = True) -> None:
+        super().__init__(input_dim, hidden_dim)
+
+        self.conv_gates = nn.Linear(in_features=input_dim+hidden_dim, out_features=2*self.hidden_dim, bias=bias)
+        self.conv_can   = nn.Linear(in_features=input_dim+hidden_dim, out_features=self.hidden_dim, bias=bias)
+
+        if drop_out > 0.:
+            self.drop_out = nn.Dropout(p=drop_out)
+
+class BiGRUCell(GRUCell):
+
+    def __init__(self, input_dim: int, hidden_dim: int, drop_out: float = 0.2, bias: bool = True) -> None:
+        super().__init__(input_dim, hidden_dim, drop_out, bias)
+
+        self.conv_concat = nn.Sequential(
+            nn.Linear(in_features=2*hidden_dim, out_features=hidden_dim, bias=bias),
+            nn.Tanh())
+
+class ConvGRUCell(BasicGRUCell):
+
+    def __init__(self, input_dim: int,
+                       hidden_dim: int,
+                       kernel_size: int = 3, 
+                       stride: int = 1, 
+                       padding: int = 1, 
+                       bias: bool = True) -> None:
+        super().__init__(input_dim, hidden_dim)
+
+        self.conv_gates = nn.Conv1d(in_channels=input_dim + hidden_dim,
+                                    out_channels=2 * self.hidden_dim,
+                                    kernel_size=kernel_size,
+                                    padding=padding,
+                                    bias=bias)
+
+        self.conv_can  = nn.Conv1d(in_channels=input_dim + hidden_dim,
+                              out_channels=self.hidden_dim,
+                              kernel_size=kernel_size,
+                              padding=padding,
+                              bias=bias)
+        
 class BiConvGRUCell(ConvGRUCell):
 
     '''
@@ -973,8 +1033,7 @@ class BiConvGRUCell(ConvGRUCell):
                                 bias=bias),
             nn.Tanh())
 
-
-class ConvLSTM(nn.Module):
+class LSTM(nn.Module):
 
     """
 
@@ -1002,12 +1061,11 @@ class ConvLSTM(nn.Module):
         >> h = last_states[0][0]  # 0 for layer index, 0 for h index
     """
 
-    def __init__(self, input_dim, hidden_dims, kernel_sizes, cell_type: str,
-                 batch_first=False, bias=True, return_all_layers=False):
+    def __init__(self, input_dim, hidden_dims, cell_type: str, bi_direction: bool = True, kernel_sizes: List = None,
+                 image_size = [], batch_first=False, bias=True, return_all_layers=False):
         super().__init__()
 
         # _check_kernel_size_consistency(kernel_sizes)
-
         self.num_layers = len(hidden_dims)
         # Make sure that both `kernel_size` and `hidden_dim` are lists having len == num_layers
         # kernel_size = _extend_for_multilayer(kernel_sizes, self.num_layers)
@@ -1022,30 +1080,34 @@ class ConvLSTM(nn.Module):
         # self.batch_first = batch_first
         # self.bias = bias
         self.return_all_layers = return_all_layers
-        if cell_type in ['ConvLSTM']:
-            cell_class = ConvLSTMCell
-            self.iter_method = self.iter_inner
-        elif cell_type in ['ConvGRU']:
-            cell_class = ConvGRUCell
-            self.iter_method = self.iter_inner
-        elif cell_type in ['ConvBiLSTM']:
-            cell_class = BiConvLSTMCell
+        if bi_direction:
+            # if cell_type in ['LSTM']:       cell_class = BiLSTMCell
+            if cell_type in ['GRU']:        cell_class = BiGRUCell
+            if cell_type in ['ConvLSTM']:   cell_class = BiConvLSTMCell
+            if cell_type in ['ConvGRU']:    cell_class = BiConvGRUCell
             self.iter_method = self.iter_inner_bi
-        elif cell_type in ['ConvBiGRU']:
-            cell_class = BiConvGRUCell
-            self.iter_method = self.iter_inner_bi
+        else:
+            if cell_type in ['LSTM']:       cell_class = LSTMCell
+            if cell_type in ['GRU']:        cell_class = GRUCell
+            if cell_type in ['ConvLSTM']:   cell_class = ConvLSTMCell
+            if cell_type in ['ConvGRU']:    cell_class = ConvGRUCell
+            self.iter_method = self.iter_inner
 
         cell_list = []
         for i in range(0, self.num_layers):
             cur_input_dim = input_dim if i == 0 else hidden_dims[i - 1]
-
-            cell_list.append(cell_class(input_dim=cur_input_dim,
-                                          hidden_dim=hidden_dims[i],
-                                          kernel_size=kernel_sizes[i],
-                                          bias=bias))
+            if cell_type in ['ConvGRU', 'ConvLSTM']:
+                cell_list.append(cell_class(input_dim=cur_input_dim,
+                                            hidden_dim=hidden_dims[i],
+                                            kernel_size=kernel_sizes[i],
+                                            bias=bias))
+            else:
+                cell_list.append(cell_class(input_dim=cur_input_dim,
+                                            hidden_dim=hidden_dims[i],
+                                            bias=bias))                
 
         self.cell_list = nn.ModuleList(cell_list)
-
+        self.image_size = image_size
 
     def forward(self, input_tensor, hidden_state=None):
         """
@@ -1064,16 +1126,14 @@ class ConvLSTM(nn.Module):
         # if not self.batch_first:
         #     # (t, b, c, h, w) -> (b, t, c, h, w)
         #     input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
-
-        b, _, _, h = input_tensor.size()
+        b = input_tensor.size(0)
 
         # Implement stateful ConvLSTM
         if hidden_state is not None:
             raise NotImplementedError()
         else:
             # Since the init is done in forward. Can send image size here
-            hidden_state = self._init_hidden(batch_size=b,
-                                             image_size=[h])
+            hidden_state = self._init_hidden(batch_size=b, image_size=self.image_size)
 
         layer_output_list = []
         last_state_list = []
@@ -1113,12 +1173,12 @@ class ConvLSTM(nn.Module):
         hidden_state_back = hidden_state
         hidden_state_forward = hidden_state
         for t in range(seq_len):
-            hidden_state_back = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, seq_len - t - 1, :, :],
+            hidden_state_back = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, seq_len - t - 1],
                                                 cur_state=hidden_state_back)
             backward_states.append(hidden_state_back[0])
 
         for t in range(seq_len):
-            hidden_state_forward = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t, :, :],
+            hidden_state_forward = self.cell_list[layer_idx](input_tensor=cur_layer_input[:, t],
                                                 cur_state=hidden_state_forward)
             forward_states.append(hidden_state_forward[0])
         
