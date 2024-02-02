@@ -42,6 +42,8 @@ class FlowDataset(Dataset):
         super().__init__()
 
         self.data_base = data_base
+        self.flatten = flatten
+        
         if isinstance(file_name, str):
             self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
@@ -52,8 +54,12 @@ class FlowDataset(Dataset):
             self.fname = file_name[0] + file_name[1]
 
         if flatten:
-            self.all_output = self.all_output.reshape(-1, *self.all_output[2:])
-            self.all_input  = self.all_input.reshape(-1, *self.all_input[2:])
+            # print(self.all_input.shape)
+            self.all_output = np.swapaxes(self.all_output, 1, 2)
+            self.all_output = self.all_output.reshape(-1, *self.all_output.shape[2:])
+            self.all_input  = np.swapaxes(self.all_input, 1, 2)
+            self.all_input  = self.all_input.reshape(-1, *self.all_input.shape[2:])
+            print(self.all_output.shape)
 
         if output_channel_take is None:
             self.output = self.all_output

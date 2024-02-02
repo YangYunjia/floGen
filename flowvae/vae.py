@@ -64,8 +64,10 @@ class AutoEncoder(nn.Module):
             self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
 
     def encode(self, input: Tensor) -> Tensor:
-
-        return self.fc_mu(self.encoder(input))
+        # print(input.size())
+        results = self.encoder(input)
+        # print(results.size())
+        return self.fc_mu(results)
 
     def decode(self, z: Tensor) -> Tensor:
         """
