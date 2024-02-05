@@ -19,6 +19,22 @@ from .dataset import ConditionDataset
 from .post import get_force_1dc
 from .utils import MDCounter
 
+def _check_existance_checkpoint(epoch, folder):
+
+    paths = os.path.join(folder, 'checkpoint_epoch_' + str(epoch))
+    if not os.path.exists(paths):
+        raise IOError("checkpoint not exist in {}".format(paths))
+    return paths
+
+def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device: str, set_to_eval: bool = True):
+    model.to(device)
+    path = _check_existance_checkpoint(epoch=epoch, folder=folder)
+    save_dict = torch.load(path, map_location=device)
+    model.load_state_dict(save_dict['model_state_dict'], strict=False)
+    last_error = save_dict['history']['loss']
+    print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
+    if set_to_eval: model.eval()
+
 class ModelOperator():
     '''
     simple operator model for universial models
@@ -292,18 +308,15 @@ class ModelOperator():
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
     
-    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
-        if folder is None:
-            path = self.output_path + '\\checkpoint_epoch_' + str(epoch)
-        else:
-            path = folder + '\\checkpoint_epoch_' + str(epoch)
-        if not os.path.exists(path):
-            raise IOError("checkpoint not exist in {}".format(path))
+    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
+
+        path = _check_existance_checkpoint(epoch, self.output_path)
         
         save_dict = torch.load(path, map_location=self.device)
-        print(save_dict['epoch'])
+        # print(save_dict['epoch'])
         self.epoch = save_dict['epoch'] + 1
-        self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
+        self._model.load_state_dict(save_dict['model_state_dict'], strict=True)
+
         if load_opt:
             self._optimizer.load_state_dict(save_dict['optimizer_state_dict'])
             self._scheduler.load_state_dict(save_dict['scheduler_state_dict'])
@@ -311,7 +324,8 @@ class ModelOperator():
 
         if load_data_split and len(self.dataset) > 0:
             self.split_dataset(recover=self.optname)
-        print('checkpoint loaded from' + path)
+
+        print('checkpoint at epoch %d loaded from %s' % (save_dict['epoch'], path))
 
         return save_dict
 
