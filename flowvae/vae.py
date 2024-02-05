@@ -740,14 +740,26 @@ class EncoderDecoderLSTM(nn.Module):
 
         nb = inputs.size()[0]
 
-        lstm_input = self.encoder(inputs)
-        lstm_input = torch.unsqueeze(lstm_input, dim=1)
-        lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
+        if inputs.ndim > 2:
+            # if input has nt dimension, flatten nt and input to encoder
+            inputs = torch.reshape(inputs, (-1, *inputs.size()[2:]))
+            lstm_input = self.encoder(inputs)
+            lstm_input = torch.reshape(lstm_input, (nb, self.nt, *lstm_input.size()[1:]))
+        else:
+            # if not, duplicate the only input to nt
+            lstm_input = self.encoder(inputs)
+            lstm_input = torch.unsqueeze(lstm_input, dim=1)
+            lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
+        
         lstm_output = self.lstm(lstm_input)[0]
+
         decoder_input = torch.reshape(lstm_output, (-1, *lstm_output.size()[2:]))
         decoder_output = self.decoder(decoder_input)
         decoder_output = torch.reshape(decoder_output, (nb, self.nt, *decoder_output.size()[1:]))
-        decoder_output = torch.transpose(decoder_output, 2, 1)
+
+        if decoder_output.ndim > 3:
+            # if the output has a channel dimension, then swap the channel with i_t dimension
+            decoder_output = torch.transpose(decoder_output, 2, 1)
 
         return decoder_output
 
