@@ -34,6 +34,7 @@ class AutoEncoder(nn.Module):
                  encoder: Encoder = None,
                  decoder: Decoder = None,
                  decoder_input_layer: int = 0,
+                 decoder_input_dropout: float = 0.,
                  device = 'cuda:0',
                  **kwargs) -> None:
         super().__init__()
@@ -42,6 +43,7 @@ class AutoEncoder(nn.Module):
         # self.in_channels = in_channels
         self.paras = kwargs
         self.paras['decoder_input_layer'] = decoder_input_layer
+        self.paras['decoder_input_dropout'] = decoder_input_dropout
         self.device = device
 
         if encoder is None:
@@ -56,12 +58,18 @@ class AutoEncoder(nn.Module):
             _decoder_inputs = []
             self.decoders = nn.ModuleList(decoder)
             for decoder in self.decoders:
-                decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
+                decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                               ld=self.latent_dim, 
+                                               lfd=decoder.last_flat_size,
+                                               drop_out=decoder_input_dropout)
                 _decoder_inputs.append(decoder_input)
             self.decoder_inputs = nn.ModuleList(_decoder_inputs)
         else:
             self.decoder = decoder
-            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
+            self.decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                                ld=self.latent_dim, 
+                                                lfd=self.decoder.last_flat_size, 
+                                                drop_out=decoder_input_dropout)
 
     def encode(self, input: Tensor) -> Tensor:
         # print(input.size())
@@ -133,7 +141,7 @@ class EncoderDecoder(AutoEncoder):
                  **kwargs) -> None:
 
 
-        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, device, **kwargs)
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, 0., device, **kwargs)
         
         self.code_dim = code_dim
         self.cm = code_mode
