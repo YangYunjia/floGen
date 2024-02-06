@@ -28,7 +28,7 @@ class FlowDataset(Dataset):
     
     '''
 
-    def __init__(self, file_name: str or List[str],
+    def __init__(self, file_name: str or List[str], 
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
                  test: int = -1, 
@@ -47,10 +47,15 @@ class FlowDataset(Dataset):
         if isinstance(file_name, str):
             self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
+            self.all_aux = None
             self.fname = file_name
         elif isinstance(file_name, List):
             self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
+            if len(file_name) > 2:
+                self.all_aux = torch.from_numpy(np.load(os.path.join(data_base, file_name[2] + '.npy'))).float()
+            else:
+                self.all_aux = None
             self.fname = file_name[0] + file_name[1]
 
         if flatten:
@@ -120,7 +125,11 @@ class FlowDataset(Dataset):
         d_index = self.data_idx[index]
         inputs  = self.inputs[d_index]
         labels  = self.output[d_index]
-        return {'input': inputs, 'label': labels}
+        if self.all_aux is None:
+            return {'input': inputs, 'label': labels}
+        else:
+            auxs = self.all_aux[d_index]
+            return {'input': inputs, 'label': labels, 'aux': auxs}
     
     
 class ConditionDataset(Dataset):
