@@ -36,6 +36,7 @@ class FlowDataset(Dataset):
                  is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
+                 aux_channel_take: List[int] = None,
                  flatten: bool = False,
                  index_fname: str = None) -> None:
         
@@ -52,10 +53,6 @@ class FlowDataset(Dataset):
         elif isinstance(file_name, List):
             self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
-            if len(file_name) > 2:
-                self.all_aux = torch.from_numpy(np.load(os.path.join(data_base, file_name[2] + '.npy'))).float()
-            else:
-                self.all_aux = None
             self.fname = file_name[0] + file_name[1]
 
         if flatten:
@@ -75,9 +72,21 @@ class FlowDataset(Dataset):
             self.inputs = self.all_input
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
+            
+        if len(file_name) > 2:
+            self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
+            if aux_channel_take is None:
+                self.auxs = self.all_aux
+            else:
+                self.auxs = np.take(self.all_aux, aux_channel_take, axis=1)
+            self.auxs   = torch.from_numpy(self.auxs).float()
+        else:
+            self.all_aux = None
+            self.auxs    = None
 
         self.inputs = torch.from_numpy(self.inputs).float()
         self.output = torch.from_numpy(self.output).float()
+
         self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
 
 
@@ -128,7 +137,7 @@ class FlowDataset(Dataset):
         if self.all_aux is None:
             return {'input': inputs, 'label': labels}
         else:
-            auxs = self.all_aux[d_index]
+            auxs = self.auxs[d_index]
             return {'input': inputs, 'label': labels, 'aux': auxs}
     
     

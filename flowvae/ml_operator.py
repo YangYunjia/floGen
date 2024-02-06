@@ -6,6 +6,7 @@ Rewrite the vae operater part of Deng's code
 '''
 import torch
 from torch import nn
+from torch.nn.modules import Module
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
 
@@ -14,7 +15,7 @@ from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 from .vae import EncoderDecoder
-from .dataset import ConditionDataset
+from .dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .post import get_force_1dc
 from .utils import MDCounter
@@ -42,14 +43,14 @@ class ModelOperator():
     '''
     def __init__(self, opt_name: str, 
                        model: nn.Module, 
-                       dataset: ConditionDataset,
-                       output_folder="save", 
-                       init_lr=0.01, 
+                       dataset: FlowDataset or ConditionDataset,
+                       output_folder: str = "save", 
+                       init_lr: float = 0.01, 
                        num_epochs: int = 50,
-                       split_train_ratio = 0.9,
+                       split_train_ratio: float = 0.9,
                        recover_split: str = None,
                        batch_size: int = 8, 
-                       shuffle=True,
+                       shuffle: bool = True,
                        ):
         
         self.output_folder = output_folder
@@ -331,15 +332,32 @@ class ModelOperator():
 
 class BasicAEOperator(ModelOperator):
 
+    def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
+                 output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
+                 split_train_ratio: float = 0.9, recover_split: str = None, 
+                 batch_size: int = 8, shuffle: bool = True,
+                 ref: bool = False):
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
+        self.ref = ref
+        
+        # if ref:
+        #     # reference
+        #     self.ref_data = torch.zeros_like(dataset.output)
+        #     inpt_channels = dataset.inputs.size(1)
+        #     self.ref_data[:, :inpt_channels] = dataset.inputs
+
     def _calculate_loss(self, data, output, kwargs):
         # print(output[0].size(), data['label'].size())
-        return {'loss': torch.nn.functional.mse_loss(output[0], data['label'])}
+        labels = data['label']
+        if self.ref: labels[:, :2] -= data['input']
+
+        return {'loss': torch.nn.functional.mse_loss(output[0], labels)}
 
 class BasicCondAEOperator(BasicAEOperator):
 
     def _forward_model(self, data, kwargs):
         # print(data['aux'].size(), data['input'].size())
-        return self._model(data['aux'], code=data['input'])
+        return self._model(data['input'], code=data['aux'])
 
 class AEOperator(ModelOperator):
     '''
