@@ -26,7 +26,7 @@ def _check_kernel_size_consistency(kernel_size):
             (isinstance(kernel_size, list) and all([isinstance(elem, tuple) for elem in kernel_size]))):
         raise ValueError('`kernel_size` must be tuple or list of tuples')
 
-def _extend_for_multilayer(param, num_layers):
+def _extend_for_multilayer(param, num_layers: int):
     if not isinstance(param, list):
         param = [param] * num_layers
     return param
@@ -214,7 +214,7 @@ class convEncoder(Encoder):
             layers.append(self.basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
             if self.basic_layers['bn'] != nn.Identity:  layers.append(self.basic_layers['bn'](h))
             layers.append(self.basic_layers['actv']())
-            if kp > 0 and sp > 0: layers.append(self.basic_layers['pool'](kernel_size=kp, stride=sp))
+            if isinstance(kp, tuple) or (kp > 0 and sp > 0): layers.append(self.basic_layers['pool'](kernel_size=kp, stride=sp))
             h0 = h
             _convs.append(nn.Sequential(*layers))
         
@@ -619,8 +619,8 @@ class Resnet18Decoder(Decoder):
                  out_channels: int,
                  last_size: List[int],
                  hidden_dims: List, #  = [16, 16, 32, 64, 128, 256], # The order is reversed!
-                 num_blocks: List = None, # = [2, 2, 2, 2, 2],
-                 scales: List = None, # = [2, 2, 2, 2, 2, 2],
+                 num_blocks: List = 2, # = [2, 2, 2, 2, 2],
+                 scales: List = 2, # = [2, 2, 2, 2, 2, 2],
                  output_size: List[int] = None, # if is not None, addition layer to interpolate
                  dimension: int = 2,
                  batchnorm: bool = True,
@@ -634,8 +634,8 @@ class Resnet18Decoder(Decoder):
         self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension, batchnorm=batchnorm)
         self.isbias = not batchnorm
 
-        if num_blocks is None:  num_blocks  = [2 for _ in hidden_dims[1:]]
-        if scales is None:     scales     = [2 for _ in hidden_dims[1:]]
+        num_blocks = _extend_for_multilayer(num_blocks, len(hidden_dims[1:]))
+        scales     = _extend_for_multilayer(scales,     len(hidden_dims[1:]))
 
         h0 = hidden_dims[0]
 

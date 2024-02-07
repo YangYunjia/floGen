@@ -704,9 +704,9 @@ class DecoderModel(AutoEncoder):
     def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
         super().__init__(latent_dim=input_channels, decoder=decoder, decoder_input_layer=decoder_input_layer, device=device)
 
-    def forward(self, input: Tensor):
-
-        return self.decode(input)
+    def forward(self, inputs: Tensor):
+        # print(inputs.size())
+        return self.decode(inputs)
 
 class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 

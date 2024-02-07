@@ -37,7 +37,9 @@ class FlowDataset(Dataset):
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
                  aux_channel_take: List[int] = None,
-                 flatten: bool = False,
+                 flatten: bool = False, 
+                 swap_axis: tuple = None, 
+                 unsqueeze: int = None,
                  index_fname: str = None) -> None:
         
         super().__init__()
@@ -54,6 +56,9 @@ class FlowDataset(Dataset):
             self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
             self.fname = file_name[0] + file_name[1]
+
+        if swap_axis is not None:
+            self.all_input = np.swapaxes(self.all_input, *swap_axis)
 
         if flatten:
             # print(self.all_input.shape)
@@ -73,7 +78,7 @@ class FlowDataset(Dataset):
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
             
-        if len(file_name) > 2:
+        if isinstance(file_name, List) and len(file_name) > 2:
             self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
             if aux_channel_take is None:
                 self.auxs = self.all_aux
@@ -85,6 +90,8 @@ class FlowDataset(Dataset):
             self.auxs    = None
 
         self.inputs = torch.from_numpy(self.inputs).float()
+        if unsqueeze is not None:
+            self.inputs = self.inputs.unsqueeze(unsqueeze)
         self.output = torch.from_numpy(self.output).float()
 
         self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
