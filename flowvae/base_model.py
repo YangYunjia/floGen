@@ -317,8 +317,8 @@ class Resnet18Encoder(Encoder):
                  in_channels: int,
                  last_size: List[int],
                  hidden_dims: List, #  = [16, 32, 64, 128, 256]
-                 num_blocks: List = None,
-                 strides: List = None,
+                 num_blocks: List = 2,
+                 strides: List = 2,
                  preactive: bool = False, 
                  extra_first_conv: Tuple[int] = None,
                  force_last_size: bool = False,
@@ -332,8 +332,8 @@ class Resnet18Encoder(Encoder):
         self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension, batchnorm=batchnorm)
         self.isbias = not batchnorm
 
-        if num_blocks is None: num_blocks = [2 for _ in hidden_dims]
-        if strides is None:    strides    = [2 for _ in hidden_dims]
+        num_blocks = _extend_for_multilayer(num_blocks,  len(hidden_dims))
+        strides    = _extend_for_multilayer(strides,     len(hidden_dims))
         
         h0 = self.in_channels
         if extra_first_conv is not None:
@@ -362,8 +362,8 @@ class Resnet18Encoder(Encoder):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
 
-        for st in strides:
-            layers.append(BasicEncodeBlock(in_channels, out_channels, st, batchnorm=not self.isbias, basic_layers=self.basic_layers))
+        for i_block, st in enumerate(strides):
+            layers.append(BasicEncodeBlock(in_channels, out_channels, st, i_block, batchnorm=not self.isbias, basic_layers=self.basic_layers))
 
         return nn.Sequential(*layers)
 
@@ -382,7 +382,7 @@ class Resnet18Encoder(Encoder):
      
 class BasicEncodeBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels, stride, batchnorm, basic_layers):
+    def __init__(self, in_channels, out_channels, stride, i_block, batchnorm, basic_layers):
 
         super().__init__()
 
@@ -391,7 +391,7 @@ class BasicEncodeBlock(nn.Module):
         self.isbias    = not batchnorm
 
         # out_channels = in_channels * stride
-        if stride == 1:
+        if i_block > 0:
 
             if self.preactive:
                 self.main = nn.Sequential(
@@ -441,6 +441,7 @@ class BasicEncodeBlock(nn.Module):
                 )
     
     def forward(self, inpt):
+        # print(inpt.size())
         result = self.main(inpt) + self.shortcut(inpt)
 
         if not self.preactive:
@@ -861,6 +862,11 @@ def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}, drop_
 
         return nn.Sequential(*layers)
 
+    elif isinstance(typ, nn.Module):
+        return typ
+
+    else:
+        raise KeyError('not a valid type for decoder input, choose from `float`, `list[int]`, `nn.Module`')
 
 '''
 Citation: https://github.com/ndrplz/ConvLSTM_pytorch/blob/master/convlstm.py

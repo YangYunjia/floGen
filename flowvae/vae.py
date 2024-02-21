@@ -735,14 +735,15 @@ class EncoderModel(AutoEncoder):
 
 class EncoderDecoderLSTM(nn.Module):
     
-    def __init__(self, lstm, encoder, decoder, nt) -> None:
+    def __init__(self, lstm, encoder, decoder, nt, decoder_input_mode: str = 'stack', device: str = 'cuda:0') -> None:
         super().__init__()
 
         self.lstm  = lstm
         self.encoder = encoder
         self.decoder = decoder
-        self.device = 'cuda:0'
+        self.device = device
         self.nt = nt
+        self.decoder_input_mode = decoder_input_mode
 
     def forward(self, inputs):
 
@@ -761,11 +762,29 @@ class EncoderDecoderLSTM(nn.Module):
         
         lstm_output = self.lstm(lstm_input)[0]
 
-        decoder_input = torch.reshape(lstm_output, (-1, *lstm_output.size()[2:]))
-        decoder_output = self.decoder(decoder_input)
-        decoder_output = torch.reshape(decoder_output, (nb, self.nt, *decoder_output.size()[1:]))
+        if self.decoder_input_mode == 'stack':
 
-        if decoder_output.ndim > 3:
+            decoder_input = torch.reshape(lstm_output, (-1, *lstm_output.size()[2:]))
+            decoder_output = self.decoder(decoder_input)
+            decoder_output = torch.reshape(decoder_output, (nb, self.nt, *decoder_output.size()[1:]))
+        
+        elif self.decoder_input_mode == 'unstack':
+            decoder_output_l = []
+            for it in range(lstm_output.shape[1]):
+                decoder_output_l.append(self.decoder(lstm_output[:, it]))
+
+            decoder_output = torch.stack(decoder_output_l).transpose(0, 1)
+
+        elif self.decoder_input_mode == '2D':
+            decoder_output = self.decoder(lstm_output)
+        
+        elif self.decoder_input_mode == 'embed':
+            pass
+
+        else:
+            raise KeyError('bad key for decoder input mode, choose from `stack`, `unstack`, and `2D`')
+
+        if self.decoder_input_mode in ['stack', 'unstack'] and decoder_output.ndim > 3:
             # if the output has a channel dimension, then swap the channel with i_t dimension
             decoder_output = torch.transpose(decoder_output, 2, 1)
 
