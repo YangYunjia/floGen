@@ -330,6 +330,33 @@ class ModelOperator():
 
         return save_dict
 
+    def set_transfer_model(self, transfer_name, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
+        '''
+        load base model and set part of the parameters with grad off
+
+        '''
+        self.global_start_epoch = self.epoch
+        self.epoch = 0
+        self.set_optname(self.optname + '_' + transfer_name)
+
+        if grad_require_layers is not None:
+
+            for param in self.model.parameters():
+                param.requires_grad = False
+            
+            print('------- The layers below are set grad require ------')
+            for ly in grad_require_layers:
+                print(ly, ' :   ', self.model._modules[ly])
+                if reset_param:
+                    self.model._modules[ly].apply(reset_paras)
+
+                for param in self.model._modules[ly].parameters():
+                    param.requires_grad = True
+            
+        else:
+
+            print('------- All layers are set grad require ------')
+
 class BasicAEOperator(ModelOperator):
 
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
@@ -448,27 +475,6 @@ class AEOperator(ModelOperator):
         '''
         for key in kwargs:
             self.paras['loss_parameters'][key] = kwargs[key]
-
-    def transfer_model(self, restart_from, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
-        '''
-        load base model and set part of the parameters with grad off
-
-        '''
-        self.load_checkpoint(299, restart_from, load_opt=False, load_data_split=False)
-        self.global_start_epoch = self.epoch
-        self.epoch = 0
-
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        print('------- The layers below are set grad require ------')
-        for ly in grad_require_layers:
-            print(ly, ' :   ', self.model._modules[ly])
-            if reset_param:
-                self.model._modules[ly].apply(reset_paras)
-
-            for param in self.model._modules[ly].parameters():
-                param.requires_grad = True
 
     def _init_training(self):
         

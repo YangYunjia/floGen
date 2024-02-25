@@ -175,11 +175,11 @@ class convEncoder(Encoder):
 
     def __init__(self, in_channels: int, last_size: List,
                  hidden_dims: List[int],
-                 kernel_sizes: List[int] = None,
-                 strides: List[int] = None,
-                 paddings: List[int] = None,
-                 pool_kernels: List[int] = None,
-                 pool_strides: List[int] = None,
+                 kernel_sizes: List[int] = 3,
+                 strides: List[int] = 2,
+                 paddings: List[int] = 1,
+                 pool_kernels: List[int] = 3,
+                 pool_strides: List[int] = 2,
                  dimension: int = 1,
                  basic_layers: Dict = {}
                  ) -> None:
@@ -188,11 +188,11 @@ class convEncoder(Encoder):
 
         h0 = in_channels
 
-        if kernel_sizes is None: kernel_sizes = [3 for _ in hidden_dims]
-        if strides is None:      strides =      [2 for _ in hidden_dims]
-        if paddings is None:     paddings =     [1 for _ in hidden_dims]
-        if pool_kernels is None:     pool_kernels =     [3 for _ in hidden_dims]
-        if pool_strides is None:     pool_strides =     [2 for _ in hidden_dims]
+        kernel_sizes = _extend_for_multilayer(kernel_sizes, len(hidden_dims))
+        strides      = _extend_for_multilayer(strides,      len(hidden_dims))
+        paddings     = _extend_for_multilayer(paddings,     len(hidden_dims))
+        pool_kernels = _extend_for_multilayer(pool_kernels, len(hidden_dims))
+        pool_strides = _extend_for_multilayer(pool_strides, len(hidden_dims))
 
         self.basic_layers = _update_basic_layer(basic_layers, dimension)
 
