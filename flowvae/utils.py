@@ -66,9 +66,6 @@ def warmup_lr(epoch):
         lr =  1 + 0.5 * epoch
     else:
         lr =  10 * 0.95**(epoch - 20)
-    
-    print(epoch, 'lr set to ', lr)
-
     return lr
 
 def warmup_plt_lr(epoch):
@@ -87,9 +84,6 @@ def warmup_plt_lr(epoch):
         lr = 0.001
     else:
         lr = 0.0001
-    
-    print(epoch, 'lr set to ', lr)
-
     return lr
 
 def load_encoder_decoder(_id):

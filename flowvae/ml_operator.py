@@ -10,7 +10,8 @@ from torch.nn.modules import Module
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
 
-import sys, os
+import sys, os, random
+import numpy as np
 from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
@@ -36,6 +37,51 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
     if set_to_eval: model.eval()
 
+def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=-1):
+    
+    avg = int(len(fldata) / k)
+    fold_data_number = [avg+(1, 0)[i > len(fldata) - avg * k] for i in range(k)]
+    all_dataset_indexs = random.sample(range(len(fldata)), len(fldata))
+
+    if krun <= 0:   krun = k
+
+    print('---------------------------------------')
+    print('Start K-fold training with k = %d, krun = %d' % (k, krun))
+
+
+    errors = []
+    errstats = []
+
+    for irun in range(krun):
+
+        print('---------------------------------------')
+        print('')
+        print('K-fold Run %d' % irun)
+
+        idx1 = sum(fold_data_number[:irun])
+        idx2 = sum(fold_data_number[:irun+1])
+        testing_indexs = all_dataset_indexs[idx1:idx2]
+        training_indexs = all_dataset_indexs[:idx1] + all_dataset_indexs[idx2:]
+        
+        print('    training:    0 ~ %d, %d ~ end' % (idx1, idx2))
+        print('    testing :    %d ~ %d' % (idx1, idx2))
+
+        training_dataset = Subset(fldata, training_indexs)
+        testing_dataset = Subset(fldata, testing_indexs)
+
+        trained_model = func_train(irun, training_dataset)
+
+        if func_eval is not None:
+            print('  Evaluating results')
+            error, errstat = func_eval(irun, trained_model, fldata, training_indexs, testing_indexs)
+            errors.append(error)
+            errstats.append(errstat)
+
+    if func_eval is not None:
+        errors   = np.array(errors)
+        errstats = np.array(errstats)
+        return errors, errstats
+        
 class ModelOperator():
     '''
     simple operator model for universial models
@@ -72,6 +118,8 @@ class ModelOperator():
         if dataset is not None:
             self.all_dataset = dataset
             # split training data
+            if split_train_ratio >= 1.0:    self.phases = ['train']
+            else:   self.phases = ['train', 'val']
             self.split_dataset(recover=recover_split, train_r=split_train_ratio)
             self.dataloaders = {phase: DataLoader(self.dataset[phase], 
                                                   batch_size=self.paras['batch_size'], 
@@ -79,7 +127,7 @@ class ModelOperator():
                                                   drop_last=False, 
                                                   num_workers=self.paras['num_workers'], 
                                                   pin_memory=True)
-                                    for phase in ['train', 'val']}     
+                                    for phase in self.phases}     
         # optimizer
         self._optimizer = None
         self._optimizer_name = 'Not set'
@@ -105,7 +153,7 @@ class ModelOperator():
     def set_optname(self, opt_name):
         self.optname = opt_name
 
-        self.output_path = self.output_folder + "/" + opt_name
+        self.output_path = os.path.join(self.output_folder, opt_name)
 
         if not os.path.exists(self.output_path):
             os.mkdir(self.output_path)
@@ -153,8 +201,13 @@ class ModelOperator():
     def split_dataset(self, recover, train_r=0.9, test_r=0.0):
         self.dataset_size = {}
 
+        if train_r >= 1.0:
+            self.dataset['train'] = self.all_dataset
+            self.dataset_size['train'] = len(self.all_dataset)
+            return
+
         if recover is not None:
-            path = self.output_folder + '//' + recover + '//dataset_indice'
+            path = os.path.join(self.output_folder, recover, 'dataset_indice')
             if not os.path.exists(path):
                 raise IOError("checkpoint not exist in {}".format(self.output_folder))
             dataset_dict = torch.load(path, map_location=self.device)
@@ -179,7 +232,7 @@ class ModelOperator():
             self.dataset_size['val'] = train_val_size - self.dataset_size['train']
             self.dataset['train'], self.dataset['val'] = random_split(train_val_dataset, [self.dataset_size['train'], self.dataset_size['val']])
 
-            path = self.output_folder + '//'  + self.optname +  '//dataset_indice'
+            path = os.path.join(self.output_folder, self.optname, 'dataset_indice')
 
             torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
@@ -189,15 +242,15 @@ class ModelOperator():
 
         load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
         #* *** Training section ***
-        print(' === ========Training begin========= ===                                    loss  recons KLD   smooth')
+        print(' === ========Training begin========= ===')
 
         while self.epoch < self.paras['num_epochs']:
 
-            print('\nEpoch {}/{}'.format(self.epoch, self.paras['num_epochs'] - 1))
+            print('Epoch %d/%d   lr = %.4e' % (self.epoch, self.paras['num_epochs'] - 1, self._optimizer.param_groups[0]['lr']))
             load_kwargs, forward_kwargs, loss_kwargs = self._start_of_epoch(load_kwargs, forward_kwargs, loss_kwargs)
             # torch.autograd.set_detect_anomaly(True)
             # 每个epoch都有一个训练和验证阶段
-            for phase in ['train', 'val']:
+            for phase in self.phases:
                 if phase == 'train':
                     self._model.train()  # Set model to training mode
                 else:

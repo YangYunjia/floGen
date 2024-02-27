@@ -112,7 +112,8 @@ class FlowDataset(Dataset):
                 raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
             else:
                 self.data_idx = np.loadtxt(fname, dtype=np.int32)
-
+        elif c_mtd == 'all':
+            self.data_idx = list(range(self.all_output.shape[0]))
         else:
                 
             if is_last:
