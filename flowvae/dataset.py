@@ -31,7 +31,7 @@ class FlowDataset(Dataset):
     def __init__(self, file_name: str or List[str], 
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
-                 test: int = -1, 
+                 test: int = 0, 
                  data_base: str = 'data', 
                  is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
