@@ -236,11 +236,11 @@ class convEncoder_Unet(convEncoder):
 
     def __init__(self, in_channels, last_size,
                  hidden_dims: List = [32, 64, 128],
-                 kernel_sizes: List = None,
-                 strides: List = None,
-                 paddings: List = None,
-                 pool_kernels: List = None,
-                 pool_strides: List = None,
+                 kernel_sizes: List = 3,
+                 strides: List = 2,
+                 paddings: List = 1,
+                 pool_kernels: List = 3,
+                 pool_strides: List = 2,
                  dimension: int = 1,
                  basic_layers: Dict = {}
                  ) -> None:

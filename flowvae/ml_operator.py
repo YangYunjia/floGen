@@ -10,7 +10,7 @@ from torch.nn.modules import Module
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
 
-import sys, os, random
+import sys, os, random, time
 import numpy as np
 from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
@@ -120,13 +120,16 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
     history = {'train_index': [],
                'test_index': [],
                'errors': [],
-               'errstats': []}
+               'errstats': [], 
+               'train_time': []}
 
     for irun in range(krun):
 
         print('---------------------------------------')
         print('')
         print('K-fold Run %d' % irun)
+
+        t0 = time.time()
 
         idx1 = sum(fold_data_number[:irun])
         idx2 = sum(fold_data_number[:irun+1])
@@ -146,6 +149,11 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
         testing_dataset = Subset(fldata, testing_indexs)
 
         trained_model = func_train(irun, training_dataset)
+
+        t1 = time.time()
+
+        print('    Training finish in %.2f sec. ' % (t1 - t0))
+        history['train_time'].append((t1 - t0))
 
         if func_eval is not None:
             print('  Evaluating results...')
@@ -761,8 +769,7 @@ class AEOperator(ModelOperator):
 
     def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
 
-        save_dict = super().load_checkpoint(epoch=epoch, folder=folder, 
-                                            load_opt=load_opt, load_data_split=load_data_split)
+        save_dict = super().load_checkpoint(epoch=epoch, load_opt=load_opt, load_data_split=load_data_split)
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
 
