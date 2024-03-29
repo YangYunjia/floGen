@@ -260,56 +260,6 @@ class convEncoder_Unet(convEncoder):
             # print(inpt.size())
         # raise
         return torch.flatten(inpt, start_dim=1)
-
-'''
-class conv2dEncoder(Encoder):
-
-    def __init__(self,
-                 in_channels: int,
-                 latent_dim: int,
-                 hidden_dims: List,
-                 kernel_sizes: List,
-                 strides: List,
-                 paddings: List,
-                 max_pools: List,
-                 **kwargs) -> None:
-        
-        super().__init__(in_channels)
-        modules = []
-
-        # for k, s, p, mp in zip(kernel_sizes, strides, paddings, max_pools):
-        # self.featuremap_size = pow(2, len(hidden_dims) + sum(max_pool is not None))
-
-        # Build Encoder
-        # print(hidden_dims, max_pools, kernel_sizes, strides, paddings)
-        for h_dim, max_pool, kernel_size, stride, padding in zip(hidden_dims, max_pools, kernel_sizes, strides, paddings):
-            if max_pool is not None:
-                modules.append(
-                nn.Sequential(
-                    nn.Conv2d(in_channels, out_channels=h_dim,
-                              kernel_size=kernel_size, stride=stride, padding=padding),
-                    nn.BatchNorm2d(h_dim),
-                    nn.MaxPool2d(kernel_size=max_pool[0], stride=max_pool[1]),
-                    nn.LeakyReLU())
-                )
-            else:
-                modules.append(
-                    nn.Sequential(
-                        nn.Conv2d(in_channels, out_channels=h_dim,
-                                kernel_size= kernel_size, stride=stride, padding=padding),
-                        nn.BatchNorm2d(h_dim),
-                        nn.LeakyReLU())
-                )
-            in_channels = h_dim
-
-        self.encoder = nn.Sequential(*modules)
-    
-    def forward(self, inpt):
-
-        result = self.encoder(inpt)
-
-        return super().forward(result)
-'''
            
 class Resnet18Encoder(Encoder):
 
@@ -463,7 +413,7 @@ class Decoder(nn.Module):
         self.out_channels = out_channels
         self.is_unet = False
 
-'''
+    '''
         #* input mesh at the last layer of decoder
         self.recon_mesh = recon_mesh
         self.fl_type = final_layer
@@ -491,7 +441,7 @@ class Decoder(nn.Module):
         
         result = self.fl(inpt)
         return result
-'''
+    '''
 
 class mlpDecoder(nn.Module):
     '''
@@ -753,66 +703,18 @@ class BasicDecodeBlock(nn.Module):
 
         return result
 
-'''
-class conv2dDecoder(Decoder):
-
-    def __init__(self,
-				 out_channels: int,
-                 hidden_dims: List,
-                 kernel_sizes: List,
-                 scales: List,
-                 paddings: List,
-                 max_pools: List,
-                 **kwargs) -> None:
-
-        super().__init__(out_channels=out_channels)
-        
-        modules = []
-
-        for i in range(1, len(hidden_dims) - 1):
-            modules.append(
-                nn.Sequential(
-                    nn.ConvTranspose2d(hidden_dims[-i],
-                                       hidden_dims[-i-1],
-                                       kernel_size=kernel_sizes[-i],
-                                       stride=strides[-i],
-                                       padding=paddings[-i],
-                                       output_padding=1),
-                    nn.BatchNorm2d(hidden_dims[-i-1]),
-                    nn.LeakyReLU())
-            )
-        
-        modules.append(
-            nn.Sequential(
-                nn.ConvTranspose2d(hidden_dims[1],
-                                    hidden_dims[0],
-                                    kernel_size=kernel_sizes[1],
-                                    stride=strides[1],
-                                    padding=paddings[1],
-                                    output_padding=0),
-                nn.BatchNorm2d(hidden_dims[0]),
-                nn.LeakyReLU()) 
-        )
-        modules.append(
-            nn.Sequential(
-                nn.ConvTranspose2d(hidden_dims[0],
-                                    hidden_dims[0],
-                                    kernel_size=kernel_sizes[0],
-                                    stride=strides[0],
-                                    padding=paddings[0]),
-                nn.BatchNorm2d(hidden_dims[0]),
-                nn.LeakyReLU()) 
-        ) # N layer
-
-        self.decoder = nn.Sequential(*modules)
-
-    def forward(self, inpt):
-        inpt = inpt.view(tuple([-1] + self.inpt_shape)) # 编码器最后全连接层之前的最后的大小，第一个数字是batch的大小
-        result = self.decoder(inpt)
-        return super().forward(result)
-'''
-
 def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layers: dict = {}, drop_out: float = 0.) -> nn.Module:
+    '''
+    return a multi layer percetron model
+
+    ```text
+    in_features -> hidden_dims[0] -> ... -> hidden_dims[-1] -> out_features
+    ```
+    
+    - `basic_layers`
+    - `drop_out`: (float) if > 0, add a dropout layer after each linear layer with rate = `drop_out`
+
+    '''
 
     return _decoder_input(hidden_dims, in_features, out_features, basic_layers, drop_out)
 
