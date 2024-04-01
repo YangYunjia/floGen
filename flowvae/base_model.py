@@ -71,28 +71,35 @@ class IntpConv2d(IntpConv):
 
 class Convbottleneck(nn.Module):
 
-    def __init__(self, h0, out_channels, kernel_size = 3, stride = 1, padding = 1, last_actv = False, basic_layers = {}) -> None:
+    def __init__(self, h0, out_channels, kernel_size = 3, stride = 1, padding = 1, basic_layers = {}) -> None:
         super().__init__()
 
         layers = []
         layers.append(basic_layers['conv'](h0, out_channels=h0, kernel_size=kernel_size, stride=stride, padding=padding))
-        if basic_layers['bn'] != nn.Identity:  layers.append(basic_layers['bn'](h0))
+        layers += _make_aux_layers(basic_layers, h0),
         layers.append(basic_layers['actv']())
         layers.append(basic_layers['conv'](h0, out_channels=out_channels, kernel_size=1, stride=1, padding=0))
-        if basic_layers['bn'] != nn.Identity:  layers.append(basic_layers['bn'](h0))
-        if last_actv:                       layers.append(basic_layers['actv']())
+        layers += _make_aux_layers(basic_layers, out_channels),
+        if basic_layers['last_actv'] != nn.Identity: layers.append(basic_layers['last_actv']())
 
         self.convs = nn.Sequential(*layers)
 
     def forward(self, input):
         return self.convs(input)
 
+default_basic_layers_0d = {
+    'actv':     nn.LeakyReLU,
+    'batchnorm':  True,
+    'dropout':    0.,
+}
+
 default_basic_layers_1d = {
     'conv':     nn.Conv1d,
     'actv':     nn.LeakyReLU,
     'deconv':   IntpConv1d,
     'pool':     nn.AvgPool1d,
-    'bn':       nn.Identity,
+    'batchnorm':  True,
+    'dropout':    0.,
     'preactive':  False,
     'last_actv':  nn.Identity
 }
@@ -102,25 +109,47 @@ default_basic_layers_2d = {
     'actv':     nn.LeakyReLU,
     'deconv':   IntpConv2d,
     'pool':     nn.AvgPool2d,
-    'bn':       nn.Identity,
+    'batchnorm':  True,
+    'dropout':    0.,
     'preactive':  False,
     'last_actv':  nn.Identity
 }
 
-def _update_basic_layer(basic_layers: dict, dimension: int = 1, batchnorm: bool = False):
+def _update_basic_layer(basic_layers: dict, dimension: int = 1):
+
+    if dimension == 0:
+        basic_layers_n = copy.deepcopy(default_basic_layers_1d)
+        for key in basic_layers: basic_layers_n[key] = basic_layers[key]
+
+        if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm1d
+        if basic_layers_n['dropout'] > 0.:   basic_layers_n['_drop'] = nn.Dropout(basic_layers_n['dropout'])
 
     if dimension == 1:   
         basic_layers_n = copy.deepcopy(default_basic_layers_1d)
-        if batchnorm:   basic_layers_n['bn'] = nn.BatchNorm1d       # if not set batchnorm to True, the batchnorm will
-                                                                    # be a Identity layer that takes any arguments as 
-                                                                    # input, and don't do anything to flux
+        for key in basic_layers: basic_layers_n[key] = basic_layers[key]
+
+        if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm1d
+        if basic_layers_n['dropout'] > 0.:   basic_layers_n['_drop'] = nn.Dropout1d(basic_layers_n['dropout'])
+
     elif dimension == 2: 
         basic_layers_n = copy.deepcopy(default_basic_layers_2d)
-        if batchnorm:   basic_layers_n['bn'] = nn.BatchNorm2d
+        for key in basic_layers: basic_layers_n[key] = basic_layers[key]
 
-    for key in basic_layers: basic_layers_n[key] = basic_layers[key]
+        if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm2d
+        if basic_layers_n['dropout'] > 0.:   basic_layers_n['_drop'] = nn.Dropout2d(basic_layers_n['dropout'])
 
     return basic_layers_n
+
+def _make_aux_layers(basic_layers, h):
+    aux_layers = []
+    if '_bn' in basic_layers.keys():  
+        aux_layers.append(basic_layers['_bn'](h))
+        print('add bn')
+    if '_drop' in basic_layers.keys():  
+        aux_layers.append(basic_layers['_drop'])
+        print('add drop')
+
+    return  aux_layers
 
 class Encoder(nn.Module):
 
@@ -212,7 +241,7 @@ class convEncoder(Encoder):
         for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
             layers = []
             layers.append(self.basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
-            if self.basic_layers['bn'] != nn.Identity:  layers.append(self.basic_layers['bn'](h))
+            layers += _make_aux_layers(self.basic_layers, h)
             layers.append(self.basic_layers['actv']())
             if isinstance(kp, tuple) or (kp > 0 and sp > 0): layers.append(self.basic_layers['pool'](kernel_size=kp, stride=sp))
             h0 = h
@@ -269,18 +298,15 @@ class Resnet18Encoder(Encoder):
                  hidden_dims: List, #  = [16, 32, 64, 128, 256]
                  num_blocks: List = 2,
                  strides: List = 2,
-                 preactive: bool = False, 
                  extra_first_conv: Tuple[int] = None,
                  force_last_size: bool = False,
                  dimension: int = 2,
-                 batchnorm: bool = True,
                  basic_layers: Dict = {}) -> None:
         
         super().__init__(in_channels, last_size, hidden_dims)
 
-        self.preactive = preactive
-        self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension, batchnorm=batchnorm)
-        self.isbias = not batchnorm
+        self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension)
+        self.isbias = not self.basic_layers['batchnorm']
 
         num_blocks = _extend_for_multilayer(num_blocks,  len(hidden_dims))
         strides    = _extend_for_multilayer(strides,     len(hidden_dims))
@@ -290,7 +316,7 @@ class Resnet18Encoder(Encoder):
             h, k, s, p = extra_first_conv
             self.conv1 = nn.Sequential(
                 self.basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=self.isbias),
-                self.basic_layers['bn'](h),
+                *_make_aux_layers(self.basic_layers, h),
                 self.basic_layers['actv']()) 
             h0 = h
         else:
@@ -313,7 +339,7 @@ class Resnet18Encoder(Encoder):
         layers = []
 
         for i_block, st in enumerate(strides):
-            layers.append(BasicEncodeBlock(in_channels, out_channels, st, i_block, batchnorm=not self.isbias, basic_layers=self.basic_layers))
+            layers.append(BasicEncodeBlock(in_channels, out_channels, st, i_block, basic_layers=self.basic_layers))
 
         return nn.Sequential(*layers)
 
@@ -332,62 +358,62 @@ class Resnet18Encoder(Encoder):
      
 class BasicEncodeBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels, stride, i_block, batchnorm, basic_layers):
+    def __init__(self, in_channels, out_channels, stride, i_block, basic_layers):
 
         super().__init__()
 
         self.preactive = basic_layers['preactive']
         self.actv      = basic_layers['actv']
-        self.isbias    = not batchnorm
+        self.isbias    = not basic_layers['batchnorm']
 
         # out_channels = in_channels * stride
         if i_block > 0:
 
             if self.preactive:
                 self.main = nn.Sequential(
-                        basic_layers['bn'](in_channels),
-                        self.actv(),
-                        basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                        basic_layers['bn'](out_channels),
-                        self.actv(),
-                        basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias)
-                    )       
+                    *_make_aux_layers(basic_layers, in_channels),
+                    self.actv(),
+                    basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
+                    *_make_aux_layers(basic_layers, out_channels),
+                    self.actv(),
+                    basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias)
+                )       
             else:
                 self.main = nn.Sequential(
                     basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels),
+                    *_make_aux_layers(basic_layers, out_channels),
                     self.actv(),
                     basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
             self.shortcut = nn.Sequential()
 
         else:
             if self.preactive:
                 self.main = nn.Sequential(
-                        basic_layers['bn'](in_channels),
-                        self.actv(),
-                        basic_layers['conv'](in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=self.isbias),
-                        basic_layers['bn'](out_channels),
-                        self.actv(),
-                        basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias)
-                    )     
+                    *_make_aux_layers(basic_layers, in_channels),
+                    self.actv(),
+                    basic_layers['conv'](in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=self.isbias),
+                    *_make_aux_layers(basic_layers, out_channels),
+                    self.actv(),
+                    basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias)
+                )     
                 self.shortcut = nn.Sequential(
-                    basic_layers['bn'](in_channels),
-                    nn.LeakyReLU(),
+                    *_make_aux_layers(basic_layers, in_channels),
+                    self.actv(),
                     nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=self.isbias)
                 )
             else:
                 self.main = nn.Sequential(
                     basic_layers['conv'](in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels),
+                    *_make_aux_layers(basic_layers, out_channels),
                     self.actv(),
                     basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
                 self.shortcut = nn.Sequential(
                     basic_layers['conv'](in_channels, out_channels, kernel_size=1, stride=stride, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
     
     def forward(self, inpt):
@@ -482,7 +508,7 @@ class convDecoder(Decoder):
                  last_size: List[int],   # the H x W of first layer viewed from last_flat_size
                  hidden_dims: List[int], # Tuple = (128, 64, 32, 16)
                  sizes: List[int],       # Tuple = (26, 101, 401)
-                 kernel_sizes: List[int] = None,
+                 kernel_sizes: List[int] = 3,
                  dimension: int = 1, 
                  last_conv: str = 'normal',
                  basic_layers: Dict = {}
@@ -491,7 +517,8 @@ class convDecoder(Decoder):
         super().__init__(out_channels)
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
-        if kernel_sizes is None: self.kernel_sizes = [3 for _ in hidden_dims]
+
+        kernel_sizes = _extend_for_multilayer(kernel_sizes,  len(hidden_dims))
 
         self.basic_layers = _update_basic_layer(basic_layers, dimension)
 
@@ -501,6 +528,7 @@ class convDecoder(Decoder):
 
         for h, s, k in zip(hidden_dims[1:], sizes, self.kernel_sizes[:-1]):
             layers.append(self.basic_layers['deconv'](in_channels=h0, out_channels=h, kernel_size=k, size=s))
+            layers += _make_aux_layers(self.basic_layers, h)
             layers.append(self.basic_layers['actv']())
             h0 = h
         self.convs = nn.Sequential(*layers)
@@ -508,8 +536,7 @@ class convDecoder(Decoder):
         if last_conv == 'normal':
             self.last_conv = self.basic_layers['conv'](hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
         elif last_conv == 'bottleneck':
-            self.last_conv = Convbottleneck(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1,
-                                            last_actv=False, basic_layers=self.basic_layers)
+            self.last_conv = Convbottleneck(hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1, basic_layers=self.basic_layers)
 
 
     def forward(self, inpt: torch.Tensor):
@@ -600,7 +627,7 @@ class Resnet18Decoder(Decoder):
         if output_size is not None:
             self.conv1 = nn.Sequential(
                 self.basic_layers['deconv'](h0, h0, kernel_size=3, size=output_size),
-                self.basic_layers['bn'](h0),
+                *_make_aux_layers(self.basic_layers, h0),
                 self.basic_layers['actv']())
         else:
             self.conv1 = nn.Identity()
@@ -616,7 +643,7 @@ class Resnet18Decoder(Decoder):
         layers = []
 
         for st in scales:
-            layers.append(BasicDecodeBlock(in_channels, out_channels, st, not self.isbias, self.basic_layers))
+            layers.append(BasicDecodeBlock(in_channels, out_channels, st, self.basic_layers))
             # self.layer_in_channels = out_channels
         
         return nn.Sequential(*layers)
@@ -633,13 +660,13 @@ class Resnet18Decoder(Decoder):
 
 class BasicDecodeBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels, scale, batchnorm, basic_layers):
+    def __init__(self, in_channels, out_channels, scale, basic_layers):
 
         super().__init__()
 
         self.preactive = basic_layers['preactive']
         self.actv      = basic_layers['actv']
-        self.isbias    = not batchnorm
+        self.isbias    = not basic_layers['batchnorm']
 
         # out_channels = int(in_channels / scale)
 
@@ -657,10 +684,10 @@ class BasicDecodeBlock(nn.Module):
             else:
                 self.main = nn.Sequential(
                     basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels),
+                    *_make_aux_layers(basic_layers, out_channels),
                     self.actv(),
                     basic_layers['conv'](out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
             
             self.shortcut = nn.Sequential()
@@ -684,14 +711,14 @@ class BasicDecodeBlock(nn.Module):
             else:
                 self.main = nn.Sequential(
                     basic_layers['conv'](in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=self.isbias),
-                    basic_layers['bn'](in_channels),
+                    *_make_aux_layers(basic_layers, in_channels),
                     self.actv(),
                     basic_layers['deconv'](in_channels, out_channels, kernel_size=3, scale_factor=scale, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
                 self.shortcut = nn.Sequential(
                     basic_layers['deconv'](in_channels, out_channels, kernel_size=3, scale_factor=scale, bias=self.isbias),
-                    basic_layers['bn'](out_channels)
+                    *_make_aux_layers(basic_layers, out_channels)
                 )
     
     def forward(self, inpt):
@@ -703,7 +730,7 @@ class BasicDecodeBlock(nn.Module):
 
         return result
 
-def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layers: dict = {}, drop_out: float = 0.) -> nn.Module:
+def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layers: dict = {}) -> nn.Module:
     '''
     return a multi layer percetron model
 
@@ -712,15 +739,15 @@ def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layer
     ```
     
     - `basic_layers`
-    - `drop_out`: (float) if > 0, add a dropout layer after each linear layer with rate = `drop_out`
+        - `dropout`: (float, default = 0.) if > 0, add a dropout layer after each linear layer with rate = `dropout`
 
     '''
 
-    return _decoder_input(hidden_dims, in_features, out_features, basic_layers, drop_out)
+    return _decoder_input(hidden_dims, in_features, out_features, basic_layers)
 
-def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}, drop_out: float = 0.) -> nn.Module:
+def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
 
-    basic_layers = _update_basic_layer(basic_layers)
+    basic_layers = _update_basic_layer(basic_layers, dimension=0)
 
     if isinstance(typ, int):
         if typ == 0:
@@ -756,9 +783,7 @@ def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}, drop_
         h0 = ld
         for h in typ + [lfd]:
             layers.append(nn.Linear(h0, h))
-            if basic_layers['bn'] != nn.Identity:   layers.append(basic_layers['bn'](h))
-            # layers.append(nn.BatchNorm1d(h))
-            if drop_out > 0.:   layers.append(nn.Dropout(p=drop_out))
+            layers += _make_aux_layers(basic_layers, h)
             layers.append(basic_layers['actv']())
             h0 = h
 
