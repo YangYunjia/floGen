@@ -61,7 +61,7 @@ class AutoEncoder(nn.Module):
                 decoder_input = _decoder_input(typ=decoder_input_layer, 
                                                ld=self.latent_dim, 
                                                lfd=decoder.last_flat_size,
-                                               drop_out=decoder_input_dropout)
+                                               basic_layers={'dropout': decoder_input_dropout})
                 _decoder_inputs.append(decoder_input)
             self.decoder_inputs = nn.ModuleList(_decoder_inputs)
         else:
@@ -69,7 +69,7 @@ class AutoEncoder(nn.Module):
             self.decoder_input = _decoder_input(typ=decoder_input_layer, 
                                                 ld=self.latent_dim, 
                                                 lfd=self.decoder.last_flat_size, 
-                                                drop_out=decoder_input_dropout)
+                                                basic_layers={'dropout': decoder_input_dropout})
 
     def encode(self, input: Tensor) -> Tensor:
         # print(input.size())
@@ -700,8 +700,21 @@ class BranchUnet(Unet):
         return cat_results
 
 class DecoderModel(AutoEncoder):
+    '''
+    The framework for a decoder model
 
-    def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
+    ```text
+
+    input -> [decoder_input_layers] -> [decoder]
+    
+    ```
+
+    - `decoder_input_layers`: see `base_model._decoder_input`
+    - `decoder`: see `base_model.decoder`
+    
+    '''
+
+    def __init__(self, decoder: Decoder, device: str, decoder_input_layer: float = 1.5, input_channels: int = 0) -> None:
         super().__init__(latent_dim=input_channels, decoder=decoder, decoder_input_layer=decoder_input_layer, device=device)
 
     def forward(self, inputs: Tensor):

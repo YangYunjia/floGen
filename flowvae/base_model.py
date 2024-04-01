@@ -89,7 +89,7 @@ class Convbottleneck(nn.Module):
 
 default_basic_layers_0d = {
     'actv':     nn.LeakyReLU,
-    'batchnorm':  True,
+    'batchnorm':  False,
     'dropout':    0.,
 }
 
@@ -118,7 +118,7 @@ default_basic_layers_2d = {
 def _update_basic_layer(basic_layers: dict, dimension: int = 1):
 
     if dimension == 0:
-        basic_layers_n = copy.deepcopy(default_basic_layers_1d)
+        basic_layers_n = copy.deepcopy(default_basic_layers_0d)
         for key in basic_layers: basic_layers_n[key] = basic_layers[key]
 
         if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm1d
@@ -601,7 +601,6 @@ class Resnet18Decoder(Decoder):
                  scales: List = 2, # = [2, 2, 2, 2, 2, 2],
                  output_size: List[int] = None, # if is not None, addition layer to interpolate
                  dimension: int = 2,
-                 batchnorm: bool = True,
                  basic_layers: Dict = {}):
         
         super().__init__(out_channels)
@@ -609,8 +608,8 @@ class Resnet18Decoder(Decoder):
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
 
-        self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension, batchnorm=batchnorm)
-        self.isbias = not batchnorm
+        self.basic_layers = _update_basic_layer(basic_layers, dimension=dimension)
+        self.isbias = not self.basic_layers['batchnorm']
 
         num_blocks = _extend_for_multilayer(num_blocks, len(hidden_dims[1:]))
         scales     = _extend_for_multilayer(scales,     len(hidden_dims[1:]))
@@ -1161,4 +1160,3 @@ class LSTM(nn.Module):
         for i in range(self.num_layers):
             init_states.append(self.cell_list[i].init_hidden(batch_size, image_size))
         return init_states
-
