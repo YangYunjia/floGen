@@ -76,10 +76,10 @@ class Convbottleneck(nn.Module):
 
         layers = []
         layers.append(basic_layers['conv'](h0, out_channels=h0, kernel_size=kernel_size, stride=stride, padding=padding))
-        layers += _make_aux_layers(basic_layers, h0),
+        layers += _make_aux_layers(basic_layers, h0)
         layers.append(basic_layers['actv']())
         layers.append(basic_layers['conv'](h0, out_channels=out_channels, kernel_size=1, stride=1, padding=0))
-        layers += _make_aux_layers(basic_layers, out_channels),
+        layers += _make_aux_layers(basic_layers, out_channels)
         if basic_layers['last_actv'] != nn.Identity: layers.append(basic_layers['last_actv']())
 
         self.convs = nn.Sequential(*layers)
@@ -124,7 +124,7 @@ def _update_basic_layer(basic_layers: dict, dimension: int = 1):
         if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm1d
         if basic_layers_n['dropout'] > 0.:   basic_layers_n['_drop'] = nn.Dropout(basic_layers_n['dropout'])
 
-    if dimension == 1:   
+    elif dimension == 1:   
         basic_layers_n = copy.deepcopy(default_basic_layers_1d)
         for key in basic_layers: basic_layers_n[key] = basic_layers[key]
 
@@ -173,7 +173,7 @@ class Encoder(nn.Module):
     def forward(self, inpt: Tensor) -> Tensor:
         # print(inpt.size())
 
-        return torch.flatten(inpt, start_dim=1)
+        return inpt
 
 class mlpEncoder(Encoder):
     '''
@@ -259,7 +259,7 @@ class convEncoder(Encoder):
 
         # print(inpt.size(), len(self.convs))
         # raise
-        return super().forward(inpt)
+        return inpt
 
 class convEncoder_Unet(convEncoder):
 
@@ -288,7 +288,7 @@ class convEncoder_Unet(convEncoder):
             self.feature_maps.append(inpt)
             # print(inpt.size())
         # raise
-        return torch.flatten(inpt, start_dim=1)
+        return inpt
            
 class Resnet18Encoder(Encoder):
 
@@ -353,8 +353,7 @@ class Resnet18Encoder(Encoder):
 
         # print('Encoder last layer input:', result.size())
 
-        
-        return super().forward(result)
+        return result
      
 class BasicEncodeBlock(nn.Module):
 
@@ -518,7 +517,7 @@ class convDecoder(Decoder):
         self.inpt_shape = tuple([-1] + [hidden_dims[0]] + last_size)
         self.last_flat_size = abs(reduce(lambda x, y: x*y, self.inpt_shape))
 
-        kernel_sizes = _extend_for_multilayer(kernel_sizes,  len(hidden_dims))
+        self.kernel_sizes = _extend_for_multilayer(kernel_sizes,  len(hidden_dims))
 
         self.basic_layers = _update_basic_layer(basic_layers, dimension)
 
@@ -551,12 +550,13 @@ class convDecoder_Unet(convDecoder):
                  hidden_dims: List[int], 
                  sizes: List[int], 
                  encoder_hidden_dims: List[int],
-                 kernel_sizes: List[int] = None,
+                 kernel_sizes: List[int] = 3,
                  dimension: int = 1,
+                 last_conv: str = 'normal',
                  basic_layers: Dict = {}) -> None:
         
         unet_hidden_dims = [hidden_dims[i] + encoder_hidden_dims[i] for i in range(len(hidden_dims))]
-        super().__init__(out_channels, last_size, unet_hidden_dims, sizes, kernel_sizes, dimension, basic_layers)
+        super().__init__(out_channels, last_size, unet_hidden_dims, sizes, kernel_sizes, dimension, last_conv, basic_layers)
 
         # The input shape and last flatten size should use non-unet hidden dimension
         # Here cover the value from the initialization of the super class
@@ -568,12 +568,12 @@ class convDecoder_Unet(convDecoder):
         for uh, h, s, k in zip(unet_hidden_dims[:-1], hidden_dims[1:], sizes, self.kernel_sizes[:-1]):
             layers = []
             layers.append(self.basic_layers['deconv'](in_channels=uh, out_channels=h, kernel_size=k, size=s))
-            if self.basic_layers['bn'] != nn.Identity:  layers.append(self.basic_layers['bn'](h))
+            layers += _make_aux_layers(self.basic_layers, h)
             layers.append(self.basic_layers['actv']())
             _convs.append(nn.Sequential(*layers))
             
         self.convs = nn.ModuleList(_convs)
-        self.last_conv = self.basic_layers['conv'](unet_hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
+        # self.last_conv = self.basic_layers['conv'](unet_hidden_dims[-1], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
 
         self.is_unet = True
 
