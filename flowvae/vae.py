@@ -50,7 +50,11 @@ class AutoEncoder(nn.Module):
             pass
         else:
             self.encoder = encoder
-            self.fc_mu = nn.Linear(self.encoder.last_flat_size, latent_dim)
+            if latent_dim > 0:
+                self.fc_mu = nn.Sequential(nn.Flatten(start_dim=1),
+                                           nn.Linear(self.encoder.last_flat_size, latent_dim))
+            else:
+                self.fc_mu = nn.Identity()
 
         if decoder is None:
             pass
@@ -95,6 +99,33 @@ class AutoEncoder(nn.Module):
 
         mu = self.encode(inputs)
         return [self.decode(mu), mu]
+
+class CondAutoEncoder(AutoEncoder):
+
+    def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
+                 code_mode: str = 'prod', coder: nn.Module = None,
+                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+        
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+        self.coder = coder
+        self.code_mode = code_mode
+        if code_mode == 'prod':
+            self.code_func = self._prod
+        elif code_mode == 'cat':
+            self.code_func = self._cat
+
+    def _prod(self, mu: Tensor, c: Tensor):
+        return mu * c
+    
+    def _cat(self, mu: Tensor, c: Tensor):
+        return torch.cat([c, mu], dim=1)
+
+    def forward(self, inputs: Tensor, code: Tensor) -> List[Tensor]:
+
+        mu = self.encode(inputs)
+        c  = self.coder(code)
+
+        return [self.decode(self.code_func(mu, c)), mu, c]
 
 class EncoderDecoder(AutoEncoder):
     '''
