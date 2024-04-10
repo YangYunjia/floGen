@@ -156,7 +156,7 @@ class ResnetEncoder_Unet(Resnet18Encoder):
         for block in self.blocks:
             result = block(result)
             self.feature_maps.append(result)
-            # print(inpt.size())
+#             print(result.size())
         # raise
         result = self.adap(result)
         
@@ -280,16 +280,16 @@ class Resnet18Decoder(Decoder):
                     self.basic_layers['last_actv']())
 
     def _make_layer(self, in_channels, out_channels, num_blocks, scale, size):
-        if scale is None:
+        if size is not None:
             scales = [None] * num_blocks
             sizes = [size] + [None] * (num_blocks - 1)
-        elif size is None:
+        elif scale is not None:
             scales = [scale] + [1] * (num_blocks - 1)
             sizes = [None] * num_blocks
 
         layers = []
 
-        for i_block in range(len(scales)):
+        for i_block in range(num_blocks):
             layers.append(BasicDecodeBlock(in_channels, out_channels, scales[i_block], sizes[i_block], i_block, self.basic_layers))
             # self.layer_in_channels = out_channels
         
@@ -412,12 +412,12 @@ class ResnetDecoder_Unet(Resnet18Decoder):
         idx = len(encoder_feature_map) - 1
 
         for block in self.blocks:
-            # print(inpt.size(), encoder_feature_map[idx].size())
+#             print(inpt.size(), encoder_feature_map[idx].size())
             inpt = torch.cat((inpt, encoder_feature_map[idx]), dim=1)
             idx -= 1
             inpt = block(inpt)
 
-        # print(inpt.size(), encoder_feature_map[idx].size())
+#         print(inpt.size(), encoder_feature_map[idx].size())
         inpt = torch.cat((inpt, encoder_feature_map[idx]), dim=1)
 
         result = self.conv1(inpt)
