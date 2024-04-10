@@ -144,10 +144,10 @@ def _make_aux_layers(basic_layers, h):
     aux_layers = []
     if '_bn' in basic_layers.keys():  
         aux_layers.append(basic_layers['_bn'](h))
-        print('add bn')
+        # print('add bn')
     if '_drop' in basic_layers.keys():  
         aux_layers.append(basic_layers['_drop'])
-        print('add drop')
+        # print('add drop')
 
     return  aux_layers
 
@@ -744,7 +744,7 @@ def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layer
 
     return _decoder_input(hidden_dims, in_features, out_features, basic_layers)
 
-def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
+def _decoder_input(typ: float or List[int], ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
 
     basic_layers = _update_basic_layer(basic_layers, dimension=0)
 
@@ -788,11 +788,8 @@ def _decoder_input(typ: float, ld: int, lfd: int, basic_layers: dict = {}) -> nn
 
         return nn.Sequential(*layers)
 
-    elif isinstance(typ, nn.Module):
-        return typ
-
     else:
-        raise KeyError('not a valid type for decoder input, choose from `float`, `list[int]`, `nn.Module`')
+        raise KeyError('not a valid type for decoder input, choose from `float`, `list[int]`')
 
 '''
 Citation: https://github.com/ndrplz/ConvLSTM_pytorch/blob/master/convlstm.py

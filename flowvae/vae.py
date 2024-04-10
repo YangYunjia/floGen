@@ -33,7 +33,7 @@ class AutoEncoder(nn.Module):
                  latent_dim: int,
                  encoder: Encoder = None,
                  decoder: Decoder = None,
-                 decoder_input_layer: int = 0,
+                 decoder_input_layer: float or List[int] or nn.Module = 0.,
                  decoder_input_dropout: float = 0.,
                  device = 'cuda:0',
                  **kwargs) -> None:
@@ -59,22 +59,28 @@ class AutoEncoder(nn.Module):
         if decoder is None:
             pass
         elif isinstance(decoder, list):
-            _decoder_inputs = []
             self.decoders = nn.ModuleList(decoder)
+            _decoder_inputs = []
             for decoder in self.decoders:
-                decoder_input = _decoder_input(typ=decoder_input_layer, 
-                                               ld=self.latent_dim, 
-                                               lfd=decoder.last_flat_size,
-                                               basic_layers={'dropout': decoder_input_dropout})
+                if isinstance(decoder_input_layer, nn.Module):
+                    decoder_input = decoder_input_layer
+                else:
+                    decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                                   ld=self.latent_dim, 
+                                                   lfd=decoder.last_flat_size,
+                                                   basic_layers={'dropout': decoder_input_dropout})
                 _decoder_inputs.append(decoder_input)
             self.decoder_inputs = nn.ModuleList(_decoder_inputs)
         else:
             self.decoder = decoder
-            self.decoder_input = _decoder_input(typ=decoder_input_layer, 
-                                                ld=self.latent_dim, 
-                                                lfd=self.decoder.last_flat_size, 
-                                                basic_layers={'dropout': decoder_input_dropout})
-
+            if isinstance(decoder_input_layer, nn.Module):
+                self.decoder_input = decoder_input_layer
+            else:
+                self.decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                                    ld=self.latent_dim, 
+                                                    lfd=self.decoder.last_flat_size, 
+                                                    basic_layers={'dropout': decoder_input_dropout})
+                
     def encode(self, input: Tensor) -> Tensor:
         # print(input.size())
         results = self.encoder(input)
@@ -113,13 +119,23 @@ class CondAutoEncoder(AutoEncoder):
             self.code_func = self._prod
         elif code_mode == 'cat':
             self.code_func = self._cat
+        elif code_mode == 'expd':
+            self.code_func = self._expd
+        elif code_mode == 'expd1':
+            self.code_func = self._expd1
 
     def _prod(self, mu: Tensor, c: Tensor):
         return mu * c
     
     def _cat(self, mu: Tensor, c: Tensor):
-        return torch.cat([c, mu], dim=1)
-
+        return torch.cat([mu, c.unsqueeze(3).repeat(1, 1, 1, mu.size(3))], dim=1)
+    
+    def _expd(self, mu: Tensor, c: Tensor):
+        return torch.einsum('bczi,bcz->bczi', mu, c)
+    
+    def _expd1(self, mu: Tensor, c: Tensor):
+        return torch.flatten(torch.einsum('bczi,bhz->bchzi', mu, c), start_dim=1, end_dim=2)
+    
     def forward(self, inputs: Tensor, code: Tensor) -> List[Tensor]:
 
         mu = self.encode(inputs)
