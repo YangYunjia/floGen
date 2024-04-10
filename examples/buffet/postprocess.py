@@ -1,7 +1,7 @@
 from flowvae.vae import EncoderDecoder
 from flowvae.ml_operator import AEOperator
 from flowvae.dataset import ConditionDataset
-from flowvae.base_model import convDecoder, convEncoder
+from flowvae.base_model.conv import convDecoder, convEncoder
 from flowvae.app.buffet import Series, Buffet, Ploter
 import matplotlib.pyplot as plt
 

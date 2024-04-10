@@ -14,7 +14,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from flowvae.dataset import ConditionDataset
-from flowvae.base_model import Encoder, Decoder, _decoder_input
+from flowvae.base_model.utils import Encoder, Decoder
+from flowvae.base_model.mlp import _decoder_input
 
 import numpy as np
 import copy
