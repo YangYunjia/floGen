@@ -709,10 +709,14 @@ class BranchEncoderDecoder(EncoderDecoder):
         # print(cat_results.size())
         return cat_results
 
-class Unet(EncoderDecoder):
+class Unet(CondAutoEncoder):
 
-    def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
-        super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, device, **kwargs)
+    def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
+                 code_mode: str = 'prod', coder: nn.Module = None, 
+                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+        
+        super().__init__(latent_dim, encoder, decoder, code_mode, coder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+
         if isinstance(decoder, Decoder):
             if not (self.encoder.is_unet and self.decoder.is_unet):
                 raise Exception('Encoder or Decoder does not support U-Net')
@@ -726,7 +730,7 @@ class Unet(EncoderDecoder):
             self.encoder.feature_maps[idx] = self.encoder.feature_maps[idx].repeat(n, 1, 1)
         # print( self.encoder.feature_maps[0].size())
 
-    def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
+    def decode(self, z: Tensor) -> Tensor:
         
         result = self.decoder_input(z)
         result = self.decoder(result, encoder_feature_map=self.encoder.feature_maps)
