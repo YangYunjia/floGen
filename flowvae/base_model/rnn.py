@@ -25,7 +25,7 @@ class BasicLSTMCell(nn.Module):
         self.gate = nn.Identity()
         self.drop_out = nn.Identity()
 
-    def forward(self, input_tensor, cur_state):
+    def forward(self, input_tensor: Tensor, cur_state: List[Tensor]) -> List[Tensor]:
         h_cur, c_cur = cur_state
 
         combined = torch.cat([self.drop_out(input_tensor), h_cur], dim=1)  # concatenate along channel axis
@@ -124,7 +124,7 @@ class BasicGRUCell(nn.Module):
         hidden_sizes = tuple([batch_size, self.hidden_dim] + image_size)
         return [Variable(torch.zeros(hidden_sizes, device=self.conv_gates.weight.device))]
     
-    def forward(self, input_tensor, cur_state):
+    def forward(self, input_tensor: Tensor, cur_state: List[Tensor]) -> List[Tensor]:
         """
 
         :param self:
@@ -290,7 +290,7 @@ class LSTM(nn.Module):
         self.cell_list = nn.ModuleList(cell_list)
         self.image_size = image_size
 
-    def forward(self, input_tensor, hidden_state=None):
+    def forward(self, input_tensor: Tensor, hidden_state: List[Tensor] = None) -> List[Tensor]:
         """
 
         Parameters

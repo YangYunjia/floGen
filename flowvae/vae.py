@@ -85,7 +85,6 @@ class AutoEncoder(nn.Module):
     def encode(self, input: Tensor) -> Tensor:
         # print(input.size())
         results = self.encoder(input)
-        # print(results.size())
         return self.fc_mu(results)
 
     def decode(self, z: Tensor) -> Tensor:
@@ -107,15 +106,53 @@ class AutoEncoder(nn.Module):
         mu = self.encode(inputs)
         return [self.decode(mu), mu]
 
+class VariAutoEncoder(AutoEncoder):
+
+    def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
+                 decoder_input_layer: float or List[int] or nn.Module = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+
+        if latent_dim > 0:
+            self.fc_var = nn.Sequential(nn.Flatten(start_dim=1),
+                                        nn.Linear(self.encoder.last_flat_size, latent_dim))
+        else:
+            self.fc_var = nn.Identity()
+
+    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
+        """
+        Reparameterization trick to sample from N(mu, var) from
+        N(0,1).
+        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
+        :return: (Tensor) [B x D]
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps * std + mu
+    
+    def encode(self, input: Tensor) -> Tensor:
+        # print(input.size())
+        results = self.encoder(input)
+        return [self.fc_mu(results), self.fc_var(results)]
+    
+    def forward(self, inputs: Tensor) -> List[Tensor]:
+
+        mu, logvar = self.encode(inputs)
+        z = self.reparameterize(mu, logvar)
+
+        return [self.decode(z), mu, logvar]
+
 class CondAutoEncoder(AutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
-                 code_mode: str = 'prod', coder: nn.Module = None,
+                 code_mode: str = 'prod', coder: nn.Module = nn.Identity(), code_dim: int = 1,
                  decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
         
         super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
         self.coder = coder
         self.code_mode = code_mode
+        self.code_dim  = code_dim
+
         if code_mode == 'prod':
             self.code_func = self._prod
         elif code_mode == 'cat':
@@ -124,6 +161,15 @@ class CondAutoEncoder(AutoEncoder):
             self.code_func = self._expd
         elif code_mode == 'expd1':
             self.code_func = self._expd1
+        else:
+            # original Encoder-Decoder class
+            ld = self.latent_dim
+            cd = self.code_dim
+            fd = ld - cd
+            lfe = self.encoder.last_flat_size
+            if code_mode in ['ed']:
+                self.fc_mu = nn.Sequential(nn.Flatten(start_dim=1), nn.Linear(lfe, fd))
+                self.code_func = self._1ded
 
     def _prod(self, mu: Tensor, c: Tensor):
         return mu * c
@@ -137,6 +183,43 @@ class CondAutoEncoder(AutoEncoder):
     def _expd1(self, mu: Tensor, c: Tensor):
         return torch.flatten(torch.einsum('bczi,bhz->bchzi', mu, c), start_dim=1, end_dim=2)
     
+    def _1ded(self, mu: Tensor, c: Tensor):
+        '''
+        original ae, ed
+        '''
+#         print(mu.size())
+#         mu = self.fc_mu(torch.flatten(mu, start_dim=1))
+        return torch.cat([c, mu], dim=1)
+
+
+    # def _1dved(self, mu: Tensor, log_var: Tensor, c: Tensor):
+        # elif self.cm in ['ved']:
+        #     #! this is log_var, so std_var=1 means log_var=0
+        #     zc = self.reparameterize(c, torch.zeros_like(c, device=self.device))
+        #     zf = self.reparameterize(mu, log_var)
+        #     zc = self.fc_code(zc)
+        #     z = torch.cat([zc, zf], dim=1)
+        
+        # elif self.cm in ['ved1']:
+        #     zf = self.reparameterize(mu, log_var)
+        #     zc = self.fc_code(kwargs['code'])
+        #     z = torch.cat([zc, zf], dim=1)
+
+        # elif self.cm in ['semi']:
+        #     z = self.reparameterize(mu, log_var)
+        #     zc = self.fc_code(kwargs['code'])
+        #     # print("new, old:", kwargs['code'], z[:, 0])
+        #     z[:, :zc.size()[1]] = zc
+
+        # elif self.cm in ['ex']:
+        #     zf = self.reparameterize(mu, log_var)
+        #     zc = self.fc_code(kwargs['code'])
+        #     z = torch.cat([zc, zf], dim=1)
+
+        # elif self.cm in ['im']:
+        #     z = self.reparameterize(mu, log_var)
+        #     # TODO: the mode `im` is not consist with code layers!
+
     def forward(self, inputs: Tensor, code: Tensor) -> List[Tensor]:
 
         mu = self.encode(inputs)
@@ -712,10 +795,10 @@ class BranchEncoderDecoder(EncoderDecoder):
 class Unet(CondAutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
-                 code_mode: str = 'prod', coder: nn.Module = None, 
+                 code_mode: str = 'prod', coder: nn.Module = nn.Identity(), code_dim = 1,
                  decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
         
-        super().__init__(latent_dim, encoder, decoder, code_mode, coder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+        super().__init__(latent_dim, encoder, decoder, code_mode, coder, code_dim, decoder_input_layer, decoder_input_dropout, device, **kwargs)
 
         if isinstance(decoder, Decoder):
             if not (self.encoder.is_unet and self.decoder.is_unet):
