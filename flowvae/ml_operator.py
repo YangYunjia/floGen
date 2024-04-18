@@ -185,7 +185,22 @@ def K_fold_evaluate(fldata, model, func_eval, folder, history, device):
 
 class ModelOperator():
     '''
-    simple operator model for universial models
+    simple operator class for universial models
+    
+    ### paras
+
+    - `opt_name`:   (`str`)   name of operator, will be used as the folder name of save files
+    - `model`:  (`nn.Module`)   model to be trained
+    - `dataset`:    (`FlowDataset` or `ConditionDataset`)   dataset to train the model
+    - `output_folder`:  the folder to store save folders, **must exist**
+    - `init_lr`:    (`float`, default = 0.01)   learning rate at first epoch
+    - `num_epoch`:  (`int`, default = 50)   number of epochs to train the model
+    - `split_train_ratio`:  (`float`, default = 0.9)    the ratio of training and validation samples for training
+        - if `<= 0.`, the validation step will not take place
+    - `recover_split`:  (`str`, default = `None`)   if is not `None`, the split index of train & validation will be
+            recovered from the file
+    - `batch_size`: (`int`, default = `8`)  batch size
+    - `shuffle`:    (`bool`, default = `True`)  shuffle
     
     '''
     def __init__(self, opt_name: str, 
@@ -512,33 +527,77 @@ class ModelOperator():
             print('------- All layers are set grad require ------')
 
 class BasicAEOperator(ModelOperator):
+    '''
+    Auto-encoder operator, the shape for input and output should be same
+    - The reference flowfield can be add
+
+    ### paras
+
+    - `ref`:    (`bool`, default = `False`)    if `True`, the input is added to the output, then compare to the ground truth
+        
+        output of the model:
+
+        >>>      output[:, self.ref_channels[0]: self.ref_channels[1]] 
+        >>>     + input[:, self.recon_channels[0]: self.recon_channels[1]]
+        >>>     = label
+
+        input to the model: 
+
+        >>>      input[:, self.input_channels[0]: self.input_channels[1]]
+
+    
+    ### paras
+
+    - `opt_name`:   (`str`)   name of operator, will be used as the folder name of save files
+    - `model`:  (`nn.Module`)   model to be trained
+    - `dataset`:    (`FlowDataset` or `ConditionDataset`)   dataset to train the model
+    - `output_folder`:  the folder to store save folders, **must exist**
+    - `init_lr`:    (`float`, default = 0.01)   learning rate at first epoch
+    - `num_epoch`:  (`int`, default = 50)   number of epochs to train the model
+    - `split_train_ratio`:  (`float`, default = 0.9)    the ratio of training and validation samples for training
+        - if `<= 0.`, the validation step will not take place
+    - `recover_split`:  (`str`, default = `None`)   if is not `None`, the split index of train & validation will be
+            recovered from the file
+    - `batch_size`: (`int`, default = `8`)  batch size
+    - `shuffle`:    (`bool`, default = `True`)  shuffle
+
+
+    
+    '''
 
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
                  output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
                  split_train_ratio: float = 0.9, recover_split: str = None, 
                  batch_size: int = 8, shuffle: bool = True,
-                 ref: bool = False):
+                 ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
         super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
         self.ref = ref
-        
-        # if ref:
-        #     # reference
-        #     self.ref_data = torch.zeros_like(dataset.output)
-        #     inpt_channels = dataset.inputs.size(1)
-        #     self.ref_data[:, :inpt_channels] = dataset.inputs
+        self.ref_channels = ref_channels
+        self.recon_channels = recon_channels
+        self.input_channels = input_channels
 
+    def _forward_model(self, data, kwargs):
+        return self._model(data['input'][:, self.input_channels[0]: self.input_channels[1]])
+    
     def _calculate_loss(self, data, output, kwargs):
         # print(output[0].size(), data['label'].size())
         labels = data['label']
-        if self.ref: labels[:, :2] -= data['input']
+        if self.ref: labels[:, self.ref_channels[0]: self.ref_channels[1]] -= data['input'][:, self.recon_channels[0]: self.recon_channels[1]]
 
         return {'loss': torch.nn.functional.mse_loss(output[0], labels)}
 
 class BasicCondAEOperator(BasicAEOperator):
+    '''
+    Conditional AE operator
+
+    the model has an extra arguments of `code` with `aux` in dataset
+    
+    
+    '''
 
     def _forward_model(self, data, kwargs):
         # print(data['aux'].size(), data['input'].size())
-        return self._model(data['input'], code=data['aux'])
+        return self._model(data['input'][:, self.input_channels[0]: self.input_channels[1]], code=data['aux'])
 
 class AEOperator(ModelOperator):
     '''
@@ -767,7 +826,7 @@ class AEOperator(ModelOperator):
         
         self._model.load_state_dict(saved_model, strict=False)
 
-    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
+    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
 
         save_dict = super().load_checkpoint(epoch=epoch, load_opt=load_opt, load_data_split=load_data_split)
         self._model.series_data = save_dict['series_data']
