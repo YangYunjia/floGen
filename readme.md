@@ -512,7 +512,7 @@ The arguments of the `AEOperator` are:
 |`split_train_ratio`|`float`|**Default**  `0.9`<br/> The ratio of the training dataset, the rest will be the validation dataset. The latter is not involved in the training but is monitored to avoid over-fitting. Notice that the test dataset is split when constructing the `ConditionDataset`.
 |`recover_split`|`str`|**Default**  `None`<br/> Whether to recover the split of the dataset (train and validation dataset). If it is `None`, the dataset will be randomly split with the `split_train_ratio`, and the split result will be saved in `'<output_folder>/<optname>/dataset_indice'`. If it is not, the split will be recovered from `'<output_folder>/<recover_split>/dataset_indice'`<br/> 
 |`batch_size` | `int` | **Default**  `8`<br/>  The mini-batch size (argument for `torch.utils.data.DataLoader`)|
-|`shuffle | `bool` | **Default**  `True`<br/>  Whether to shuffle the dataset when training (argument for `torch.utils.data.DataLoader`)|
+|`shuffle` | `bool` | **Default**  `True`<br/>  Whether to shuffle the dataset when training (argument for `torch.utils.data.DataLoader`)|
 |**Model**
 |`ref`|`bool`|**Default**  `False`<br/> Whether to use the *residual learning* strategy, i.e., to use the residual value of the operating condition, and to reconstruct the residual field
 |`input_cahnnels`|`Tuple[int, int]`| **Default**  `(None, None)`<br/> The lower and upper range of the channels to input to the model. If the range is `None`, means on this direction there is no interception. <br/> *Remark.* The channel number should match the `in_channels` of the encoder

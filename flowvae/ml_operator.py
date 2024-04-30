@@ -51,6 +51,7 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     last_error = save_dict['history']['loss']
 #     print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
     if set_to_eval: model.eval()
+    return last_error
 
 def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1):
     '''
@@ -145,10 +146,10 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
         print('    training:  %d from  0 ~ %d, %d ~ end' % (len(training_indexs), idx1, idx2))
         print('    testing :  %d from  %d ~ %d' % (len(testing_indexs), idx1, idx2))
 
-        training_dataset = Subset(fldata, training_indexs)
-        testing_dataset = Subset(fldata, testing_indexs)
+        # training_dataset = Subset(fldata, training_indexs)
+        # testing_dataset = Subset(fldata, testing_indexs)
 
-        trained_model = func_train(irun, training_dataset)
+        trained_model = func_train(irun, fldata, training_indexs)
 
         t1 = time.time()
 
