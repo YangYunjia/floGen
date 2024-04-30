@@ -164,7 +164,6 @@ class Series():
         for var in self.series.keys(): 
             self.series[var] = np.take(self.series[var], new_idxs)
 
-
 class Buffet():
 
     def __init__(self, method='lift_curve_break',logtype=0, **kwargs) -> None:
@@ -211,8 +210,8 @@ class Buffet():
         if 'lstsa'  not in kwargs.keys():       self.paras['lstsa']  = 0.95
         if 'lsuth1' not in kwargs.keys():       self.paras['lsuth1'] = 0.0      # linear segment upper bound therhold upper
                                                                     
-        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 2.0         # old 1.2
-        # linear segment upper bound therhold lower
+        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 1.0         # old 1.2
+                                                                                # linear segment upper bound therhold lower
                                                                                 # the u.b. is searched down from start point not less than this value
                                                                                 # to let r2 > 0.9999 (for LRZ is 1.0, for SFY is 0.01)
         if 'lslt' not in kwargs.keys():         self.paras['lslt'] = 3.0        # linear segment length (for LRZ is 3.0, for SFY is 1.0)
@@ -878,14 +877,13 @@ class Buffet():
         # f_cl_aoa = pchip(aoas[max_i:], clss[max_i:])
         
         upp_bound = seri.AoA[-1] + 0.8
-        step_aoa = np.arange(AoA_sep, upp_bound, 0.001)
+        step_aoa = np.arange(max(0.2, AoA_sep), upp_bound, 0.001)
 
         flags = {}
         bufs = np.ones((3, 2)) * (-10.0)
-        idx = -1
 
-        for key in ['slope_ub', 'slope', 'slope_lb']:
-            idx += 1
+        for idx, key in enumerate(['slope_ub', 'slope', 'slope_lb']):
+            # larger slope means smaller buffet lift coefficient
             try:
                 bufs[idx] = Buffet.intersection(step_aoa, 
                         ll[key] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
@@ -893,7 +891,17 @@ class Buffet():
             except IntersectNotFound:
                 flags[key] = False
 
+        # if bufs[2, 1] < bufs[0, 1]:
+        #     plt.plot(seri.AoA, np.array(seri.Cl), 'o')
+        #     plt.plot(step_aoa, f_cl_aoa_all(step_aoa), c='k')
+        #     plt.plot(step_aoa, ll['slope_ub'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C0')
+        #     plt.plot(step_aoa, ll['slope'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C1')
+        #     plt.plot(step_aoa, ll['slope_lb'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C2')
+        #     print(bufs[:, 1], ll)
+        #     plt.show()
+
         if flags['slope_ub']:
+            # lower buffet boundary found
             if not flags['slope']: bufs[1] = bufs[0]
             if not flags['slope_lb']: bufs[2] = bufs[1]
         else:
@@ -911,6 +919,15 @@ class Buffet():
                         ll['slope_lb'] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
             except IntersectNotFound:
                 self.log(' >> buffet onset  not found')
+
+        # swap lower and upper boundary if values are inversed
+        if bufs[1, 1] > bufs[0, 1] and bufs[1, 1] > bufs[2, 1]:
+            bufs[0, 1] = min(bufs[0, 1], bufs[2, 1])
+            bufs[2, 1] = bufs[1, 1]
+        elif bufs[1, 1] < bufs[0, 1] and bufs[1, 1] > bufs[2, 1]:
+            buf_t = bufs[0, 1]
+            bufs[0, 1] = bufs[2, 1]
+            bufs[2, 1] = buf_t
 
         self.log(' >> buffet onset')
         self.log('     AoA = %.4f ([%.4f, %.4f]), Cl = %.4f ([%.4f, %.4f])' % (bufs[1,0], bufs[0,0], bufs[2,0], bufs[1,1], bufs[0,1], bufs[2,1]))
