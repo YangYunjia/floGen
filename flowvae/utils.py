@@ -62,7 +62,15 @@ class MDCounter(dict):
 
 
 def warmup_lr(epoch):
+    if epoch < 20:
+        lr =  1 + 0.5 * epoch
+    else:
+        lr =  10 * 0.95**(epoch - 20)
+    return lr
 
+
+def warmup_lr_4(epoch):
+    epoch /= 4
     if epoch < 20:
         lr =  1 + 0.5 * epoch
     else:

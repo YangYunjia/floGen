@@ -175,6 +175,19 @@ class CondAutoEncoder(AutoEncoder):
         return mu * c
     
     def _cat(self, mu: Tensor, c: Tensor):
+        '''
+        concatenate for `c` & `mu` with same size
+        '''
+        return torch.cat([mu, c], dim=1)
+        
+    def _cat1(self, mu: Tensor, c: Tensor):
+        '''
+        concatenate for `c` & `mu` with different size 
+        (additional dimension added to `c` and repeated to be the same as `mu`)
+        
+        `mu`    B x Channel x Nz x Ni
+        `c`     B x Channel x Nz
+        '''
         return torch.cat([mu, c.unsqueeze(3).repeat(1, 1, 1, mu.size(3))], dim=1)
     
     def _expd(self, mu: Tensor, c: Tensor):
