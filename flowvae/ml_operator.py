@@ -53,7 +53,7 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     if set_to_eval: model.eval()
     return last_error
 
-def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1):
+def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1):
     '''
     K-fold validation training pipline for models. The training and evaluation process is assigned with to
     Callable function, `func_train` and `func_eval`. The current function's major task is to split dataset
@@ -109,9 +109,9 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
     
     '''
     
-    avg = int(len(fldata) / k)
-    fold_data_number = [avg+(1, 0)[i > len(fldata) - avg * k] for i in range(k)]
-    all_dataset_indexs = random.sample(range(len(fldata)), len(fldata))
+    avg = int(dataset_len / k)
+    fold_data_number = [avg+(1, 0)[i > dataset_len - avg * k] for i in range(k)]
+    all_dataset_indexs = random.sample(range(dataset_len), dataset_len)
 
     if krun <= 0:   krun = k
 
@@ -149,7 +149,7 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
         # training_dataset = Subset(fldata, training_indexs)
         # testing_dataset = Subset(fldata, testing_indexs)
 
-        trained_model = func_train(irun, fldata, training_indexs)
+        trained_model = func_train(irun, training_indexs)
 
         t1 = time.time()
 
@@ -159,7 +159,7 @@ def K_fold(fldata, func_train: Callable, func_eval: Callable = None, k=10, krun=
         if func_eval is not None:
             print('  Evaluating results...')
             trained_model.eval()
-            error, errstat = func_eval(irun, trained_model, fldata, training_indexs, testing_indexs)
+            error, errstat = func_eval(irun, trained_model, training_indexs, testing_indexs)
             history['errors'].append(error)
             history['errstats'].append(errstat)
 
