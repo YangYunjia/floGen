@@ -9,3 +9,5 @@ Calculation/
 *.txt
 *.npy
 *.zip
+checkpoint_
+saves/
