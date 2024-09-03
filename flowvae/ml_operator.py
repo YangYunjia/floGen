@@ -15,11 +15,11 @@ import numpy as np
 from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
-from .vae import EncoderDecoder
-from .dataset import ConditionDataset, FlowDataset
+from flowvae.vae import EncoderDecoder
+from flowvae.dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
-from .post import get_force_1dc
-from .utils import MDCounter
+from flowvae.post import get_force_1dc
+from flowvae.utils import MDCounter
 
 def _check_existance_checkpoint(epoch, folder):
 

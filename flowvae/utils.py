@@ -1,9 +1,9 @@
 
 import torch
 
-from .base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
-from .base_model.mlp import mlpDecoder
-from .vae import EncoderDecoder, Unet, BranchUnet, BranchEncoderDecoder
+from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
+from flowvae.base_model.mlp import mlpDecoder
+from flowvae.vae import EncoderDecoder, Unet, BranchUnet, BranchEncoderDecoder
 
 class MDCounter(dict):
     '''
