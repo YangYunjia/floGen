@@ -7,8 +7,8 @@ from torch.autograd import Variable
 
 from .utils import Encoder, _extend_for_multilayer, _update_basic_layer, _make_aux_layers
 
-from typing import Tuple, List, Dict, NewType, Callable
-Tensor = NewType('Tensor', torch.tensor)
+from typing import Union, List, TypeVar
+Tensor = TypeVar('Tensor', torch.tensor)
 
 
 class mlpEncoder(Encoder):
@@ -86,7 +86,7 @@ def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layer
 
     return _decoder_input(hidden_dims, in_features, out_features, basic_layers)
 
-def _decoder_input(typ: float or List[int], ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
+def _decoder_input(typ: Union[float, List[int]], ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
 
     basic_layers = _update_basic_layer(basic_layers, dimension=0)
 

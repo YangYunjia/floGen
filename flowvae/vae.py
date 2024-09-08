@@ -19,10 +19,9 @@ from flowvae.base_model.mlp import _decoder_input
 
 import numpy as np
 import copy
-from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
-# from torch import tensor as Tensor
+from typing import List, Union, Tuple, TypeVar
 
-Tensor = NewType('Tensor', torch.tensor)
+Tensor = TypeVar('Tensor', torch.tensor)
 
 # from utils import get_force
 
@@ -34,7 +33,7 @@ class AutoEncoder(nn.Module):
                  latent_dim: int,
                  encoder: Encoder = None,
                  decoder: Decoder = None,
-                 decoder_input_layer: float or List[int] or nn.Module = 0.,
+                 decoder_input_layer: Union[float, List[int], nn.Module] = 0.,
                  decoder_input_dropout: float = 0.,
                  device = 'cuda:0',
                  **kwargs) -> None:
@@ -109,7 +108,7 @@ class AutoEncoder(nn.Module):
 class VariAutoEncoder(AutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
-                 decoder_input_layer: float or List[int] or nn.Module = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+                 decoder_input_layer: Union[float, List[int], nn.Module] = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
         super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
 
         if latent_dim > 0:

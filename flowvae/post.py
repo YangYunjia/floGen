@@ -21,10 +21,8 @@ graph of C-mesh
 import numpy as np
 import torch
 
-
-
-from typing import List, NewType, Tuple, Dict
-Tensor = NewType('Tensor', torch.tensor)
+from typing import List, TypeVar, Tuple, Dict
+Tensor = TypeVar('Tensor', torch.tensor)
 
 WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25, 'y_mc':0.0}
 

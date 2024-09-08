@@ -16,8 +16,8 @@ from torch.nn import functional as F
 from functools import reduce
 from torch.autograd import Variable
 
-from typing import Tuple, List, Dict, NewType, Callable
-Tensor = NewType('Tensor', torch.tensor)
+from typing import Tuple, List, Dict, TypeVar, Callable
+Tensor = TypeVar('Tensor', torch.tensor)
 
 import copy
 

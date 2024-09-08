@@ -11,8 +11,8 @@ from torch.autograd import Variable
 
 from .utils import Encoder, _extend_for_multilayer, _update_basic_layer, _make_aux_layers
 
-from typing import Tuple, List, Dict, NewType, Callable
-Tensor = NewType('Tensor', torch.tensor)
+from typing import Tuple, List, Dict, TypeVar, Callable
+Tensor = TypeVar('Tensor', torch.tensor)
 
 class BasicLSTMCell(nn.Module):
 

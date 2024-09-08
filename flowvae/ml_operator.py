@@ -206,7 +206,7 @@ class ModelOperator():
     '''
     def __init__(self, opt_name: str, 
                        model: nn.Module, 
-                       dataset: FlowDataset or ConditionDataset,
+                       dataset: Union[FlowDataset, ConditionDataset],
                        output_folder: str = "save", 
                        init_lr: float = 0.01, 
                        num_epochs: int = 50,
@@ -214,7 +214,7 @@ class ModelOperator():
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle: bool = True,
-                       ):
+                       ) -> None:
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
