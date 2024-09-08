@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Sliders with WingIndex</title>
+    <style>
+        /* 页面布局 */
+        body {
+            display: flex;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+
+        /* 左侧边栏 */
+        .sidebar {
+            width: 20%;
+            background-color: #f4f4f4;
+            padding: 20px;
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+            height: 100vh;
+        }
+
+        /* 主内容 */
+        .content {
+            width: 80%;
+            padding: 20px;
+        }
+
+        /* 每个滑动条的容器 */
+        .slider-container {
+            margin-bottom: 20px;
+        }
+
+        /* 滑动条标签 */
+        .slider-label {
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        /* 滑动条本身 */
+        input[type="range"] {
+            width: 100%;
+        }
+
+        /* 图片展示的样式 */
+        .content img {
+            display: block;
+            margin-top: 20px;
+            max-width: 80%; /* 确保图片适应页面 */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 左侧边栏 -->
+    <div class="sidebar">
+        <h2>Parameters</h2>
+        <label for="selectNum">Select a default:</label>
+        <select id="selectNum"></select> <!-- 由wingIndexData生成的下拉框 -->
+        <button onclick="submitValues()">Generate</button> <!-- 提交按钮 -->
+        <br>
+        <div id="sliders"></div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="content">
+        <h1>Process Input with WingIndex</h1>
+        <p id="clOutput">example image:</p> <!-- 用于显示cl_array的输出 -->
+        <img id="outputImage" src="/static/image/wg.png" alt="Generated Image"> <!-- 显示图片的元素 -->
+    </div>
+
+    <script>
+        let sliders = []; // 保存滑动条对象
+        let wingIndexData = {}; // 保存从wingindex.json加载的数据
+
+        // 加载max_min.json创建滑动条
+        fetch('static/max_min.json')
+            .then(response => response.json())
+            .then(data => createSliders(data))
+            .catch(error => console.error('Error loading max_min.json:', error));
+
+        // 加载wingindex.json的数据并填充下拉框
+        fetch('static/wingindex.json')
+            .then(response => response.json())
+            .then(data => {
+                wingIndexData = data;
+                populateDropdown(wingIndexData); // 填充下拉框
+            })
+            .catch(error => console.error('Error loading wingindex.json:', error));
+
+        // 创建滑动条的函数
+        function createSliders(data) {
+            const sliderContainer = document.getElementById('sliders');
+
+            // 遍历 max_min.json 中的每个参数并生成滑动条
+            for (let param in data) {
+                if (data.hasOwnProperty(param)) {
+                    const max = data[param].max;
+                    const min = data[param].min;
+
+                    // 创建滑动条容器
+                    const sliderDiv = document.createElement('div');
+                    sliderDiv.className = 'slider-container';
+
+                    // 创建滑动条标签
+                    const label = document.createElement('label');
+                    label.className = 'slider-label';
+                    label.textContent = `Parameter ${param} (Min: ${min}, Max: ${max})`;
+
+                    // 创建滑动条
+                    const slider = document.createElement('input');
+                    slider.type = 'range';
+                    slider.min = min;
+                    slider.max = max;
+                    slider.step = "0.000000001"; // 设置步长，精确到小数点后9位
+                    slider.value = (max + min) / 2; // 默认中间值
+
+                    sliders.push(slider); // 将滑动条对象保存到数组中
+
+                    // 创建显示当前值的元素
+                    const valueDisplay = document.createElement('span');
+                    valueDisplay.textContent = slider.value;
+
+                    // 当滑动条值变化时更新显示
+                    slider.addEventListener('input', function () {
+                        valueDisplay.textContent = slider.value;
+                    });
+
+                    // 将标签、滑动条和当前值显示添加到 sliderDiv
+                    sliderDiv.appendChild(label);
+                    sliderDiv.appendChild(slider);
+                    sliderDiv.appendChild(valueDisplay);
+
+                    // 将 sliderDiv 添加到 sidebar 中
+                    sliderContainer.appendChild(sliderDiv);
+                }
+            }
+        }
+
+        // 填充下拉框选项
+        function populateDropdown(data) {
+            const dropdown = document.getElementById('selectNum');
+            dropdown.innerHTML = ''; // 清空之前的选项
+
+            // 遍历 wingindex.json 中的键并创建选项
+            for (let key in data) {
+                if (data.hasOwnProperty(key)) {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = key;
+                    dropdown.appendChild(option);
+                }
+            }
+
+            // 添加change事件监听器，当用户选择新值时，自动更新滑动条
+            dropdown.addEventListener('change', function () {
+                loadWingIndex(dropdown.value);
+            });
+        }
+
+        // 处理下拉框选择的数字并更新滑动条
+        function loadWingIndex(selectedNum) {
+            if (wingIndexData[selectedNum]) {
+                const wingValues = wingIndexData[selectedNum]; // 从wingindex.json中获取对应的值
+                // 更新滑动条位置
+                for (let i = 0; i < sliders.length; i++) {
+                    if (wingValues[i] !== undefined) {
+                        sliders[i].value = wingValues[i+1]; // 设置滑动条的值
+                        sliders[i].nextElementSibling.textContent = wingValues[i+1]; // 更新显示的数值
+                    }
+                }
+            } else {
+                console.error('Key not found in wingindex.json');
+            }
+        }
+
+        // 提交滑动条的当前值，发送给后端，并显示生成的wg.png
+        async function submitValues() {
+            const test_input = sliders.map(slider => slider.value);
+            console.log('test_input:', test_input);
+
+            // 发送POST请求给后端
+            const response = await fetch('/process_input', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ test_input: test_input })
+            });
+
+            const result = await response.json();
+
+            console.log('Result:', result);
+            document.getElementById('clOutput').textContent = 'cl_array: ' + result.cl_array;
+            // 在页面中显示wg.png图片
+            const imageUrl = result.image_url;
+            document.getElementById('outputImage').src = imageUrl;
+        }
+    </script>
+</body>
+</html>
