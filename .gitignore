@@ -4,6 +4,7 @@ dist/
 build/
 .vscode/
 test*
+.DS_Store
 
 Calculation/
 *.txt
