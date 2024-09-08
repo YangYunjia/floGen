@@ -13,7 +13,7 @@ import torch.optim as opt
 import sys, os, random, time
 import numpy as np
 from tqdm import tqdm
-from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
+from typing import List, Callable, NewType, Union, Any, NewType, Tuple
 
 from flowvae.vae import EncoderDecoder
 from flowvae.dataset import ConditionDataset, FlowDataset

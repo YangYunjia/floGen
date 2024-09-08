@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 import numpy as np
 import os
 import random
-from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
+from typing import List, Callable, NewType, Union, Tuple
 
 class FlowDataset(Dataset):
     '''
@@ -28,7 +28,7 @@ class FlowDataset(Dataset):
     
     '''
 
-    def __init__(self, file_name: str or List[str], 
+    def __init__(self, file_name: Union[str, List[str]], 
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
                  test: int = 0, 

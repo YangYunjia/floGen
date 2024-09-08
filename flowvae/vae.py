@@ -19,9 +19,9 @@ from flowvae.base_model.mlp import _decoder_input
 
 import numpy as np
 import copy
-from typing import List, Union, Tuple, TypeVar
+from typing import List, Union, Tuple, NewType
 
-Tensor = TypeVar('Tensor', torch.tensor)
+Tensor = NewType('Tensor', torch.Tensor)
 
 # from utils import get_force
 
