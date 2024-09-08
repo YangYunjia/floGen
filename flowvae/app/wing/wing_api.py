@@ -17,7 +17,8 @@ import torch
 
 import numpy as np
 import os, copy
-from cfdpost.wing.basic import Wing, KinkWing, plot_compare_2d_wing
+from cfdpost.wing.basic import Wing, KinkWing, plot_compare_2d_wing, plot_frame
+from cst_modeling.section import cst_foil
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -65,8 +66,53 @@ class Wing_api():
         self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
                                   h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=device)
         load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=device)
+    
+    @staticmethod
+    def display_sectional_airfoil(inputs: np.ndarray, write_to_file: str = None):
+        '''
+        show the airfoil profile given parameters
+
+        - `inputs`: (`np.ndarray`) shape = (21, )
+        
+        >>>  0               1-10  11-20
+        >>>  root_thickness, cstu, cstl
         
         
+        '''
+        nx = 501
+        xx, yu, yl, _, rLE = cst_foil(nx, inputs[1:11], inputs[11:], x=None, t=inputs[0], tail=0.004)
+
+        plt.figure(figsize=(5, 2), dpi=100)
+        plt.plot(xx, yu, c='k')
+        plt.plot(xx, yl, c='k')
+        plt.savefig(write_to_file)
+
+        return xx, yu, yl, rLE
+    
+    @staticmethod
+    def display_wing_frame(inputs: np.ndarray, write_to_file: str = None):
+        '''
+        show the airfoil profile given parameters
+
+        - `inputs`: (`np.ndarray`) shape = (27, )
+        
+        >>>  Wing planform parameters
+        >>>  0            1               2             3             4                5
+        >>>  swept_angle, dihedral_angle, aspect_ratio, tapper_ratio, tip_twist_angle, tip2root_thickness_ratio
+        >>>  sectional airfoil parameters
+        >>>  6               7-16  17-26
+        >>>  root_thickness, cstu, cstl
+        
+        '''
+
+        fig = plt.figure(figsize=(10, 8), dpi=100)
+        ax = fig.add_subplot(projection='3d')
+        ax = plot_frame(ax, *inputs[:7], cst_u=inputs[7:17], cst_l=inputs[17:])
+        ax.set_aspect('equal')
+        ax.view_init(elev=40, azim=30)
+        # ax.set_zlim(0, 1)
+        plt.savefig(write_to_file)
+        plt.show()
         
     def predict(self, inputs: np.ndarray) -> Wing:
         '''
@@ -75,11 +121,17 @@ class Wing_api():
         para:
         ===
         
-        - `inputs`: (`np.ndarray`) 
-            0    1     2            3               4             5             6                7
-            AoA, Mach, swept_angle, dihedral_angle, aspect_ratio, tapper_ratio, tip_twist_angle, tip2root_thickness_ratio
-            8               9-18  19-28
-            root_thickness, cstu, cstl
+        - `inputs`: (`np.ndarray`)  shape = (29, )
+
+        >>>  Operating conditions
+        >>>  0    1     
+        >>>  AoA, Mach
+        >>>  Wing planform parameters
+        >>>  2            3               4             5             6                7
+        >>>  swept_angle, dihedral_angle, aspect_ratio, tapper_ratio, tip_twist_angle, tip2root_thickness_ratio
+        >>>  sectional airfoil parameters
+        >>>  8               9-18  19-28
+        >>>  root_thickness, cstu, cstl
         
         '''
         wg = Wing()
