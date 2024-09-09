@@ -9,7 +9,12 @@ app = Flask(__name__)
 # establish the wing api instance at the beginning of the client
 # later use it to predict wing results given input parameters
 from flowvae.app.wing.wing_api import Wing_api
-wing_api = Wing_api(device='cuda:0')
+wing_api = Wing_api(device='default')
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 
 def process_test_input(inputs):
     '''

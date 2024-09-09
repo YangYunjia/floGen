@@ -43,10 +43,20 @@ def nondim_index_values(index):
 
 class Wing_api():
     
-    def __init__(self, saves_folder: str = None, device: str = 'cuda:0') -> None:
+    def __init__(self, saves_folder: str = None, device: str = 'default') -> None:
         
-        self.device = device
-        models.device = device
+        if device == 'default':
+            if torch.cuda.is_available():
+                _device = 'cuda:0'
+            elif torch.backends.mps.is_available():
+                _device = 'mps'
+            else:
+                _device = 'cpu'
+
+        print(f'Pytorch Backend device is set to {_device}')
+
+        self.device = _device
+        models.device = _device
         
         self.sa_type = 0.25 # base on 1/4 chord line
         self.input_ref = 5
@@ -55,17 +65,17 @@ class Wing_api():
             saves_folder = os.path.join(absolute_file_path, 'saves')
         
         # load airfoil prediction model
-        self.model_2d = models.bresnetunetmodel(h_e=[16, 32, 64], h_d1=[64, 128], h_d2=[512, 256, 128, 64], h_out=2, h_in=1, device=device)
-        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, '0330_25_Run3'), device=device)
+        self.model_2d = models.bresnetunetmodel(h_e=[16, 32, 64], h_d1=[64, 128], h_d2=[512, 256, 128, 64], h_out=2, h_in=1, device=_device)
+        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, '0330_25_Run3'), device=_device)
         
         # load SLD prediction model
         self.model_sld = models.triinput_simplemodel1(h_e1=[32, 32], h_e2=[16, 16], h_e3=[16], h_d1=[64, 101], nt=101)
-        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0_cl'), device=device)
+        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0_cl'), device=_device)
         
         # load airfoil-to-wing model
         self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
-                                  h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=device)
-        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=device)
+                                  h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=_device)
+        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=_device)
     
     @staticmethod
     def display_sectional_airfoil(inputs: np.ndarray, write_to_file: str = None):
