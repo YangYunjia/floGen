@@ -124,7 +124,7 @@
     <div class="box">
       <h3>Airfoil Geometry</h3>
       <div class="plot">
-        <img id="display_sectional_airfoil" class="outputImage" src="static/image/display_sectional_airfoil.png"
+        <img id="display_sectional_airfoil" class="outputImage" src="" 
           alt="Airfoil Geometry">
       </div>
     </div>
@@ -168,7 +168,7 @@
     <div class="box">
       <h3>Wing Shape</h3>
       <div class="plot">
-        <img id="display_wing_frame" class="outputImage" src="static/image/display_wing_frame.png" alt="Wing Shape">
+        <img id="display_wing_frame" class="outputImage" src="" alt="Wing Shape">
       </div>
     </div>
 
@@ -185,15 +185,6 @@
         <input type="number" id="mach-value" value="0.736" min="0" max="1" step="0.001">
         <input type="range" id="mach" min="0" max="1" step="0.001" value="0.736">
       </div>
-    </div>
-
-    <!-- Predict Wing Flowfield -->
-    <div class="box">
-      <h3>Predict Wing Flowfield</h3>
-    </div>
-
-    <!-- Coefficients Result -->
-    <div class="box coefficients">
       <h3>Coefficients Result</h3>
       <div class="parameter-row">
         <label for="CL">CL</label>
@@ -209,11 +200,20 @@
       </div>
     </div>
 
+    <!-- Predict Wing Flowfield -->
+    <div class="box">
+      <h3>Predict Wing Flowfield</h3>
+      <div class="plot">
+        <img id="predict_wing_flowfield" class="outputImage" src=""
+          alt="Wing Flowfield">
+      </div>
+    </div>
+
     <!-- Logo -->
     <div class="box">
       <div class="plot">
-        <img id="predict_wing_flowfield" class="outputImage" src="static/image/predict_wing_flowfield.png"
-          alt="Wing Flowfield">
+        <img id="logo" class="outputImage" src="/static/image/logo.png"
+          alt="Logo">
       </div>
     </div>
   </div>
@@ -347,11 +347,9 @@
       })
         .then(response => response.json())
         .then(data => {
-          // 成功后，获取带时间戳的图片 URL 并更新 HTML 中的 img src
+          // 成功后，获取带时间戳的图片并更新 HTML 中的 img src
           const imgElement = document.getElementById('display_sectional_airfoil');
-          const timestamp = new Date().getTime();  // 获取当前时间戳
-          imgElement.src = data.image_url + '?t=' + timestamp;  // 加上时间戳以确保不会缓存
-          console.log(data.image_url);
+          imgElement.src = data.image;  
         })
         .catch(error => {
           console.error('Error:', error);  // 错误处理
@@ -371,11 +369,9 @@
       })
         .then(response => response.json())
         .then(data => {
-          // 成功后，获取带时间戳的图片 URL 并更新 HTML 中的 img src
+          // 成功后，获取带时间戳的图片并更新 HTML 中的 img src
           const imgElement = document.getElementById('display_wing_frame');
-          const timestamp = new Date().getTime();  // 获取当前时间戳
-          imgElement.src = data.image_url + '?t=' + timestamp;  // 加上时间戳以确保不会缓存
-          console.log(data.image_url);
+          imgElement.src = data.image;
         })
         .catch(error => {
           console.error('Error:', error);  // 错误处理
@@ -395,11 +391,9 @@
       })
         .then(response => response.json())
         .then(data => {
-          // 成功后，获取带时间戳的图片 URL 并更新 HTML 中的 img src
+          // 成功后，获取带时间戳的图片并更新 HTML 中的 img src
           const imgElement = document.getElementById('predict_wing_flowfield');
-          const timestamp = new Date().getTime();  // 获取当前时间戳
-          imgElement.src = data.image_url + '?t=' + timestamp;  // 加上时间戳以确保不会缓存
-          console.log(data.image_url);
+          imgElement.src = data.image;
           console.log(data.cl_array);
           const cl_array = data.cl_array;
           document.getElementById('CL').textContent = data.cl_array[0];
