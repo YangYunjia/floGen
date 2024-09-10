@@ -78,7 +78,7 @@ class Wing_api():
         load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=_device)
     
     @staticmethod
-    def display_sectional_airfoil(inputs: np.ndarray, write_to_file: str = None):
+    def display_sectional_airfoil(ax, inputs: np.ndarray, write_to_file: str = None):
         '''
         show the airfoil profile given parameters
 
@@ -92,15 +92,14 @@ class Wing_api():
         nx = 501
         xx, yu, yl, _, rLE = cst_foil(nx, inputs[1:11], inputs[11:], x=None, t=inputs[0], tail=0.004)
 
-        plt.figure(figsize=(5, 2), dpi=100)
-        plt.plot(xx, yu, c='k')
-        plt.plot(xx, yl, c='k')
-        plt.savefig(write_to_file)
+        ax.plot(xx, yu, c='k')
+        ax.plot(xx, yl, c='k')
+        ax.set_ylim(-0.07, 0.07)
 
-        return xx, yu, yl, rLE
+        return ax
     
     @staticmethod
-    def display_wing_frame(inputs: np.ndarray, write_to_file: str = None):
+    def display_wing_frame(ax, inputs: np.ndarray, write_to_file: str = None):
         '''
         show the airfoil profile given parameters
 
@@ -115,14 +114,12 @@ class Wing_api():
         
         '''
 
-        fig = plt.figure(figsize=(10, 8), dpi=100)
-        ax = fig.add_subplot(projection='3d')
         ax = plot_frame(ax, *inputs[:7], cst_u=inputs[7:17], cst_l=inputs[17:])
-        ax.set_aspect('equal')
+        # ax.set_aspect('equal')
         ax.view_init(elev=40, azim=30)
-        # ax.set_zlim(0, 1)
-        plt.savefig(write_to_file)
-        plt.show()
+        ax.set_xlim(0, 4)
+        ax.set_ylim(0, 7)
+        ax.set_zlim(0, 1)
         
     def predict(self, inputs: np.ndarray) -> Wing:
         '''
