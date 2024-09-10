@@ -7,7 +7,6 @@ test*
 .DS_Store
 
 Calculation/
-*.txt
 *.npy
 *.zip
 checkpoint_
