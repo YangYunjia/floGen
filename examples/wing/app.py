@@ -16,65 +16,51 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-def process_test_input(inputs):
-    '''
-    predict wing results given the input
+@app.route('/display_sectional_airfoil', methods=['POST'])
+def handle_display_sectional_airfoil():
+    # 获取前端发送的JSON数据
+    data = request.get_json()
+    inputs = data['inputs']  # 获取输入的 inputs[9:] 部分
 
-    paras:
-    ===
-    `inputs` (`list`) the input parameters (every element should be float)
-        > ONLY containes the required values! (len = 8 + 21)
+    # 调用 wing_api 的 display_sectional_airfoil 函数，生成图片
+    image_file = 'static/image/display_sectional_airfoil.png'
+    wing_api.display_sectional_airfoil(inputs, write_to_file=image_file)
 
-    returns:
-    ===
-    a `list` of CL, CD, CM
-    '''
+    # 返回图片的URL，供前端使用
+    return jsonify({"image_url": f"/static/image/display_sectional_airfoil.png"})
+
+@app.route('/display_wing_frame', methods=['POST'])
+def handle_display_wing_frame():
+    # 获取前端发送的JSON数据
+    data = request.get_json()
+    inputs = data['inputs']  # 获取输入的 inputs[9:] 部分
+
+    # 调用 wing_api 的 display_sectional_airfoil 函数，生成图片
+    image_file = 'static/image/display_wing_frame.png'
+    wing_api.display_wing_frame(inputs, write_to_file=image_file)
+
+    # 返回图片的URL，供前端使用
+    return jsonify({"image_url": f"/static/image/display_wing_frame.png"})
+
+@app.route('/predict_wing_flowfield', methods=['POST'])
+def handle_predict_wing_flowfield():
+    # 获取前端发送的JSON数据
+    data = request.get_json()
+    inputs = data['inputs']  # 获取输入的 inputs[9:] 部分
+
+    # 调用 wing_api 的 display_sectional_airfoil 函数，生成图片
+    image_file = 'static/image/predict_wing_flowfield.png'
     wg = wing_api.predict(inputs)
-    wg.plot_2d(['upper', 'full'], contour=9,  write_to_file=os.path.join(current_app.root_path, 'image', 'wg.png'))
     wg.lift_distribution()
     cl_array = wg.cl
-    # print(f"Processing test input: {test_input}")
-    # print(f"CL: {cl_array}")
-    return list(cl_array)
+    wg.plot_2d(['upper', 'full'], contour=9, write_to_file=image_file)
+
+    # 返回图片的URL，供前端使用
+    return jsonify({"image_url": f"/static/image/predict_wing_flowfield.png", "cl_array": cl_array.tolist()})
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# handle AJAX requests and conduct inference
-@app.route('/process_input', methods=['POST'])
-def process_input():
-
-    t1 = time.time()    # start time
-
-    input_num = request.json['test_input']
-    # fetch inputs
-    inputs = [float(input_num[i]) for i in list(range(0, 8)) + list(range(9, 30))]
-
-    # inference results
-    cl_array = process_test_input(inputs)
-
-    # 获取图片的修改时间
-    image_path = os.path.join(current_app.root_path, 'image', 'wg.png')
-    mod_time = os.path.getmtime(image_path)
-    formatted_time = time.strftime('%Y%m%d%H%M%S', time.localtime(mod_time))  # 使用时间戳
-    image_url = f'/static/image/wg.png?t={formatted_time}'  # 在URL后附加时间戳}
-
-    t2 = time.time()
-
-    return jsonify({
-        'status': 'success', 
-        'data': inputs,
-        'cl_array': cl_array,
-        'image_url': image_url,
-        'inference_time': t2 - t1
-    })
-    
-    
-# 路由：提供图片
-@app.route('/static/image/wg.png')
-def get_image():
-    return send_file('image/wg.png', mimetype='image/png')
-
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=True)
