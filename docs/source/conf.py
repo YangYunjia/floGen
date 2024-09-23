@@ -34,6 +34,10 @@ extensions = ['myst_parser',
               'sphinx.ext.mathjax',
               ]
 
+myst_enable_extensions = [
+    "dollarmath",
+    ]
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
@@ -48,30 +52,9 @@ exclude_patterns = []
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'alabaster'
+html_theme = "sphinx_rtd_theme"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
-
-# import recommonmark
-# from recommonmark.parser import CommonMarkParser
-# from recommonmark.transform import AutoStructify
-# source_parsers = {
-#     '.md': CommonMarkParser,
-#    }
-# source_suffix = ['.rst', '.md']
-
-# html_theme = "sphinx_rtd_theme"
-
-# def setup(app):
-#     app.add_config_value('recommonmark_config', {
-#             # 'url_resolver': lambda url: github_doc_root + url,
-#             'auto_toc_tree_section': 'Contents',
-#             }, True)
-#     app.add_transform(AutoStructify)
-
-import sphinx_rtd_theme
-html_theme = "sphinx_rtd_theme"
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]

@@ -55,3 +55,14 @@ Therefore, there's an option in FlowGen to make the model predicting the **diffe
 
 The flowfield datasets to train all of our models are available upon request. Please contact Yunjia Yang (yyj980401@126.com) for the datasets. Details on the datasets can be found [here](https://flogen.readthedocs.io/en/latest/).
 
+## Applications
+
+### Web-wing - Interactive Transonic Wing Design App
+
+The physics-embedded transfer learning for transonic wing is demonstrated with a simple interactive app. You can modify the airfoil geometry, wing planform geometry, and wing operating conditions to see what will happen on the wing surface flow field. Feel free to play with it, and your knowledge on wing aerodynamics will grow.
+
+Unfortunately, the author can not afford a server now, so the only way access to web-wing is running locally. You can find how to do it [here](https://flogen.readthedocs.io/en/latest/wingapp.html).
+
+The next step of the app is a gradient optimization tool for wing performance, which will come soon.
+
+![](docs/source/_static/images/webwing/webwing.gif)
