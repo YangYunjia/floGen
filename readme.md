@@ -1,18 +1,18 @@
 
-# FlowGen
-
-[TOC]
+# FloGen
 
 FlowGen is a universal flowfield generator based on Auto-Encoder (AE) & Variational Auto-Encoder (VAE) and implentmented in Pytorch. It differs from other flowfield generators that it introduce **prior learning strategy** to enhance the predicting accuracy and transfer learning capability. The FlowGen has been applied to the prediction and optimization tasks such as the transonic buffet and the fluidic injection into the single expansion ramp nozzle (SERN).
+
+You can find the documentation of flowGen [here](https://flogen.readthedocs.io/en/latest/).
 
 **Author:** 
 
 Yunjia Yang, Tsinghua University, yyj980401@126.com
-Runze Li, lirunze16@tsinghua.org.cn
 Yuqi Cheng, yc4330@columbia.edu, UI for Webwing
 
 **Contributor (former user):** 
 
+- Runze Li, lirunze16@tsinghua.org.cn
 - Zuwei Tan (Supersonic 2D inlet)
 - Gongyan Liu (Temperature field of a data center)
 - Jiazhe Li (Supersonic 2D single expansion ramp nozzle)
@@ -29,7 +29,7 @@ Yuqi Cheng, yc4330@columbia.edu, UI for Webwing
     Yang, Yunjia, Runze Li, Yufei Zhang, Lu Lu, and Haixin Chen*. 2024. “Transferable Machine Learning Model for the Aerodynamic Prediction of Swept Wings.” Physics of Fluids 36 (7): 076105. https://doi.org/10.1063/5.0213830.
     ```
 
-# Motivations
+## Motivations
 
 During aerodynamic shape optimization (ASO), it is usually not enough to only optimize the **design point performance** since it may cause undesired performance losses at **off-design points**. Therefore, an important task of ASO is to fast and accurately predict a series of flowfields and their aerodynamic performances. 
 
@@ -39,19 +39,19 @@ In order to improve the prediction accuracy, the FlowGen is designed to predict 
 
 ![](docs/source/_static/images/flowgen1.png "Predicting a series of off-design flowfield with the prior flowfield")
 
-## Introducing the *Prior*
+### Introducing the *Prior*
 
 Normally, the design point and off-design points flowfields have strong relationships. It is because that the variation of the flowfield with the design parameters (i.e., the freestream Mach number) is continuous and the flow structures maintain the same. 
 
 Therefore, **introducing the design flowfield as the input** (in the statistic perspective, as the *prior*) **when generating the off-design flowfields should improve model's perfromance**.
 
-## Residual learning
+### Residual learning
 
 Another motivation to introducing design flowfield when predicing off-design flowfield is from the common understand of the deep neural network. Since the ResNet, people has know that DNN is easier to learn a 0 - 0 mapping than a non-zero identical learning. In another word, the model's performance can be improved by subtracing the same part. 
 
 Therefore, there's an option in FlowGen to make the model predicting the **difference** (or the residual) **between the target flowfield** (in most time, the off-design flowfield) **and the prior flowfield** (the design flowfield). 
 
-# Datasets
+## Datasets
 
-This section presents several flowfield datasets. Most of them are of airfoils and wings. They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) for the datasets.
+The flowfield datasets to train all of our models are available upon request. Please contact Yunjia Yang (yyj980401@126.com) for the datasets. Details on the datasets can be found [here](https://flogen.readthedocs.io/en/latest/).
 
