@@ -30,14 +30,9 @@ Contents
 
 .. toctree::
    :maxdepth: 2
-   :caption: Datasets
+   :caption: Motivations
 
-   airfoildataset
-   wingdataset
-
-This section presents several flowfield datasets. Most of them are of airfoils and wings. 
-They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) 
-for the datasets.
+   motivation
 
 .. toctree::
    :maxdepth: 2
@@ -47,6 +42,17 @@ for the datasets.
    models
 
 This section describe the model.
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Datasets
+
+   airfoildataset
+   wingdataset
+
+This section presents several flowfield datasets. Most of them are of airfoils and wings. 
+They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) 
+for the datasets.
 
 .. toctree::
    :maxdepth: 2

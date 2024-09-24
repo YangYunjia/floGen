@@ -55,8 +55,14 @@ The parameters include:
 
 These values can be input with text box and scroll bars. You can also select the training wing parameters with `select from` droplist.
 
-## To cite this work
+## How it works
 
-1.	Yang Y, Li R, Zhang Y, Lu L, Chen H. Rapid aerodynamic prediction of swept wings via physics-embedded transfer learning, submitted to AIAA Journal. https://arxiv.org/abs/2409.12711.
+The model used here is the 2d-to-3d transfer model. We first build a model to predict 2d airfoil flow field, and then use it as a prior for 3d flow field prediction.
 
-2.	Yang Y, Li R, Zhang Y, Lu L, Chen H. Transferable machine learning model for the aerodynamic prediction of swept wings, Physics of Fluids, 2024. https://doi.org/10.1063/5.0213830.
+The UI is implemented with `Flask`.
+
+**To cite this work**
+
+1.	Yang Y, Li R, Zhang Y, Lu L, Chen H. Rapid aerodynamic prediction of swept wings via physics-embedded transfer learning, *submitted to AIAA Journal*. https://arxiv.org/abs/2409.12711.
+
+2.	Yang Y, Li R, Zhang Y, Lu L, Chen H. Transferable machine learning model for the aerodynamic prediction of swept wings, *Physics of Fluids*, 2024. https://doi.org/10.1063/5.0213830.
