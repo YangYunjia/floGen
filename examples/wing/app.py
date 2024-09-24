@@ -68,7 +68,7 @@ def handle_predict_wing_flowfield():
     wg.lift_distribution()
     cl_array = wg.cl
     
-    fig = Figure(figsize=(14, 10), dpi=50)
+    fig = Figure(figsize=(14, 10), dpi=100)
     wg._plot_2d(fig, ['upper', 'full'], contour=9, reverse_y=-1)
     
     buf = BytesIO()

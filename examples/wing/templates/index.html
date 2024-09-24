@@ -414,11 +414,11 @@
         if (element) {
           element.addEventListener('input', function () {
             const currentTime = Date.now();
-            if (currentTime - lastUpdated > 10) {
+            if (currentTime - lastUpdated > 20) {
               update_image(id, index);
               lastUpdated = currentTime;
             }
-            if (currentTime - lastPredict > 1500) {
+            if (currentTime - lastPredict > 500) {
               update_predict();
               lastPredict = currentTime;
             }
@@ -431,11 +431,11 @@
         if (element) {
           element.addEventListener('input', function () {
             const currentTime = Date.now();
-            if (currentTime - lastUpdated > 500) {
+            if (currentTime - lastUpdated > 20) {
               update_image(id, index);
               lastUpdated = currentTime;
             }
-            if (currentTime - lastPredict > 1500) {
+            if (currentTime - lastPredict > 500) {
               update_predict();
               lastPredict = currentTime;
             }
