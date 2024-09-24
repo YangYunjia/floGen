@@ -3,7 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to flowGen's documentation!
+Welcome to floGen's documentation
 ===================================
 
 FlowGen is a universal flowfield generator based on Auto-Encoder (AE) & Variational Auto-Encoder (VAE) and implentmented in Pytorch. 
@@ -53,7 +53,7 @@ This section describe the model.
    :caption: Applications
 
    buffet
-   wing
+   wingapp
 
 This section provides some applications of the FloGen. You can find the corresponding `.py` 
 files in `examples`, and the data files can be obtained by communicating with the author.

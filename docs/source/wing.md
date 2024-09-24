@@ -1,1 +1,0 @@
-# Interactive Transonic Wing Design App

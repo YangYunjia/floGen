@@ -54,9 +54,9 @@ The infomation of flowfield data are below:
 | flowfield size | 331 x 75 **|
 
 >  \* all flowfield variables are NON-DIMENSIONAL with freestream condition (in CFL3D.prt way); values are on mesh points.
-    $$
+    $
     p = \frac{\tilde p}{\tilde p_\infty}, T = \frac{\tilde T}{\tilde T_\infty}, u = \frac{\tilde u}{\tilde u_\infty}, v = \frac{\tilde v}{\tilde v_\infty}, 
-    $$
+    $
     where ~ stands for dimensional values
 
 > \*\* The index of the flowfield is shown below
@@ -117,15 +117,19 @@ The infomation of flowfield data are below:
 | channel name | `y`, `Cp` *|
 | flowfield size | 401 **|
 
-> \* all flowfield variables are NON-DIMENSIONAL with freestream condition (in CFL3D's way); values are on mesh points.
-    $$
-    C_p = \frac{p - p_\infty}{0.5\rho V_\infty^2}
-    $$
-> \*\* The flowfield variable values are interpolated to the clustcos function as follow
-    $$
+\* all flowfield variables are NON-DIMENSIONAL with freestream condition (in CFL3D's way); values are on mesh points.
+
+$$
+C_p = \frac{p - p_\infty}{0.5\rho V_\infty^2}
+$$
+
+\*\* The flowfield variable values are interpolated to the clustcos function as follow.
+
+$$
 x_i = \frac{\cos a_0\pi - \cos\left( a_0 (1-k_i)+a_1 k_i\right)\pi}{\cos a_0\pi - cos a_1\pi},\quad k_i = \frac{i}{n-1}
-    $$
-    ![Alt text](_static/images/datasets/dataset2fig.png)
+$$
+
+![Alt text](_static/images/datasets/dataset2fig.png)
 
 ### Index format
 
@@ -188,15 +192,7 @@ The infomation of flowfield data are below:
 | channel name | `y`, `Cp`, `Cf` *|
 | flowfield size | 401 **|
 
-> \* all flowfield variables are NON-DIMENSIONAL with freestream condition (in CFL3D's way); values are on mesh points.
-    $$
-    C_p = \frac{p - p_\infty}{0.5\rho V_\infty^2}
-    $$
-> \*\* The flowfield variable values are interpolated to the clustcos function as follow
-    $$
-x_i = \frac{\cos a_0\pi - \cos\left( a_0 (1-k_i)+a_1 k_i\right)\pi}{\cos a_0\pi - cos a_1\pi},\quad k_i = \frac{i}{n-1}
-    $$
-    ![Alt text](_static/images/datasets/dataset2fig.png)
+\* \*\* Same to Section A-3.
 
 ### Index format
 
