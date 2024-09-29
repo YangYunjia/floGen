@@ -2,7 +2,7 @@
 
 # Guide to the code
 
-This section introduces how to set up and run the prediction model.
+This section introduces how to set up and run the prediction model..
 
 ## Installation
 
@@ -26,7 +26,7 @@ The first thing to do before training is to establish a dataset. The dataset is 
 
 This means we have a database of many different prior flowfields 
 
-$$\mathcal S_\text{prior}=\{r_{f}\}_{f=1,2,\cdots,N_f}$$
+$$ \mathcal S_\text{prior}=\{r_{f}\}_{f=1,2,\cdots,N_f} $$
 
 (for example, the flowfield under design cruise condition of many different airfoils: $foil_1, foil_2, \cdots, foil_{N_f}$ ). 
 
@@ -407,9 +407,9 @@ There are some functions to obtain the x,y direction force from a 1D pressure pr
 
 |name|description|arguments|returns|
 |-|-|-|-|
-|`get_xyforce_1d(geom: Tensor, profile: Tensor)` | integrate the force on x and y direction | - `geom`:    The geometry (x, y), shape: (2, N)  <br/> - `profile`: The pressure profile, shape: (N, ). It should be non_dimensional pressure profile by freestream condition:  <br/> $$Cp = \frac{p - p_\text{inf}}{0.5\rho u^2} $$ | `Tensor` (Fx, Fy)|
+|`get_xyforce_1d(geom: Tensor, profile: Tensor)` | integrate the force on x and y direction | - `geom`:    The geometry (x, y), shape: (2, N)  <br/> - `profile`: The pressure profile, shape: (N, ). It should be non_dimensional pressure profile by freestream condition:  <br/> $$C_p = \frac{p - p_\text{inf}}{0.5\rho u^2} $$ | `Tensor` (Fx, Fy)|
 | `get_force_1d(geom: Tensor, profile: Tensor, aoa: float)` | integrate the lift and drag| - `geom`:    The geometry (x, y), shape: (2, N) <br/> - `profile`: The non-dimension pressure profile, shape: (N, ), same as in `get_xyforce_1d` <br/> - `aoa`:  angle of attack | `Tensor` (CD, CL)|
-|`get_flux_1d(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor)` | obtain the mass and momentum flux through a line | - `geom`:    The geometry (x, y), shape: (2, N)  <br/> `pressure`: The pressure on every line points, shape: (N, ); should be *dimensional* pressure profile  <br/> `xvel`: x-direction velocity on every line points, shape: (N, )  <br/> `yvel`: y-direction velocity on every line points, shape: (N, )  <br/> `rho`: density on every line points, shape: (N, ) | `Tensor` (mass_flux, moment_flux)|
+|`get_flux_1d(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor)` | obtain the mass and momentum flux through a line | - `geom`:    The geometry (x, y), shape: (2, N)  <br/> - `pressure`: The pressure on every line points, shape: (N, ); should be *dimensional* pressure profile  <br/> - `xvel`: x-direction velocity on every line points, shape: (N, )  <br/> - `yvel`: y-direction velocity on every line points, shape: (N, )  <br/> - `rho`: density on every line points, shape: (N, ) | `Tensor` (mass_flux, moment_flux)|
 
 To speed up calculation for series data, it has a batch version, where the input and output both add the first channel for batch size.
 |origin name|batch version name|

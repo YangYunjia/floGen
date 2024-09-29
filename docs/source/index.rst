@@ -3,7 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to flowGen's documentation!
+Welcome to floGen's documentation
 ===================================
 
 FlowGen is a universal flowfield generator based on Auto-Encoder (AE) & Variational Auto-Encoder (VAE) and implentmented in Pytorch. 
@@ -30,14 +30,9 @@ Contents
 
 .. toctree::
    :maxdepth: 2
-   :caption: Datasets
+   :caption: Motivations
 
-   airfoildataset
-   wingdataset
-
-This section presents several flowfield datasets. Most of them are of airfoils and wings. 
-They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) 
-for the datasets.
+   motivation
 
 .. toctree::
    :maxdepth: 2
@@ -50,10 +45,21 @@ This section describe the model.
 
 .. toctree::
    :maxdepth: 2
+   :caption: Datasets
+
+   airfoildataset
+   wingdataset
+
+This section presents several flowfield datasets. Most of them are of airfoils and wings. 
+They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) 
+for the datasets.
+
+.. toctree::
+   :maxdepth: 2
    :caption: Applications
 
    buffet
-   wing
+   wingapp
 
 This section provides some applications of the FloGen. You can find the corresponding `.py` 
 files in `examples`, and the data files can be obtained by communicating with the author.

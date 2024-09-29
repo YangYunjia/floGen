@@ -1,26 +1,14 @@
-from flask import Flask, render_template, request, jsonify, send_file, current_app
-import os
-import subprocess
-import time
-import json
-
-app = Flask(__name__)
+import base64
+from io import BytesIO
+from matplotlib.figure import Figure
+from flask import Flask, render_template, request, jsonify
 
 # establish the wing api instance at the beginning of the client
 # later use it to predict wing results given input parameters
 from flowvae.app.wing.wing_api import Wing_api
-wing_api = Wing_api(device='default')
+wing_api = Wing_api(saves_folder='saves', device='default')
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-
-import base64
-from io import BytesIO
-from matplotlib.figure import Figure
-
-from cst_modeling.section import cst_foil
+app = Flask(__name__)
 
 @app.route('/display_sectional_airfoil', methods=['POST'])
 def handle_display_sectional_airfoil():
@@ -68,7 +56,7 @@ def handle_predict_wing_flowfield():
     wg.lift_distribution()
     cl_array = wg.cl
     
-    fig = Figure(figsize=(14, 10), dpi=50)
+    fig = Figure(figsize=(14, 10), dpi=100)
     wg._plot_2d(fig, ['upper', 'full'], contour=9, reverse_y=-1)
     
     buf = BytesIO()
