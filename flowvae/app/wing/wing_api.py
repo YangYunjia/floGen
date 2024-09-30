@@ -140,6 +140,17 @@ class Wing_api():
         >>>  8               9-18  19-28
         >>>  root_thickness, cstu, cstl
         
+        return:
+        ===
+        
+        `Wing` object
+        
+        `self.info`: dict
+            '2d_surf': n_span (101) x n_var (2, Cp/Cf) x n_i (321)
+            '2d_geom': n_span (101) x n_var (1, y) x n_i (321)
+            '2d_auxs':n_span (101) x n_var (3, ma/cl/re)
+            '3d_sld': n_var (1, cleta) x n_span (101)
+        
         '''
         wg = Wing()
         wg.read_formatted_geometry(inputs, ftype=1)
@@ -182,7 +193,11 @@ class Wing_api():
         wg.read_formatted_surface(geometry=None, data=output_3d[0].detach().cpu().numpy(), isnormed=True)
         wg.lift_distribution()
         
-        self.info = {'2d_corr': output_2d_corr, '3d_sld': sld_3d}
+        self.info = {'2d_surf': output_2d.detach().cpu().numpy(), 
+                     '2d_geom': geoms2d.detach().cpu().numpy(),
+                     '2d_auxs': auxs2d.detach().cpu().numpy(), # ma, cl, re
+                     '3d_sld': sld_3d[0].detach().cpu().numpy(),
+                     }
         
         return wg
         

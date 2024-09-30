@@ -11,10 +11,11 @@ import time
 import pyDOE
 import random
 import shutil
-from cst_modeling.section import cst_foil
+from cst_modeling.section import cst_foil, clustcos
 from cfdpost.cfdresult import cfl3d
 from cfdpost.section.physical import PhysicalSec
 from cgrid.foil import CGrid
+from scipy.interpolate import PchipInterpolator as pchip
 
 from scipy.interpolate import interp1d
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -58,7 +59,8 @@ class AirfoilSimulator():
         - cstu, cstl
         
         '''
-        future = self.executor.submit(sim_airfoil_cfl3d, parameters)
+        cal_folder = os.path.join(self.folder, str(self.counter))
+        future = self.executor.submit(sim_airfoil_cfl3d, cal_folder, parameters)
         self.counter += 1
         self.futures.append(future)
         return self.counter
@@ -74,7 +76,13 @@ class AirfoilSimulator():
         if self.futures[idx]._state in ['FINISHED']:
             return self.futures[idx].result() 
         else:
-            raise Exception()   
+            raise Exception()
+        
+    def get_surface(self, idx):
+        if self.futures[idx]._state in ['FINISHED']:
+            return get_surface(os.path.join(self.folder, str(idx)), 40, 361) 
+        else:
+            raise Exception()
     
 
 
@@ -160,6 +168,33 @@ def post_process(name: str, folder: str, j0: int, j1: int):
 
     return converged, step, AoA, CL, CD
 
+def get_surface(folder: str, j0: int, j1: int, nn=161):
+    
+    succeed, field, foil, fs = cfl3d.readprt_foil(folder, j0=j0, j1=j1, fname='cfl3d.prt', coordinate='xy')
+    
+    xx = [clustcos(i, nn) for i in range(nn)]
+    iLE = np.argmin(foil[0])
+    
+    
+    yss = []
+
+    for iv in [1, 2, 4]:    # y, cp, cf
+        # lower surface
+        fy = pchip(foil[0][:iLE+1][::-1], foil[iv][:iLE+1][::-1])
+        y_l = fy(xx)
+
+        # upper surface
+        fy = pchip(foil[0][iLE:], foil[iv][iLE:])
+        y_u = fy(xx)
+
+        ys = np.concatenate((y_l[::-1], y_u[1:]), axis=0)
+
+        if iv == 4:
+            ys *= 1000
+        yss.append(ys)
+        
+    return np.array(yss)
+
 def sim_airfoil_cfl3d(folder, parameters):
     '''
     parameters: 
@@ -169,10 +204,14 @@ def sim_airfoil_cfl3d(folder, parameters):
     
     '''
     fname_solver = 'cfl3d_seq'
+    
+    print(parameters)
 
     # print(os.path.getsize(os.path.join(folder, 'cfl3d.prt')))
 
     if not is_calculated(folder):
+        
+        os.mkdir(folder)
         
         src_folder = os.path.join(os.path.dirname(__file__), 'cpsrc')
         shutil.copy(os.path.join(src_folder, 'cfl3d_Seq.exe'), folder)
@@ -191,7 +230,7 @@ def sim_airfoil_cfl3d(folder, parameters):
             for icst in range(n_cst):
                 f.write('L%d     %18.9f\n' % (icst, parameters['cstl'][icst]))
 
-        calname = f'{parameters['igroup']:d} - {parameters['icond']:d}'
+        calname = '%d - %d' % (parameters['igroup'], parameters['icond'])
         #* ============================================
         #* input.txt  =>   cfl3d.xyz
         #* ============================================
@@ -238,55 +277,10 @@ def sim_airfoil_cfl3d(folder, parameters):
 
     conv, step, AoA, Cl, Cd = post_process(str(i), folder, 40, 361)
     log(f'>>> [sample {calname}]  Calculation done (Code {conv:d} / Step {step:d} / AoA {AoA:.4f} / CL {Cl:.4f} / CD {Cd:.4f})')
-    return i, conv, step
+    return {'iconv':    conv, 
+            'nstep':    step, 
+            'aoa':      AoA,
+            'cl':       Cl,
+            'cd':       Cd,
+            'folder':   folder}
 
-
-def sim_airfoil_cfl3d():
-
-    # os.chdir(os.path.dirname(__file__))
-    nn     = 1001
-    n_cst  = 10
-
-    rf_folder = '.'
-    n_job = 14
-    n_airfoil = 995
-    n_samples = 24
-    n_all_samples = 64
-
-    base_folder = os.path.join(rf_folder, 'Calculation')
-
-    if not os.path.exists(base_folder):
-        os.makedirs(base_folder)
-
-    # log('Start running calculation airfoils', init=True)
-
-    log('reading parameters')
-    
-    parameters = np.loadtxt('foilparameters.dat')
-    print(parameters.shape)
-    
-    log('start parallel calculating with job number = %d' % n_job)
-
-    futures = []
-    with ProcessPoolExecutor(max_workers=n_job) as executor:
-
-        for i_airfoil in range(781, 995):
-
-            for i_sample in range(n_samples):
-
-                cal_base_dir = os.path.join(base_folder, str(i_airfoil), str(i_sample))
-                ev_idx = i_airfoil * n_all_samples + i_sample
-
-                if is_calculated(cal_base_dir):
-                    # clean_folder(cal_base_dir)
-                    continue
-
-                os.makedirs(cal_base_dir)
-                
-                # func_mc(ev_idx, cal_base_dir)
-                log('>>> [sample %4d - %4d] (id: %4d) in line' %  (i_airfoil, i_sample, ev_idx))
-                futures.append(executor.submit(func_mc, ev_idx, cal_base_dir))
-
-
-    
-    

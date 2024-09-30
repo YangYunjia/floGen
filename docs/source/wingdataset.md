@@ -102,16 +102,17 @@ Grids were generated with `CGrid`.
 
 #### output surface flow field
 
-| file name | `wing101.npy` |
+| file name | `wingata.npy` |
 |-|-|
-| array size | Simple wing (846, 6, 321, 101) <br> Kink wing (164, 6, 321, 101) |
+| array size | Simple wing (846, 6, 321, 61) <br> Kink wing (164, 6, 321, 81) |
 | dim. 1 | `x`,`y`, `z`, `Cp`, `Cft`, `Cfz` *|
-| dim. 2 & 3 (flow field size) | 321 (around sectional airfoil) x 101 (spanwise**) |
+| dim. 2 & 3 (flow field size) | Simple wing 321 (around sectional airfoil) x 61 (spanwise**) <br> Kink wing 321 x 81 |
 
 \* all geometry variables are DIMENSIONAL. Coefficents are on mesh points. Surface friction distributions are decomposed by in x-y plane and z-direction as follow:
-    ![friction decompose](_static/images/datasets/frictiondecompose.png)
 
-\*\* The values are linearly interpolated to a uniformly distributed series of z-position sections to unify the simple and kink wing data formats. The original data before interpolation can be found in `wingdata.npy`
+![friction decompose](_static/images/datasets/frictiondecompose.png)
+
+\*\* The values are linearly interpolated to a uniformly distributed series of z-position sections to unify the simple and kink wing data formats. The interpolated data can be found in `wing101.npy`
 
 #### input wing parameters
 
@@ -219,11 +220,11 @@ Same to B-1
 
 #### output surface flow field
 
-| file name | `wing101.npy` |
+| file name | `wingdata.npy` |
 |-|-|
-| array size | (1842, 6, 321, 101)|
+| array size | (1842, 6, 321, 61)|
 | dim. 1 | `x`,`y`, `z`, `Cp`, `Cft`, `Cfz` *|
-| dim. 2 & 3 (flow field size) | 321 (around sectional airfoil) x 101 (spanwise**) |
+| dim. 2 & 3 (flow field size) | 321 (around sectional airfoil) x 61 (spanwise**) |
 
 \* \*\* same as B-1
 
@@ -231,7 +232,7 @@ Same to B-1
 
 **Global parameter file**
 
-| file name | Simple wing  `wingindex.npy` |
+| file name | `wingindex.npy` |
 |-|-|
 | array size | (1842, 35) |
 | 0  |  wing index  |
@@ -242,7 +243,7 @@ Same to B-1
 |5| aspect ratio|
 |6| tapper ratio|
 |7| twist angle|
-|8| tip-to-root thickness ratio ($=1$)|
+|8| tip-to-root thickness ratio |
 |9| reference area |
 |10| root relative thickness |
 |11-20| CST coeffcients for upper surface |
