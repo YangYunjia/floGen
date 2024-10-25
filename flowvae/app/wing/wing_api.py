@@ -12,13 +12,15 @@ Currently use: SLD estimated with model (no need to call VLM codes)
 
 from flowvae.ml_operator import load_model_from_checkpoint
 from flowvae.app.wing import models
+from flowvae.sim.cfl3d import AirfoilSimulator
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 import torch
 
 import numpy as np
 import os, copy
 from cfdpost.wing.basic import Wing, KinkWing, plot_compare_2d_wing, plot_frame
-from cst_modeling.section import cst_foil
+from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -40,6 +42,17 @@ def nondim_index_values(index):
                             -3.66290589e-01,-3.13444839e-01,-5.00000000e-01,-1.67536969e-01,-8.25543820e-02])
     
     return (index - min_values) / range_values
+
+def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
+    
+    indices = torch.searchsorted(x, x_new, right=True) - 1
+    indices = indices.clamp(0, len(x) - 2)
+    x0, x1 = x[indices], x[indices + 1]
+    y0, y1 = data[indices], data[indices + 1]
+    alpha  = (x_new - x0) / (x1 - x0)
+    data_new = y0 + alpha.unsqueeze(-1).unsqueeze(-1) * (y1 - y0)
+    
+    return data_new
 
 class Wing_api():
     
@@ -76,6 +89,8 @@ class Wing_api():
         self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
                                   h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=_device)
         load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=_device)
+        
+        self.info = {}
     
     @staticmethod
     def display_sectional_airfoil(ax, inputs: np.ndarray, write_to_file: str = None):
@@ -120,8 +135,9 @@ class Wing_api():
         ax.set_xlim(0, 4)
         ax.set_ylim(0, 7)
         ax.set_zlim(0, 1)
-        
-    def predict(self, inputs: np.ndarray) -> Wing:
+    
+    def predict(self, inputs: np.ndarray, real_sld: np.ndarray = None, 
+                real_2dmodel: int = 0, airsim: AirfoilSimulator = None) -> Wing:
         '''
         predict wing surface values from input
         
@@ -157,10 +173,14 @@ class Wing_api():
         wg.reconstruct_surface_grids(nx=161, nzs=[101])
         deltaindex, nondimgeom = wg.get_normalized_sectional_geom()
         nondim_inputs = nondim_index_values(inputs)
-        
-        # SLD prediction
         wing_paras = torch.from_numpy(nondim_inputs).unsqueeze(0).float().to(self.device)
-        sld_3d = self.model_sld(wing_paras)[:, 0]
+        
+        if real_sld is None:
+            # SLD prediction
+            sld_3d = self.model_sld(wing_paras)[:, 0]
+        else:
+            # use prescribed SLD
+            sld_3d = torch.from_numpy(real_sld).unsqueeze(0).float().to(self.device)
         
         # swept theory transfer of OC and Geom
         ma3d = inputs[1]
@@ -179,8 +199,20 @@ class Wing_api():
                                 re2ds.reshape(-1, 1)))
         geoms2d = torch.from_numpy(nondimgeom[:, 1:2] / np.cos(sa4)).float().to(self.device)
         
-        # 2D surface value prediction and correction
-        output_2d = self.model_2d(geoms2d, code=auxs2d)[0]
+        if real_2dmodel > 0:
+            # use cfd simulation to correct model predicted 2d models
+            output_2d = self._sim_2d(real_2dmodel, airsim)
+            # return output_2d
+        
+        else:    
+            # 2D surface value prediction with pretrained model
+            output_2d = self.model_2d(geoms2d, code=auxs2d)[0]
+            
+        self.info['2d_surf'] = output_2d
+        self.info['2d_geom'] = geoms2d.detach().cpu().numpy()
+        self.info['2d_auxs'] = auxs2d.detach().cpu().numpy() # ma, cl, re
+        self.info['3d_sld'] = sld_3d[0].detach().cpu().numpy()
+            
         output_2d_corr = (output_2d * np.cos(sa4)**2).transpose(0, 1).unsqueeze(0)
         # shape: nv, nz, nx
         
@@ -193,11 +225,68 @@ class Wing_api():
         wg.read_formatted_surface(geometry=None, data=output_3d[0].detach().cpu().numpy(), isnormed=True)
         wg.lift_distribution()
         
-        self.info = {'2d_surf': output_2d.detach().cpu().numpy(), 
-                     '2d_geom': geoms2d.detach().cpu().numpy(),
-                     '2d_auxs': auxs2d.detach().cpu().numpy(), # ma, cl, re
-                     '3d_sld': sld_3d[0].detach().cpu().numpy(),
-                     }
-        
         return wg
+    
+    def _sim_2d(self, n_cfd: int, airsim: AirfoilSimulator) -> torch.Tensor:
+        '''
+        simulate the typical airfoils of a wing to get the 2D results
+        
+        paras:
+        ===
+        - `n_cfd`:  amount of cross-sections for CFD simulation (evenly distributed spanwise)
+        - `airsim`: airfoil simulator defined in `sim.cfl3d`
+        
+        return:
+        ===
+        `torch.Tensor` of size nz x nv (cp/cf) x ni (101 x 2 x 321)
+
+        
+        '''
+        nn = 161
+        xx = np.array([clustcos(i, nn) for i in range(nn)])
+        # all_x = xx[::-1] + xx[1:]
+
+        # decide the cross-section index to be simulated
+        idxs = []
+        izs = [int(iz) for iz in np.linspace(0, 1, n_cfd) * 100]
+        
+        # submit simulation tasks
+        for iz in izs:
+            # reconstruct 
+            cst_u, cst_l = cst_foil_fit(xu=xx, yu=self.info['2d_geom'][iz, 0, 160:], xl=xx, yl=self.info['2d_geom'][iz, 0, :161][::-1], n_cst=7)
+
+            i = airsim.submit({
+                'igroup':   0,
+                'icond':    iz,
+                'ma':       self.info['2d_auxs'][iz][0],
+                're':       self.info['2d_auxs'][iz][2],
+                'cl':       self.info['2d_auxs'][iz][1],
+                'cstu':     cst_u,
+                'cstl':     cst_l
+            })
+            
+            # i = airsim.submit({
+            #     'igroup':   0,
+            #     'icond':    iz,
+            #     'ma':       self.info['2d_auxs'][iz][0],
+            #     're':       self.info['2d_auxs'][iz][2],
+            #     'cl':       self.info['2d_auxs'][iz][1],
+            #     'xx':       xx,
+            #     'yu':       self.info['2d_geom'][iz, 0, 160:],
+            #     'yl':       self.info['2d_geom'][iz, 0, :161][::-1]
+            # })
+            
+            idxs.append(i)
+        
+        surfaces = airsim.wait_and_get_surface(idxs)[:, 1:]
+
+        # read sectional airfoil results and interpolate to entire spanwise
+        izs_t = torch.tensor(izs).to('cuda:0')
+        dsurfaces = torch.from_numpy(surfaces).float().to('cuda:0') - self.info['2d_surf'][izs_t]
+        corr_2d = self.info['2d_surf'] + linear_interpolation(dsurfaces, izs_t, torch.tensor(range(101)).to('cuda:0'))
+        # corr_2d = torch.transpose(corr_2d, 0, 1)
+        self.info['2d_sec_surf'] = surfaces
+ 
+        return corr_2d
+        
         
