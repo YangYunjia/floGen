@@ -300,19 +300,31 @@ class EncoderDecoder(AutoEncoder):
 
         if code_mode in ['ex']:
             self.fc_mu = nn.Sequential(
+                nn.Flatten(start_dim=1),
                 nn.Linear(lfe + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
                 nn.Linear(fd, fd))
             self.fc_var = nn.Sequential(
+                nn.Flatten(start_dim=1),
                 nn.Linear(lfe + cd, fd), nn.BatchNorm1d(fd), nn.LeakyReLU(),
                 nn.Linear(fd, fd))
         elif code_mode in ['ae', 'ed']:
-            self.fc_mu = nn.Linear(lfe, fd)
+            self.fc_mu = nn.Sequential(
+                nn.Flatten(start_dim=1),
+                nn.Linear(lfe, fd))
         elif code_mode in ['ved', 'ved1']:
-            self.fc_mu = nn.Linear(lfe, fd)
-            self.fc_var = nn.Linear(lfe, fd)    
+            self.fc_mu = nn.Sequential(
+                nn.Flatten(start_dim=1),
+                nn.Linear(lfe, fd))
+            self.fc_var = nn.Sequential(
+                nn.Flatten(start_dim=1),
+                nn.Linear(lfe, fd))
         elif code_mode in ['semi', 'im']:
-            self.fc_mu = nn.Linear(lfe, ld)
-            self.fc_var = nn.Linear(lfe, ld)
+            self.fc_mu = nn.Sequential(
+                nn.Flatten(start_dim=1),
+                nn.Linear(lfe, ld))
+            self.fc_var = nn.Sequential(
+                nn.Flatten(start_dim=1),
+                nn.Linear(lfe, ld))
 
         if code_layer != []:
             ld = ld - cd + code_layer[-1]
