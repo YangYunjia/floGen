@@ -96,7 +96,6 @@ class FlowDataset(Dataset):
 
         self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
 
-
     def _select_index(self, c_mtd, test, no, is_last, fname):
         '''
         select among the conditions of each airfoil for training
@@ -108,10 +107,13 @@ class FlowDataset(Dataset):
         if c_mtd == 'load':
             if fname is None:
                 fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
-            if not os.path.exists(fname):
-                raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
-            else:
-                self.data_idx = np.loadtxt(fname, dtype=np.int32)
+            
+            assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
+            self.data_idx = np.loadtxt(fname, dtype=np.int32)
+                
+            print(f'> load flow field index from {fname}')
+            print(f'> total size of data: {self.all_data.shape}')
+            
         elif c_mtd == 'all':
             self.data_idx = list(range(self.all_output.shape[0]))
         else:
@@ -217,7 +219,7 @@ class ConditionDataset(Dataset):
         self.all_index = np.load(data_base + file_name + 'index.npy')
 
         self.condis_dim = d_c
-        self.airfoil_num = int(self.all_index[-1][0]) + 1   #   amount of airfoils in dataset
+        self.airfoil_num = int(max(self.all_index[:, 0])) + 1   #   amount of airfoils in dataset
         # print(self.all_index[-1][0])
         self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int32)       #   amount of conditions for each airfoil, a array of (N_airfoil, )
         self.condis_st      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the start index of each airfoil in the serial dataset
@@ -245,8 +247,8 @@ class ConditionDataset(Dataset):
 
         '''
 
-        print('# checking the index in the index.npy #')
-        print(' *** number of airfoils:  %d' % self.airfoil_num)
+        print(f'---------------------------------------')
+        print(f'> checking the index in the index.npy')
 
         airfoil_idx = -1
         for i, idx in enumerate(self.all_index):
@@ -261,6 +263,11 @@ class ConditionDataset(Dataset):
         self.ref_condis = torch.from_numpy(self.ref_condis).float()
         self.refr = torch.from_numpy(np.take(self.all_data, self.ref_index, axis=0)).float()
 
+        print(f'> number of geometries:   {self.airfoil_num:d}')
+        print(f'> number of flow fields:  {len(self.all_index):d}')
+        print(f'> min & max number of flow fields for one geometry:  {min(self.condis_all_num):d}  {max(self.condis_all_num):d}')
+        print(f'---------------------------------------')
+
     def _select_index(self, c_mtd, n_c, c_map, test, no, is_last):
         '''
         select among the conditions of each airfoil for training
@@ -268,21 +275,26 @@ class ConditionDataset(Dataset):
         self.data_idx = []
         self.airfoil_idx = []
 
-        print('# selecting data from data.npy #')
+        print(f'selecting data from data.npy')
+        print(f'> selecting method will be {c_mtd}')
         minnc = 1000
         maxnc = -1
 
         if c_mtd == 'load':
-            fname = self.data_base + self.fname + '_%ddataindex.txt' % no
-            if not os.path.exists(fname):
-                raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
-            else:
-                self.data_idx = np.loadtxt(fname, dtype=np.int32)
+            
+            if fname is None:
+                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
+            
+            assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
+            self.data_idx = np.loadtxt(fname, dtype=np.int32)
 
             for iidx in self.data_idx:
                 if self.all_index[iidx][0] not in self.airfoil_idx:
+                    # load the geometry index
                     self.airfoil_idx.append(self.all_index[iidx][0])
-
+            
+            print(f'> load flow field index from {fname}')
+        
         else:
 
             if c_mtd in ['fix', 'random', 'all', 'exrf']:
@@ -314,16 +326,22 @@ class ConditionDataset(Dataset):
             else:
                 raise KeyError()
             
+            print(f'> number of conditions:  {minnc:d} ~ {maxnc:d}')
             self.save_data_idx(no)
 
         # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
         # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 
         self.dataset_size = len(self.data_idx)
 
-        print(' *** number of conditions:  %d ~ %d, total size of data: %d ' % (minnc, maxnc, self.dataset_size), self.all_data.shape)
+        print(f'> total size of data: {self.all_data.shape}')
+        print(f'---------------------------------------')
 
     def save_data_idx(self, no):
-        np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
+        fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+        assert not os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' exist' % fname
+        
+        print(f'> save flow field index from {fname}')
+        np.savetxt(fname, self.data_idx, fmt='%d')
 
     def __len__(self):
         return self.dataset_size
