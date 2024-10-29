@@ -15,28 +15,58 @@ import random
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 class FlowDataset(Dataset):
+    '''
+    This class formulate a normal input-output-pair dataset
 
-    def __init__(self, file_name: str or List[str],
+    ### params
+
+    - `file_name` (`str` or `List[str]`):  the data name
+        - if input is a str, the output will be `%file_name%data.npy`; the input will be `%file_name%index.npy`
+        - if input is a list, the output will be `%file_name[0]%.npy`; the input will be `%file_name[1]%.npy`
+    
+    
+    
+    '''
+
+    def __init__(self, file_name: str or List[str], 
                  c_mtd: str = 'fix', 
                  c_no: int = -1, 
                  test: int = -1, 
-                 data_base: str = 'data/', 
+                 data_base: str = 'data', 
                  is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
+                 aux_channel_take: List[int] = None,
+                 flatten: bool = False, 
+                 swap_axis: tuple = None, 
+                 unsqueeze: int = None,
                  index_fname: str = None) -> None:
         
         super().__init__()
 
         self.data_base = data_base
+        self.flatten = flatten
+        
         if isinstance(file_name, str):
-            self.all_output = np.load(data_base + file_name + 'data.npy')
-            self.all_input = np.load(data_base + file_name + 'index.npy')
+            self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
+            self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
+            self.all_aux = None
             self.fname = file_name
         elif isinstance(file_name, List):
-            self.all_output = np.load(data_base + file_name[0] + '.npy')
-            self.all_input = np.load(data_base + file_name[1] + '.npy')
+            self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
+            self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
             self.fname = file_name[0] + file_name[1]
+
+        if swap_axis is not None:
+            self.all_input = np.swapaxes(self.all_input, *swap_axis)
+
+        if flatten:
+            # print(self.all_input.shape)
+            self.all_output = np.swapaxes(self.all_output, 1, 2)
+            self.all_output = self.all_output.reshape(-1, *self.all_output.shape[2:])
+            self.all_input  = np.swapaxes(self.all_input, 1, 2)
+            self.all_input  = self.all_input.reshape(-1, *self.all_input.shape[2:])
+            print(self.all_output.shape)
 
         if output_channel_take is None:
             self.output = self.all_output
@@ -47,9 +77,23 @@ class FlowDataset(Dataset):
             self.inputs = self.all_input
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
+            
+        if isinstance(file_name, List) and len(file_name) > 2:
+            self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
+            if aux_channel_take is None:
+                self.auxs = self.all_aux
+            else:
+                self.auxs = np.take(self.all_aux, aux_channel_take, axis=1)
+            self.auxs   = torch.from_numpy(self.auxs).float()
+        else:
+            self.all_aux = None
+            self.auxs    = None
 
         self.inputs = torch.from_numpy(self.inputs).float()
+        if unsqueeze is not None:
+            self.inputs = self.inputs.unsqueeze(unsqueeze)
         self.output = torch.from_numpy(self.output).float()
+
         self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
 
 
@@ -63,7 +107,7 @@ class FlowDataset(Dataset):
 
         if c_mtd == 'load':
             if fname is None:
-                fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
             if not os.path.exists(fname):
                 raise IOError(' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname)
             else:
@@ -81,7 +125,14 @@ class FlowDataset(Dataset):
         self.dataset_size = len(self.data_idx)
 
     def save_data_idx(self, no):
-        np.savetxt(self.data_base + self.fname + '_%ddataindex.txt' % no, self.data_idx, fmt='%d')
+        np.savetxt(os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no), self.data_idx, fmt='%d')
+
+    def normalize(self) -> None:
+        self.inputs = self.inputs.detach().numpy()
+        output_min = np.min(self.inputs, axis=0)
+        output_max = np.max(self.inputs, axis=0)
+        print('dataset input is normalized with', output_min, output_max)
+        self.inputs = torch.from_numpy((self.inputs - output_min) / (output_max - output_min)).float()
 
     def __len__(self):
         return self.dataset_size
@@ -90,7 +141,12 @@ class FlowDataset(Dataset):
         d_index = self.data_idx[index]
         inputs  = self.inputs[d_index]
         labels  = self.output[d_index]
-        return {'input': inputs, 'label': labels}
+        if self.all_aux is None:
+            return {'input': inputs, 'label': labels}
+        else:
+            auxs = self.auxs[d_index]
+            return {'input': inputs, 'label': labels, 'aux': auxs}
+    
     
 class ConditionDataset(Dataset):
     '''
@@ -329,26 +385,33 @@ class ConditionDataset(Dataset):
         from flowvae.post import clustcos, get_force_1d
 
         print('Dataset is changed to output force as flowfield...')
+        force_file_path = os.path.join(self.data_base, 'force.npy')
 
-        forces = torch.zeros(len(self.all_data), 2)
+        if os.path.exists(force_file_path):
+            self.all_force = np.load(force_file_path)
 
-        nn = 201
-        xx = [clustcos(i, nn) for i in range(nn)]
-        all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+        else:
+            forces = torch.zeros(len(self.all_data), 2)
 
-        for i, sample in enumerate(self.all_data):
-            geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
-            aoa  = self.all_index[i, 3]
-            profile = sample[1]
-            forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
-                                     torch.from_numpy(profile).float(), aoa)
+            nn = 201
+            xx = [clustcos(i, nn) for i in range(nn)]
+            all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
 
-        if info == 'non-dim':
-            param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
-            print('>    non-dimensional parameters for Cl/Cd will be %.2f' % param)
-            forces[:, 0] *= param
+            for i, sample in enumerate(self.all_data):
+                geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
+                aoa  = self.all_index[i, 3]
+                profile = sample[1]
+                forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
+                                        torch.from_numpy(profile).float(), aoa)
 
-        self.all_force = forces.detach().numpy()
+            if info == 'non-dim':
+                param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+                print('>    non-dimensional parameters for Cl/Cd will be %.6f' % param)
+                forces[:, 0] *= param
+
+            self.all_force = forces.detach().numpy()
+            np.save(force_file_path, self.all_force)
+
         self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
         self.get_item = self._get_force_item
         self._output_force_flag = True

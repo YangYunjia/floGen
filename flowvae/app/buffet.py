@@ -1,7 +1,7 @@
 from sklearn.linear_model import LinearRegression
 from scipy.interpolate import PchipInterpolator
 from scipy.interpolate import interp1d
-from scipy.stats import theilslopes
+import scipy.stats as stats
 
 
 import numpy as np
@@ -156,6 +156,14 @@ class Series():
         self.series['AoA'] = copy.deepcopy(x)
         self._length = len(x)
 
+    def delete_duplicate(self, therhold):
+        new_idxs = [0]
+        for idx in range(1, len(self.AoA)):
+            if (self.AoA[idx] - self.AoA[new_idxs[-1]]) >= therhold:
+                new_idxs.append(idx)
+        for var in self.series.keys(): 
+            self.series[var] = np.take(self.series[var], new_idxs)
+
 class Buffet():
 
     def __init__(self, method='lift_curve_break',logtype=0, **kwargs) -> None:
@@ -202,8 +210,11 @@ class Buffet():
         if 'lstsa'  not in kwargs.keys():       self.paras['lstsa']  = 0.95
         if 'lsuth1' not in kwargs.keys():       self.paras['lsuth1'] = 0.0      # linear segment upper bound therhold upper
                                                                     
-        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 2.0         # old 1.2
-        # linear segment upper bound therhold lower
+        if 'lsuth2' not in kwargs.keys():       self.paras['lsuth2'] = 2.0      # for opti. of first paper (Yang 2024a) -optimization part the value is 2.0
+                                                                                # for opti. of first paper -model result part the value is 1.0？ (on legion)
+                                                                                # for opti. of second paper (w/ UQ, Yang 2024b) the value is 0.1 (except remarked)
+                                                                                # this value sames not affect opti. a lot? only affect results in training & testing
+                                                                                # linear segment upper bound therhold lower
                                                                                 # the u.b. is searched down from start point not less than this value
                                                                                 # to let r2 > 0.9999 (for LRZ is 1.0, for SFY is 0.01)
         if 'lslt' not in kwargs.keys():         self.paras['lslt'] = 3.0        # linear segment length (for LRZ is 3.0, for SFY is 1.0)
@@ -230,18 +241,21 @@ class Buffet():
         elif self.method in ['shock_to_maxcuv']: results = self.shock_to_maxcuv(seri, **kwargs)
 
         if self.paras['sep_check']:
-            if self.paras['intp'] == 'pchip':
-                f_cl_aoa_all = PchipInterpolator(seri.AoA, np.array(seri.Cl))
-            elif self.paras['intp'] == '1d':
-                f_cl_aoa_all = interp1d(seri.AoA, np.array(seri.Cl), bounds_error=False, fill_value='extrapolate')
-            
-            AoA_sep = self.incipient_separation(seri)
-            for i in range(3):
-                if results[i, 0] < AoA_sep:
-                    print('AoA buffet onset change from %.4f to %.4f' % (results[i, 0], AoA_sep))
-                    results[i, 0] = AoA_sep
-                    results[i, 1] = f_cl_aoa_all(AoA_sep)
-                    
+            if not 'Cf' in seri.series.keys():
+                print('Warning, Cf not in series but sep_check is True')
+            else:
+                if self.paras['intp'] == 'pchip':
+                    f_cl_aoa_all = PchipInterpolator(seri.AoA, np.array(seri.Cl))
+                elif self.paras['intp'] == '1d':
+                    f_cl_aoa_all = interp1d(seri.AoA, np.array(seri.Cl), bounds_error=False, fill_value='extrapolate')
+                
+                AoA_sep = self.incipient_separation(seri)
+                for i in range(3):
+                    if results[i, 0] < AoA_sep:
+                        print('AoA buffet onset change from %.4f to %.4f' % (results[i, 0], AoA_sep))
+                        results[i, 0] = AoA_sep
+                        results[i, 1] = f_cl_aoa_all(AoA_sep)
+                        
         return results
 
     @staticmethod
@@ -453,7 +467,7 @@ class Buffet():
                     i_ub = i+1
                     break
             
-                slope, intercept, low_slope, high_slope = theilslopes(y[i_lb: i+3], x[i_lb: i+3], alpha=self.paras['lstsa'])
+                slope, intercept, low_slope, high_slope = stats.theilslopes(y[i_lb: i+3], x[i_lb: i+3], alpha=self.paras['lstsa'])
                 ds = high_slope-low_slope
                 
                 if i == i_lb:
@@ -505,6 +519,7 @@ class Buffet():
             
             max_aoa = aoa_refs[max_i] + self.paras['lsuth1'] + 0.1
             min_aoa = AoAs[i_lb]
+            print(self.paras['lsuth1'], self.paras['lsuth2'])
 
             while max_aoa > aoa_refs[max_i] + self.paras['lsuth1'] - self.paras['lsuth2'] and max_aoa > AoAs[i_lb + 2]:
                 max_aoa -= 0.1
@@ -523,7 +538,7 @@ class Buffet():
             i_ub = max(i_lb + 2, np.argmin(np.abs(AoAs - max_aoa)) + 1)
             AoA_ub = max_aoa
         # print(x, y, i_lb, i_ub)
-        slope, intercept, low_slope, high_slope = theilslopes(y[i_lb:i_ub+1], x[i_lb:i_ub+1], alpha=self.paras['lstsa'])
+        slope, intercept, low_slope, high_slope = stats.theilslopes(y[i_lb:i_ub+1], x[i_lb:i_ub+1], alpha=self.paras['lstsa'])
             
         linear_portion = {
             'slope':        slope,
@@ -806,7 +821,7 @@ class Buffet():
 
         return linear_portion, bfpoints, AoA_sep
 
-    def lift_curve_break(self, seri: Series, cl_c: float = None, p: Ploter = None):
+    def lift_curve_break(self, seri: Series, cl_c: float = None, extra_cl = None, p: Ploter = None, ):
         '''
         calculate buffet point based on aerodynamic curves
         
@@ -817,36 +832,6 @@ class Buffet():
         elif self.paras['intp'] == '1d':
             f_cl_aoa_all = interp1d(seri.AoA, np.array(seri.Cl), bounds_error=False, fill_value='extrapolate')
 
-        #* -----------------------------------
-        #* decide linear segment
-        # aoa_refs = list(np.arange(-2, 4, 0.01))
-        # if self.paras['linear'] == 'cruise':
-        #     max_i = first_argmin(abs(f_cl_aoa_all(aoa_refs) - self.paras['cl_c']))
-        # elif self.paras['linear'] == 'maxLD':
-        #     f_cdcl_aoa_all = PchipInterpolator(aoas, np.array(clss) / np.array(cdss))
-        #     max_i = first_argmin(-f_cdcl_aoa_all(aoa_refs))
-        
-        # max_aoa = aoa_refs[max_i] + self.paras['lsuth1']
-
-        # while max_aoa > aoa_refs[max_i] + self.paras['lsuth1'] - self.paras['lsuth2']:
-        #     min_aoa = max(aoas[0], max_aoa - self.paras['lslt'])
-        #     linear_aoas = np.arange(min_aoa, max_aoa, 0.1).reshape(-1,1)    # modified 2023.5.14, change the upper bound to max_aoa - 0.5
-        #     f_cl_aoa_linear = f_cl_aoa_all(linear_aoas)
-        #     reg = LinearRegression().fit(linear_aoas, f_cl_aoa_linear)
-        #     if reg.score(linear_aoas, f_cl_aoa_linear) > 0.9999:
-        #         break
-        #     max_aoa -= 0.01
-        
-        # reg_k = reg.coef_[0]
-        # reg_b = reg.intercept_
-
-        # self.log(' >> linear section')
-        # self.log('     reference:  AoA = %.4f (with %s method)' % (aoa_refs[max_i], self.paras['linear']))
-        # self.log('     Minimal:    AoA = %.4f, Cl = %.4f' % (min_aoa, f_cl_aoa_all(min_aoa)))
-        # self.log('     Maximal:    AoA = %.4f, Cl = %.4f' % (max_aoa, f_cl_aoa_all(max_aoa)))
-        # self.log('     slope:      %.4f' % (reg_k))
-        # self.log('     intercept:  %.4f' % (reg_b))
-        # self.log('     error:      %.4f' % (reg.score(linear_aoas, f_cl_aoa_linear)))
         if 'Cd' in seri.series.keys():
             CDs = seri.Cd
         else:
@@ -869,39 +854,46 @@ class Buffet():
         # f_cl_aoa = pchip(aoas[max_i:], clss[max_i:])
         
         upp_bound = seri.AoA[-1] + 0.8
-        step_aoa = np.arange(AoA_sep, upp_bound, 0.001)
+        step_aoa1 = np.arange(max(0.2, AoA_sep), upp_bound, 0.001)
+        step_aoa2 = np.arange(ll['AoA_ub'] - 0.1, upp_bound, 0.001)
 
         flags = {}
         bufs = np.ones((3, 2)) * (-10.0)
-        idx = -1
 
-        for key in ['slope_ub', 'slope', 'slope_lb']:
-            idx += 1
+        def find_buffet_point(slope, interp, curve, step_aoa):
+            return Buffet.intersection(step_aoa, slope * (step_aoa - self.paras['daoa']) + interp, curve(step_aoa))
+
+        for idx, key in enumerate(['slope_ub', 'slope', 'slope_lb']):
+            # larger slope means smaller buffet lift coefficient
             try:
-                bufs[idx] = Buffet.intersection(step_aoa, 
-                        ll[key] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
+                bufs[idx] = find_buffet_point(ll[key], ll['intercept'], f_cl_aoa_all, step_aoa1)
                 flags[key] = True
             except IntersectNotFound:
                 flags[key] = False
-
+        
         if flags['slope_ub']:
+            # lower buffet boundary found
             if not flags['slope']: bufs[1] = bufs[0]
             if not flags['slope_lb']: bufs[2] = bufs[1]
         else:
             # modified 2023.5.14, change the upper bound to aoa[-1]+0.5(pchip is valid for extrapolate)
             # change the lower bound to aoa_cruise + 0.1, if not found, search max_aoa
-            step_aoa = np.arange(ll['AoA_ub'] - 0.1, upp_bound, 0.001)
             try:
-                bufs[0] = Buffet.intersection(step_aoa, 
-                        ll['slope_ub'] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
-                if not flags['slope']:
-                    bufs[1] = Buffet.intersection(step_aoa, 
-                        ll['slope'] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
-                if not flags['slope_lb']:
-                    bufs[2] = Buffet.intersection(step_aoa, 
-                        ll['slope_lb'] * (step_aoa - self.paras['daoa']) + ll['intercept'], f_cl_aoa_all(step_aoa))
+                bufs[0] = find_buffet_point(ll['slope_ub'], ll['intercept'], f_cl_aoa_all, step_aoa2)
+                if not flags['slope']: bufs[1] = find_buffet_point(ll['slope'], ll['intercept'], f_cl_aoa_all, step_aoa2)
+                if not flags['slope_lb']: bufs[2] = find_buffet_point(ll['slope_lb'], ll['intercept'], f_cl_aoa_all, step_aoa2)
             except IntersectNotFound:
                 self.log(' >> buffet onset  not found')
+    
+        # if bufs[2, 1] < bufs[0, 1]:
+        #     plt.plot(seri.AoA, np.array(seri.Cl), 'o')
+        #     plt.plot(step_aoa, f_cl_aoa_all(step_aoa), c='k')
+        #     plt.plot(step_aoa, ll['slope_ub'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C0')
+        #     plt.plot(step_aoa, ll['slope'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C1')
+        #     plt.plot(step_aoa, ll['slope_lb'] * (step_aoa - self.paras['daoa']) + ll['intercept'], c='C2')
+        #     print(bufs[:, 1], ll)
+        #     plt.show()
+
 
         self.log(' >> buffet onset')
         self.log('     AoA = %.4f ([%.4f, %.4f]), Cl = %.4f ([%.4f, %.4f])' % (bufs[1,0], bufs[0,0], bufs[2,0], bufs[1,1], bufs[0,1], bufs[2,1]))
@@ -909,16 +901,76 @@ class Buffet():
         if p is not None:
             hl_aoa = np.arange(seri.AoA[0], seri.AoA[-1]+0.4, 0.01)
             aoas = np.array(seri.AoA)
-            plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name)
+            plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name) #!
             # plt.plot(aoas - p.ref_aoa, seri.X1, p.symbol, c=p.color, label=p.name)
             # plt.plot(aoas[ll['i_lb']:ll['i_ub']+1] - p.ref_aoa, seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name)
-            plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color)
-            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], '-.', c=p.color)
-            plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color)
+            plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color) #!
+            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], 
+                    [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], 
+                    '-.', c=p.color, lw=0.8)
+            plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color) #!
             plt.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
             if p.instant_plot:
-                plt.show()    
+                plt.show() 
 
+        if extra_cl is not None:
+            #* if more lift curves are given, use them to recalculate the uncertainty of lift curve
+            # lower and upper boundary of the linear section is the same as mean values
+            i0 = ll['i_lb']
+            i1 = ll['i_ub'] + 1
+            # get the 95% confidence range for lift curve
+            lower_cls, upper_cls  = stats.t.interval(confidence=0.95, df=len(extra_cl)-1, loc=np.mean(extra_cl, axis=0), scale=np.std(extra_cl, axis=0))
+            f_cl_aoa_all_bound = {'upper': PchipInterpolator(seri.AoA, upper_cls),
+                                  'lower': PchipInterpolator(seri.AoA, lower_cls)}
+
+            # plot_aoas = np.linspace(seri.AoA[0], seri.AoA[-1], 100)
+            # plt.fill_between(plot_aoas, f_cl_aoa_all_bound['upper'](plot_aoas), f_cl_aoa_all_bound['lower'](plot_aoas))
+            # plt.plot(seri.AoA, np.mean(extra_cl, axis=0), 'o', mfc='none', c='k')   
+            # # plt.plot([seri.AoA[i0], seri.AoA[i1]], [np.mean(extra_cl, axis=0)[i0], np.mean(extra_cl, axis=0)[i1]], '--', c='k')
+            # plt.show()
+            
+            bufs_bound = {'lower': [], 'upper': []}
+
+            flags = {}
+            for cl_series in extra_cl:
+                # print(cl_series.shape)
+                reg = LinearRegression().fit(seri.AoA[i0: i1].reshape(-1,1), cl_series[i0: i1])
+                for key in ['lower', 'upper']:
+                    try:
+                        bufs_bound[key].append(find_buffet_point(reg.coef_[0], reg.intercept_, f_cl_aoa_all_bound[key], step_aoa1))
+                        flags[key] = True
+                    except IntersectNotFound:
+                        flags[key] = False
+
+                if flags['lower']:
+                    if not flags['upper']:  bufs_bound['upper'].append([upp_bound, f_cl_aoa_all_bound['upper'](upp_bound)])
+                    else:
+                        try:
+                            bufs_bound['lower'].append(find_buffet_point(reg.coef_[0], reg.intercept_, f_cl_aoa_all_bound['lower'], step_aoa2))
+                            if not flags['upper']:  bufs_bound['upper'].append(find_buffet_point(reg.coef_[0], 
+                                                                                        reg.intercept_, f_cl_aoa_all_bound['upper'], step_aoa2))
+                        except IntersectNotFound:
+                            continue
+            if len(bufs_bound['upper']) < 0.8 * len(extra_cl) or len(bufs_bound['lower']) < 0.8 * len(extra_cl):
+                self.log(' >> buffet onset  not found')
+            
+            else:
+                bufs_lower = np.array(bufs_bound['lower'])
+                bufs_upper = np.array(bufs_bound['upper'])
+                # print(f'low {np.std(bufs_lower, axis=0)}   upp {np.std(bufs_upper, axis=0)}')
+                bufs[0] = stats.t.interval(confidence=0.95, df=len(bufs_lower)-1, loc=np.mean(bufs_lower, axis=0), scale=np.std(bufs_lower, axis=0))[0]
+                bufs[2] = stats.t.interval(confidence=0.95, df=len(bufs_upper)-1, loc=np.mean(bufs_upper, axis=0), scale=np.std(bufs_upper, axis=0))[1]
+        
+        # swap lower and upper boundary if values are inversed
+        if bufs[1, 1] > bufs[0, 1] and bufs[1, 1] > bufs[2, 1]:
+            bufs[0, 1] = min(bufs[0, 1], bufs[2, 1])
+            bufs[2, 1] = bufs[1, 1]
+        elif bufs[1, 1] < bufs[0, 1] and bufs[1, 1] > bufs[2, 1]:
+            buf_t = bufs[0, 1]
+            bufs[0, 1] = bufs[2, 1]
+            bufs[2, 1] = buf_t
+        
+        print(bufs)
         return bufs
 
     def curve_slope_diff(self, seri: Series, p: Ploter = None):

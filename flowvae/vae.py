@@ -27,7 +27,76 @@ Tensor = NewType('Tensor', torch.tensor)
 
 from flowvae.post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
 
-class EncoderDecoder(nn.Module):
+class AutoEncoder(nn.Module):
+
+    def __init__(self,         
+                 latent_dim: int,
+                 encoder: Encoder = None,
+                 decoder: Decoder = None,
+                 decoder_input_layer: int = 0,
+                 decoder_input_dropout: float = 0.,
+                 device = 'cuda:0',
+                 **kwargs) -> None:
+        super().__init__()
+
+        self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
+        # self.in_channels = in_channels
+        self.paras = kwargs
+        self.paras['decoder_input_layer'] = decoder_input_layer
+        self.paras['decoder_input_dropout'] = decoder_input_dropout
+        self.device = device
+
+        if encoder is None:
+            pass
+        else:
+            self.encoder = encoder
+            self.fc_mu = nn.Linear(self.encoder.last_flat_size, latent_dim)
+
+        if decoder is None:
+            pass
+        elif isinstance(decoder, list):
+            _decoder_inputs = []
+            self.decoders = nn.ModuleList(decoder)
+            for decoder in self.decoders:
+                decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                               ld=self.latent_dim, 
+                                               lfd=decoder.last_flat_size,
+                                               drop_out=decoder_input_dropout)
+                _decoder_inputs.append(decoder_input)
+            self.decoder_inputs = nn.ModuleList(_decoder_inputs)
+        else:
+            self.decoder = decoder
+            self.decoder_input = _decoder_input(typ=decoder_input_layer, 
+                                                ld=self.latent_dim, 
+                                                lfd=self.decoder.last_flat_size, 
+                                                drop_out=decoder_input_dropout)
+
+    def encode(self, input: Tensor) -> Tensor:
+        # print(input.size())
+        results = self.encoder(input)
+        # print(results.size())
+        return self.fc_mu(results)
+
+    def decode(self, z: Tensor) -> Tensor:
+        """
+        Maps the given latent codes
+        onto the image space.
+        :param z: (Tensor) [B x D]
+        :return: (Tensor) [B x C x H x W]
+        """
+        result = self.decoder_input(z)
+        # output_padding 可以用来补齐在卷积编码器中向下取整的损失
+        result = self.decoder(result)
+        # print(result.size())
+        
+        return result
+
+    def forward(self, inputs: Tensor) -> List[Tensor]:
+
+        mu = self.encode(inputs)
+        return [self.decode(mu), mu]
+
+class EncoderDecoder(AutoEncoder):
     '''
     the model of VAE
 
@@ -68,33 +137,20 @@ class EncoderDecoder(nn.Module):
                  decoder_input_layer: int = 0,
                  code_dim: int = 1,
                  code_layer = [],
+                 n_sample: int = 1,
                  device = 'cuda:0',
                  **kwargs) -> None:
 
 
-        super().__init__()
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, 0., device, **kwargs)
         
-        self.latent_dim = latent_dim        # the total dimension of latent variable (include code dimension)
-        self.code_dim = code_dim   # the code dimension (same with which in the dataset)
-        # self.in_channels = in_channels
-
-        self.device = device
-
-        self.paras = kwargs
-        self.paras['decoder_input_layer'] = decoder_input_layer
+        self.code_dim = code_dim
         self.cm = code_mode
-
         self.series_data = {}
+        self.n_sample = n_sample
 
         if code_mode in ['semi', 'im', 'ex', 'ae']:
             self.set_aux_data(dataset_size)
-
-        self.encoder = encoder
-        if isinstance(decoder, list):
-            self.decoders = nn.ModuleList(decoder)
-        else:
-            self.decoder = decoder
-
 
         ld = self.latent_dim
         cd = self.code_dim
@@ -130,16 +186,6 @@ class EncoderDecoder(nn.Module):
         else:
             self.fc_code = nn.Identity()
         
-        if isinstance(decoder, list):
-            _decoder_inputs = []
-            for decoder in self.decoders:
-                decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=decoder.last_flat_size)
-                _decoder_inputs.append(decoder_input)
-            self.decoder_inputs = nn.ModuleList(_decoder_inputs)
-        else:
-            self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=self.latent_dim, lfd=self.decoder.last_flat_size)
-
-
     def set_aux_data(self, dataset_size: Tuple[int, int]):
         n_airfoil = dataset_size[0]
         n_condi   = dataset_size[1]
@@ -221,20 +267,6 @@ class EncoderDecoder(nn.Module):
         # thr output of ae and ex is in dimension 11
         return [mu, log_var]
 
-    def decode(self, z: Tensor) -> Tensor:
-        """
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x C x H x W]
-        """
-        result = self.decoder_input(z)
-        # output_padding 可以用来补齐在卷积编码器中向下取整的损失
-        result = self.decoder(result)
-        # print(result.size())
-        
-        return result
-
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """
         Reparameterization trick to sample from N(mu, var) from
@@ -256,7 +288,7 @@ class EncoderDecoder(nn.Module):
         '''
 
         mu, log_var = self.encode(input, **kwargs)
-        
+
         if self.cm in ['ae', 'ed']:
             zf = mu
             zc = self.fc_code(kwargs['code'])
@@ -272,6 +304,14 @@ class EncoderDecoder(nn.Module):
         elif self.cm in ['ved1']:
             zf = self.reparameterize(mu, log_var)
             zc = self.fc_code(kwargs['code'])
+            if self.n_sample > 1:
+                mu_sample = mu.unsqueeze(1).repeat(1, self.n_sample, 1).reshape(-1, mu.shape[1])
+                log_var_sample = log_var.unsqueeze(1).repeat(1, self.n_sample, 1).reshape(-1, log_var.shape[1])
+                zf = self.reparameterize(mu_sample, log_var_sample)
+                zc = zc.unsqueeze(1).repeat(1, self.n_sample, 1).reshape(-1, zc.shape[1])
+            else:
+                zf = self.reparameterize(mu, log_var)
+                
             z = torch.cat([zc, zf], dim=1)
 
         elif self.cm in ['semi']:
@@ -288,8 +328,13 @@ class EncoderDecoder(nn.Module):
         elif self.cm in ['im']:
             z = self.reparameterize(mu, log_var)
             # TODO: the mode `im` is not consist with code layers!
+            
+        results = self.decode(z)
+        
+        if self.n_sample > 1:
+            results = torch.mean(results.reshape(-1, self.n_sample, *results.shape[1:]), axis=1)
 
-        return  [self.decode(z), mu, log_var]
+        return  [results, mu, log_var]
 
     def loss_function(self, real,
                       *args,
@@ -633,8 +678,8 @@ class BranchEncoderDecoder(EncoderDecoder):
 
 class Unet(EncoderDecoder):
 
-    def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], device='cuda:0', **kwargs) -> None:
-        super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, device, **kwargs)
+    def __init__(self, latent_dim: int, encoder: Encoder, decoder: Decoder, code_mode: str, fldata: ConditionDataset = None, decoder_input_layer: int = 0, code_dim: int = 1, code_layer=[], n_sample: int = 1, device='cuda:0', **kwargs) -> None:
+        super().__init__(latent_dim, encoder, decoder, code_mode, fldata, decoder_input_layer, code_dim, code_layer, n_sample, device, **kwargs)
         if isinstance(decoder, Decoder):
             if not (self.encoder.is_unet and self.decoder.is_unet):
                 raise Exception('Encoder or Decoder does not support U-Net')
@@ -647,11 +692,18 @@ class Unet(EncoderDecoder):
         for idx in range(len(self.encoder.feature_maps)):
             self.encoder.feature_maps[idx] = self.encoder.feature_maps[idx].repeat(n, 1, 1)
         # print( self.encoder.feature_maps[0].size())
+        
+    def _repeat_feature_maps_for_training(self):
+        if self.n_sample > 1:
+            feature_maps = [fm.unsqueeze(1).repeat(1, self.n_sample, 1, 1).reshape(-1, *fm.shape[1:]) for fm in self.encoder.feature_maps]
+        else:
+            feature_maps = self.encoder.feature_maps
+        return feature_maps
 
     def decode(self, z: Tensor, real_mesh: Tensor = None) -> Tensor:
         
         result = self.decoder_input(z)
-        result = self.decoder(result, encoder_feature_map=self.encoder.feature_maps)
+        result = self.decoder(result, encoder_feature_map=self._repeat_feature_maps_for_training())
 
         return result
 
@@ -662,24 +714,21 @@ class BranchUnet(Unet):
         results = []
         for decoder, decoder_input in zip(self.decoders, self.decoder_inputs):
             result = decoder_input(z)
-            result = decoder(result, encoder_feature_map=self.encoder.feature_maps)
+            result = decoder(result, encoder_feature_map=self._repeat_feature_maps_for_training())
             results.append(result)
         # print(result.size())
         cat_results = torch.cat(results, dim=1)
         # print(cat_results.size())
         return cat_results
 
-class DecoderModel(EncoderDecoder, nn.Module):
+class DecoderModel(AutoEncoder):
 
     def __init__(self, input_channels: int, decoder: Decoder, device: str, decoder_input_layer: float = 1.5) -> None:
-        nn.Module.__init__()
-        self.device = device
-        self.decoder = decoder
-        self.decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
+        super().__init__(latent_dim=input_channels, decoder=decoder, decoder_input_layer=decoder_input_layer, device=device)
 
-    def forward(self, input: Tensor):
-
-        return self.decode(input)
+    def forward(self, inputs: Tensor):
+        # print(inputs.size())
+        return self.decode(inputs)
 
 class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 
@@ -697,17 +746,71 @@ class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 
         return self.decode(input)
 
-class EncoderModel(nn.Module):
+class EncoderModel(AutoEncoder):
     
     def __init__(self, output_channels: int, encoder: Encoder, device: str) -> None:
-        super().__init__()
-        self.device = device
-        self.encoder = encoder
-        self.fc_mu = nn.Linear(self.encoder.last_flat_size, output_channels)
+        super().__init__(latent_dim=output_channels, encoder=encoder, device=device)
 
     def forward(self, input: Tensor) -> Tensor:
 
         return self.fc_mu(self.encoder(input))
+
+class EncoderDecoderLSTM(nn.Module):
+    
+    def __init__(self, lstm, encoder, decoder, nt, decoder_input_mode: str = 'stack') -> None:
+        super().__init__()
+
+        self.lstm  = lstm
+        self.encoder = encoder
+        self.decoder = decoder
+        self.device = 'cuda:0'
+        self.nt = nt
+        self.decoder_input_mode = decoder_input_mode
+
+    def forward(self, inputs):
+
+        nb = inputs.size()[0]
+
+        if inputs.ndim > 2:
+            # if input has nt dimension, flatten nt and input to encoder
+            inputs = torch.reshape(inputs, (-1, *inputs.size()[2:]))
+            lstm_input = self.encoder(inputs)
+            lstm_input = torch.reshape(lstm_input, (nb, self.nt, *lstm_input.size()[1:]))
+        else:
+            # if not, duplicate the only input to nt
+            lstm_input = self.encoder(inputs)
+            lstm_input = torch.unsqueeze(lstm_input, dim=1)
+            lstm_input = torch.repeat_interleave(lstm_input, self.nt, dim=1)
+        
+        lstm_output = self.lstm(lstm_input)[0]
+
+        if self.decoder_input_mode == 'stack':
+
+            decoder_input = torch.reshape(lstm_output, (-1, *lstm_output.size()[2:]))
+            decoder_output = self.decoder(decoder_input)
+            decoder_output = torch.reshape(decoder_output, (nb, self.nt, *decoder_output.size()[1:]))
+        
+        elif self.decoder_input_mode == 'unstack':
+            decoder_output_l = []
+            for it in range(lstm_output.shape[1]):
+                decoder_output_l.append(self.decoder(lstm_output[:, it]))
+
+            decoder_output = torch.stack(decoder_output_l).transpose(0, 1)
+
+        elif self.decoder_input_mode == '2D':
+            decoder_output = self.decoder(lstm_output)
+        
+        elif self.decoder_input_mode == 'embed':
+            pass
+
+        else:
+            raise KeyError('bad key for decoder input mode, choose from `stack`, `unstack`, and `2D`')
+
+        if self.decoder_input_mode in ['stack', 'unstack'] and decoder_output.ndim > 3:
+            # if the output has a channel dimension, then swap the channel with i_t dimension
+            decoder_output = torch.transpose(decoder_output, 2, 1)
+
+        return decoder_output
 
 def smoothness(field: Tensor, mesh: Tensor = None, offset: int = 2, field_size: Tuple = None) -> Tensor:
     # smooth = 0.0

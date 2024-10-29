@@ -6,6 +6,7 @@ Rewrite the vae operater part of Deng's code
 '''
 import torch
 from torch import nn
+from torch.nn.modules import Module
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
 
@@ -14,10 +15,26 @@ from tqdm import tqdm
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 
 from .vae import EncoderDecoder
-from .dataset import ConditionDataset
+from .dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .post import get_force_1dc
 from .utils import MDCounter
+
+def _check_existance_checkpoint(epoch, folder):
+
+    paths = os.path.join(folder, 'checkpoint_epoch_' + str(epoch))
+    if not os.path.exists(paths):
+        raise IOError("checkpoint not exist in {}".format(paths))
+    return paths
+
+def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device: str, set_to_eval: bool = True):
+    model.to(device)
+    path = _check_existance_checkpoint(epoch=epoch, folder=folder)
+    save_dict = torch.load(path, map_location=device)
+    model.load_state_dict(save_dict['model_state_dict'], strict=False)
+    last_error = save_dict['history']['loss']
+    print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
+    if set_to_eval: model.eval()
 
 class ModelOperator():
     '''
@@ -26,14 +43,14 @@ class ModelOperator():
     '''
     def __init__(self, opt_name: str, 
                        model: nn.Module, 
-                       dataset: ConditionDataset,
-                       output_folder="save", 
-                       init_lr=0.01, 
+                       dataset: FlowDataset or ConditionDataset,
+                       output_folder: str = "save", 
+                       init_lr: float = 0.01, 
                        num_epochs: int = 50,
-                       split_train_ratio = 0.9,
+                       split_train_ratio: float = 0.9,
                        recover_split: str = None,
                        batch_size: int = 8, 
-                       shuffle=True,
+                       shuffle: bool = True,
                        ):
         
         self.output_folder = output_folder
@@ -271,6 +288,7 @@ class ModelOperator():
         return self._model(data['input'])
 
     def _calculate_loss(self, data, output, kwargs):
+        # print(output.size(), data['label'].size())
         return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
     
     def _end_of_epoch(self):
@@ -291,18 +309,15 @@ class ModelOperator():
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
     
-    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
-        if folder is None:
-            path = self.output_path + '\\checkpoint_epoch_' + str(epoch)
-        else:
-            path = folder + '\\checkpoint_epoch_' + str(epoch)
-        if not os.path.exists(path):
-            raise IOError("checkpoint not exist in {}".format(path))
+    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
+
+        path = _check_existance_checkpoint(epoch, self.output_path)
         
         save_dict = torch.load(path, map_location=self.device)
-        print(save_dict['epoch'])
+        # print(save_dict['epoch'])
         self.epoch = save_dict['epoch'] + 1
-        self._model.load_state_dict(save_dict['model_state_dict'], strict=False)
+        self._model.load_state_dict(save_dict['model_state_dict'], strict=True)
+
         if load_opt:
             self._optimizer.load_state_dict(save_dict['optimizer_state_dict'])
             self._scheduler.load_state_dict(save_dict['scheduler_state_dict'])
@@ -310,9 +325,66 @@ class ModelOperator():
 
         if load_data_split and len(self.dataset) > 0:
             self.split_dataset(recover=self.optname)
-        print('checkpoint loaded from' + path)
+
+        print('checkpoint at epoch %d loaded from %s' % (save_dict['epoch'], path))
 
         return save_dict
+
+    def set_transfer_model(self, transfer_name, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
+        '''
+        load base model and set part of the parameters with grad off
+
+        '''
+        self.global_start_epoch = self.epoch
+        self.epoch = 0
+        self.set_optname(self.optname + '_' + transfer_name)
+
+        if grad_require_layers is not None:
+
+            for param in self.model.parameters():
+                param.requires_grad = False
+            
+            print('------- The layers below are set grad require ------')
+            for ly in grad_require_layers:
+                print(ly, ' :   ', self.model._modules[ly])
+                if reset_param:
+                    self.model._modules[ly].apply(reset_paras)
+
+                for param in self.model._modules[ly].parameters():
+                    param.requires_grad = True
+            
+        else:
+
+            print('------- All layers are set grad require ------')
+
+class BasicAEOperator(ModelOperator):
+
+    def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
+                 output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
+                 split_train_ratio: float = 0.9, recover_split: str = None, 
+                 batch_size: int = 8, shuffle: bool = True,
+                 ref: bool = False):
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
+        self.ref = ref
+        
+        # if ref:
+        #     # reference
+        #     self.ref_data = torch.zeros_like(dataset.output)
+        #     inpt_channels = dataset.inputs.size(1)
+        #     self.ref_data[:, :inpt_channels] = dataset.inputs
+
+    def _calculate_loss(self, data, output, kwargs):
+        # print(output[0].size(), data['label'].size())
+        labels = data['label']
+        if self.ref: labels[:, :2] -= data['input']
+
+        return {'loss': torch.nn.functional.mse_loss(output[0], labels)}
+
+class BasicCondAEOperator(BasicAEOperator):
+
+    def _forward_model(self, data, kwargs):
+        # print(data['aux'].size(), data['input'].size())
+        return self._model(data['input'], code=data['aux'])
 
 class AEOperator(ModelOperator):
     '''
@@ -403,27 +475,6 @@ class AEOperator(ModelOperator):
         '''
         for key in kwargs:
             self.paras['loss_parameters'][key] = kwargs[key]
-
-    def transfer_model(self, restart_from, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
-        '''
-        load base model and set part of the parameters with grad off
-
-        '''
-        self.load_checkpoint(299, restart_from, load_opt=False, load_data_split=False)
-        self.global_start_epoch = self.epoch
-        self.epoch = 0
-
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        print('------- The layers below are set grad require ------')
-        for ly in grad_require_layers:
-            print(ly, ' :   ', self.model._modules[ly])
-            if reset_param:
-                self.model._modules[ly].apply(reset_paras)
-
-            for param in self.model._modules[ly].parameters():
-                param.requires_grad = True
 
     def _init_training(self):
         
@@ -562,10 +613,9 @@ class AEOperator(ModelOperator):
         
         self._model.load_state_dict(saved_model, strict=False)
 
-    def load_checkpoint(self, epoch, folder=None, load_opt=True, load_data_split=True):
+    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
 
-        save_dict = super().load_checkpoint(epoch=epoch, folder=folder, 
-                                            load_opt=load_opt, load_data_split=load_data_split)
+        save_dict = super().load_checkpoint(epoch=epoch, load_opt=load_opt, load_data_split=load_data_split)
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
 

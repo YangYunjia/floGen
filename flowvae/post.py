@@ -300,6 +300,7 @@ def get_xyforce_1d(geom: Tensor, profile: Tensor):
     dfp_n  = 0.5 * (profile[1:] + profile[:-1]).unsqueeze(0)
     dfv_t  = torch.zeros_like(dfp_n)
     dr      = (geom[:, 1:] - geom[:, :-1]).permute(1, 0)
+    # print(dfp_n.device, dr.device)
 
     return torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
 
