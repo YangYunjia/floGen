@@ -39,45 +39,15 @@ WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25,
 #
 #   - thus, ( Drag, Lift ) = ( f_x, f_y ) .  / (1, 0)  (0, 1) \  .  /  cos(AoA) \
 #                                            \ (0,-1)  (1, 0) /     \ -sin(AoA) /
+
+#* here collect the Tensor version
+#  original numpy version can be found in cfdpost.utils
+
 _rot_metrix = torch.Tensor([[[1.0,0], [0,1.0]], [[0,-1.0], [1.0,0]]])
 
-
-def clustcos(i: int, nn: int, a0=0.0079, a1=0.96, beta=1.0) -> float:
-    '''
-    Point distribution on x-axis [0, 1]. (More points at both ends)
-    
-    Parameters
-    ----------
-    i: int
-        index of current point (start from 0)
-    nn: int
-        total amount of points
-    a0: float
-        parameter for distributing points near x=0
-    a1: float
-        parameter for distributing points near x=1
-    beta: float
-        parameter for distribution points 
-
-    Returns
-    ---------
-    float
-
-    Examples
-    ---------
-    >>> c = clustcos(i, n, a0, a1, beta)
-
-    '''
-    aa = np.power((1-np.cos(a0*np.pi))/2.0, beta)
-    dd = np.power((1-np.cos(a1*np.pi))/2.0, beta) - aa
-    yt = i/(nn-1.0)
-    a  = np.pi*(a0*(1-yt)+a1*yt)
-    c  = (np.power((1-np.cos(a))/2.0,beta)-aa)/dd
-
-    return c
-
 #* function to rotate x-y to aoa
-def _aoa_rot(aoa: Tensor):
+
+def _aoa_rot_t(aoa: Tensor) -> Tensor:
     '''
     aoa is in size (B, )
     
@@ -85,7 +55,7 @@ def _aoa_rot(aoa: Tensor):
     aoa = aoa * np.pi / 180
     return torch.cat((torch.cos(aoa).unsqueeze(1), -torch.sin(aoa).unsqueeze(1)), dim=1).squeeze()
 
-def _xy_2_cl(dfp: Tensor, aoa: float):
+def _xy_2_cl_t(dfp: Tensor, aoa: float) -> Tensor:
     '''
     transfer fx, fy to CD, CL
 
@@ -99,9 +69,9 @@ def _xy_2_cl(dfp: Tensor, aoa: float):
     '''
     aoa = torch.FloatTensor([aoa])
     # print(dfp.size(), _rot_metrix.size(), _aoa_rot(aoa).size())
-    return torch.einsum('p,prs,s->r', dfp, _rot_metrix.to(dfp.device), _aoa_rot(aoa).to(dfp.device))
+    return torch.einsum('p,prs,s->r', dfp, _rot_metrix.to(dfp.device), _aoa_rot_t(aoa).to(dfp.device))
 
-def _xy_2_clc(dfp: Tensor, aoa: Tensor):
+def _xy_2_cl_tc(dfp: Tensor, aoa: Tensor) -> Tensor:
     '''
     batch version of _xy_2_cl
     
@@ -115,7 +85,7 @@ def _xy_2_clc(dfp: Tensor, aoa: Tensor):
     ===
     Tensor: (CD, CL),  with size (B, 2)
     '''
-    return torch.einsum('bp,prs,bs->br', dfp,  _rot_metrix.to(dfp.device), _aoa_rot(aoa).to(dfp.device))
+    return torch.einsum('bp,prs,bs->br', dfp,  _rot_metrix.to(dfp.device), _aoa_rot_t(aoa).to(dfp.device))
 
 #* function to extract information from 2-D flowfield
 def get_aoa(vel):
@@ -279,7 +249,7 @@ def get_force_cl(aoa: float, **kwargs):
     return fld
 
 #* function to extract pressure force from 1-d pressure profile
-def get_xyforce_1d(geom: Tensor, profile: Tensor):
+def get_xyforce_1d_t(geom: Tensor, profile: Tensor) -> Tensor:
     '''
     integrate the force on x and y direction
 
@@ -301,7 +271,7 @@ def get_xyforce_1d(geom: Tensor, profile: Tensor):
 
     return torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
 
-def get_xyforce_1dc(geom: Tensor, profile: Tensor):
+def get_xyforce_1d_tc(geom: Tensor, profile: Tensor) -> Tensor:
     '''
     batch version of integrate the force on x and y direction
 
@@ -323,7 +293,7 @@ def get_xyforce_1dc(geom: Tensor, profile: Tensor):
 
     return torch.einsum('blj,lpk,bjk->bp', torch.cat((dfv_t, -dfp_n), dim=1), _rot_metrix.to(dfv_t.device), dr)
 
-def get_force_1d(geom: Tensor, profile: Tensor, aoa: float):
+def get_force_1d_t(geom: Tensor, profile: Tensor, aoa: float) -> Tensor:
     '''
     integrate the lift and drag
 
@@ -341,10 +311,10 @@ def get_force_1d(geom: Tensor, profile: Tensor, aoa: float):
     ===
     Tensor: (CD, CL)
     '''
-    dfp = get_xyforce_1d(geom, profile)
-    return _xy_2_cl(dfp, aoa)
+    dfp = get_xyforce_1d_t(geom, profile)
+    return _xy_2_cl_t(dfp, aoa)
 
-def get_force_1dc(geom: Tensor, profile: Tensor, aoa: Tensor):
+def get_force_1d_tc(geom: Tensor, profile: Tensor, aoa: Tensor) -> Tensor:
     '''
     batch version of integrate the lift and drag
 
@@ -362,10 +332,10 @@ def get_force_1dc(geom: Tensor, profile: Tensor, aoa: Tensor):
     ===
     Tensor: (CD, CL),  with size (B, 2)
     '''
-    dfp = get_xyforce_1dc(geom, profile)
-    return _xy_2_clc(dfp, aoa)
+    dfp = get_xyforce_1d_tc(geom, profile)
+    return _xy_2_cl_tc(dfp, aoa)
 
-def get_flux_1d(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor):
+def get_flux_1d_t(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor) -> Tensor:
     '''
     obtain the mass and momentum flux through a line
 

@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from flowvae.post import get_force_1d
+from flowvae.post import get_force_1d_t
 from flowvae.utils import warmup_lr
 
 
@@ -64,13 +64,13 @@ if __name__ == '__main__':
             # the real (ground truth) profiles and cl, cd
             aoa_r = afoil['condis'][i_c]
             profile_r = torch.from_numpy(afoil['flowfields'][i_c][1]).float().to(device)
-            cd_r, cl_r = get_force_1d(geom, profile_r, aoa_r).detach().cpu().numpy()
+            cd_r, cl_r = get_force_1d_t(geom, profile_r, aoa_r).detach().cpu().numpy()
 
             # generate profiles with the model
             aoa = aoa_r - afoil['ref_aoa'].numpy() * int(ref)
             samp1 = vae_model.sample(num_samples=1, code=aoa, mu=mu1, log_var=None).squeeze()
             recons = samp1 + ref_data[0, 1] * int(ref)
-            cd1, cl1 = get_force_1d(geom, recons, aoa_r).detach().cpu().numpy()
+            cd1, cl1 = get_force_1d_t(geom, recons, aoa_r).detach().cpu().numpy()
 
             # add to the series container
             seri_r.add(x={'AoA': float(aoa_r), 'Cl': cl_r})

@@ -1,13 +1,25 @@
+'''
+Oct 29 2024
+Author: Yunjia Yang
+
+Move buffet onset prediction client files from buffet working folder to here
+
+Rearrange the methods, tested on `ropt1_test`, pass (probabilistic version leads to
+some big uncertainty by itselt, quite amazing)
+
+
+'''
+
 from flowvae.vae import frameVAE, Unet
 from flowvae.ml_operator import AEOperator
-from flowvae.post import get_force_1d, get_force_1dc
+from flowvae.post import get_force_1d_t, get_force_1d_tc
 from flowvae.app.buffet import Buffet, Series, Ploter
 from flowvae.utils import warmup_lr, load_encoder_decoder
 
 import matplotlib.pyplot as plt
-from cst_modeling.section import clustcos
 from cfdpost.cfdresult import cfl3d
 from cfdpost.section.physical import PhysicalSec
+from cfdpost.utils import get_force_1d, get_moment_1d, clustcos
 
 import numpy as np
 import torch
@@ -17,6 +29,7 @@ from scipy.interpolate import PchipInterpolator as pchip
 from typing import Tuple
 
 CD_NON_DIM = 20.5
+CF_NON_DIM = 1000.
 
 def load_model(run, subrun, ref, decoder_idx, code_mode, code_dim, lat_dim, device='cpu') -> Tuple[frameVAE, dict]:
     date = '1025'
@@ -51,6 +64,19 @@ def load_model(run, subrun, ref, decoder_idx, code_mode, code_dim, lat_dim, devi
 
     return vae_model, flags
 
+def add_extra_channel(origin_ref_data, device, extra_value = None, isextrachannel = False):
+    # afoil['ref'], fldata.get_index_info(i_f, 0, 5)
+    
+    if not isextrachannel:
+        ref_data = torch.from_numpy(origin_ref_data).float().unsqueeze(0).to(device)
+    else:
+        #* for run no.57 - 59, add Mach channel (at the first)
+        ref_data = torch.from_numpy(origin_ref_data).float()
+        ref_data = torch.concatenate([extra_value * torch.ones((1, ref_data.size(1))), ref_data], dim=0)
+        ref_data = ref_data.unsqueeze(0).to(device)
+        
+    return ref_data
+
 def predict_field(vae_model, flags, ref_data, aoa_real, aoa_ref, mu1, log_var1, n_samples):
     
     aoa_delt = aoa_real - aoa_ref * int(flags['is_ref'])
@@ -62,19 +88,24 @@ def predict_field(vae_model, flags, ref_data, aoa_real, aoa_ref, mu1, log_var1, 
     recons = samp1 + ref_data.repeat([n_samples] + [1 for _ in range(ref_data.dim()-1)]) * int(flags['is_ref'])
     return recons
     
-def predict_series(recons, geom, aoa_real, fF, n_samples, is_uq):
+def get_features_series(recons, geom, aoa_real, fF, n_samples, is_uq):
     
     _geom = geom.cpu().detach().numpy()
     _recons = torch.mean(recons, dim=0).squeeze().cpu().detach().numpy()
-    fF.setlimdata(_geom[0], _geom[1], _recons[0], _recons[1])   # x, y, Cp, Cf
+    _cp = _recons[0]
+    _cf = _recons[1] / CF_NON_DIM
+    _cf[:int(len(_cf)/2.)] *= -1
+    
+    fF.setlimdata(_geom[0], _geom[1], _cp, _cf)   # x, y, Cp, Cf
     # fF.locate_basic()
     fF.locate_sep()
     # fF.locate_geo()
     i_1 = fF.locate_shock(info=False)
     x1  = fF.getValue('1','X')
     mUy = fF.getValue('mUy','dudy')
+    cm  = get_moment_1d(_geom.transpose(), _cp, _cf)
     # print(mUy)
-    # plt.plot(_geom[0], _recons[1])
+    # plt.plot(_geom[0], _cf)
     # plt.show()
     
     # print(aoa_real, clcd[1], clcd[0], x1, mUy)
@@ -82,43 +113,49 @@ def predict_series(recons, geom, aoa_real, fF, n_samples, is_uq):
     if not is_uq:
         # only include Cp to cal. force
         # print(recons.shape, aoa_real.shape)
-        clcd = get_force_1d(geom, torch.mean(recons, dim=0)[0], aoa_real).cpu().detach().numpy()
-        return clcd[1], clcd[0], x1, mUy
+        # clcd = get_force_1d(geom, torch.mean(recons, dim=0)[0], aoa_real).cpu().detach().numpy()
+        clcd = get_force_1d(_geom.transpose(), aoa_real, _cp, _cf)
+        
+        return clcd[1], clcd[0], [x1, mUy, cm]
     else:
         # print(recons.shape, aoa_real)
 
-        clcd = get_force_1dc(geom.unsqueeze(0).repeat(n_samples, 1, 1),
+        clcd = get_force_1d_tc(geom.unsqueeze(0).repeat(n_samples, 1, 1),
                                                     recons[:, 0], float(aoa_real) * torch.ones(n_samples, )).cpu().detach().numpy()
 
-        return clcd[:, 1], clcd[:, 0], x1, mUy
+        return clcd[:, 1], clcd[:, 0], [x1, mUy, cm]
 
-def predict_buffet_force(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict,
-                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isplot: bool = False):
+def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, aoas: np.ndarray = None, ref_aoa: float = 0.0,
+                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False):
+    '''
+    
+    returns:
+    ---
+    - `recons`
+    - `clcds`:  shape = (n_c x n_samlpes x 2) CL, CD
+    - `seri_value01`:  shape = (3 x n_c) X1, Cf, cm
+    - `mu1`
+    - `log_var1`
+    - `ref_data`
+    - `geom`
+    
+    '''
     
     nn = 201
     xx = [clustcos(i, nn) for i in range(nn)]
     all_x = torch.from_numpy(np.concatenate((xx[::-1], xx[1:]), axis=0)).to(device).float()
     geom = torch.cat((all_x.unsqueeze(0), torch.from_numpy(ys[0]).to(device).float().unsqueeze(0)), dim=0)
-    if isforce:
-        buf = Buffet(method='lift_curve_break', logtype=0, lslmtd=0, lsumtd='cruise', srst='none', intp='pchip', sep_check=False)
-    else:
-        buf = Buffet(method='lift_curve_break', logtype=0, lslmtd=0, lsumtd='cruise', srst='sep', intp='pchip', sep_check=True)
-    ref_aoa = condition['aoa_ref']
-    aoas = np.concatenate([np.arange(-2., ref_aoa, 0.25), np.arange(ref_aoa, 4.5, 0.1)]) # 2023.8.8 modify to ref as aoa_ref
     
     n_c = len(aoas)
     clcds = np.zeros((n_c, n_samples, 2))
+    ref_data = add_extra_channel(ys, device, condition['ma'], isextrachannel)
 
-    ref_data = torch.from_numpy(ys).float().unsqueeze(0).to(device)
-    
     if isforce:
         ref_force = get_force_1d(geom, ref_data[0, 1], ref_aoa)
-        cl_cruise = ref_force[1].item()
         ref_force[0] *= CD_NON_DIM
         seri_value01 = None
     else:
-        seri_value01 = np.zeros((2, n_c)) # recon: x1, cf
-        _, cl_cruise = get_force_1d(geom, ref_data[0, 1], ref_aoa).cpu().detach().numpy()
+        seri_value01 = [] # recon: x1, cf, cm
 
     mu1, log_var1 = vae_model.encode(ref_data)
     if vae_model.encoder.is_unet:
@@ -133,7 +170,61 @@ def predict_buffet_force(vae_model: frameVAE, flags: dict, ys: np.array, conditi
             #* get results from profile-predicting model
             fF = PhysicalSec(Minf=condition['ma'], AoA=aoas[i_c], Re=20e6)
             recons = predict_field(vae_model, flags, ref_data[:, 1:], aoas[i_c], ref_aoa, mu1, log_var1, n_samples)
-            clcds[i_c, :, 1], clcds[i_c, :, 0], seri_value01[0, i_c], seri_value01[1, i_c] = predict_series(recons, geom, aoas[i_c], fF, n_samples, is_uq=is_uq)
+            clcds[i_c, :, 1], clcds[i_c, :, 0], seri_value = get_features_series(recons, geom, aoas[i_c], fF, n_samples, is_uq=is_uq)
+            seri_value01.append(seri_value)
+    
+    if not isforce:
+        seri_value01 = np.array(seri_value01).transpose()
+
+    return recons, clcds, seri_value01, mu1, log_var1, ref_data, geom
+
+def predict_given_cl(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, cltarg: float, ref_aoa: float = 0.0,
+                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False):
+    
+    aoa0 = 1.0
+    aoa1 = 5.0
+    daoa = (aoa1 - aoa0) / 10.
+    while daoa > 0.0001:
+        aoas = np.arange(aoa0, aoa1, daoa)
+        clss = np.mean(predict_series(vae_model, flags, ys, condition, aoas, ref_aoa,
+                    n_samples, is_uq, device, isforce, isextrachannel)[1][:, :, 1], axis=1) - cltarg
+        for i in range(len(clss)-1):
+            if clss[i] < 0 and clss[i+1] > 0:
+                aoa0 = aoas[i]
+                aoa1 = aoas[i+1]
+                daoa = (aoa1 - aoa0) / 10.
+                break
+        else:
+            raise RuntimeError('not found aoa in 0.0 ~ 5.0')
+
+    return {'aoa':  0.5*(aoa0+aoa1),
+            'result': predict_series(vae_model, flags, ys, condition, np.array([0.5*(aoa0+aoa1)]), ref_aoa,
+                    n_samples, is_uq, device, isforce, isextrachannel)[:5]}
+
+def predict_buffet_force(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, aoas: np.ndarray = None,
+                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isplot: bool = False):
+    '''
+    `aoas` if not specificed, be a series for buffet computation
+    
+    '''
+
+    ref_aoa = condition['aoa_ref']
+    aoas = np.concatenate([np.arange(-2., ref_aoa, 0.25), np.arange(ref_aoa, 4.5, 0.1)]) # 2023.8.8 modify to ref as aoa_ref
+    
+    _, clcds, seri_value01, mu1, log_var1, ref_data, geom = predict_series(vae_model, flags, ys, condition, aoas, ref_aoa,
+                    n_samples, is_uq, device, isforce)
+    
+    if isforce:
+        buf = Buffet(method='lift_curve_break', logtype=0, lslmtd=0, lsumtd='cruise', srst='none', intp='pchip', sep_check=False)
+    else:
+        buf = Buffet(method='lift_curve_break', logtype=0, lslmtd=0, lsumtd='cruise', srst='sep', intp='pchip', sep_check=True)
+    
+    if isforce:
+        ref_force = get_force_1d_t(geom, ref_data[0, 1], ref_aoa)
+        cl_cruise = ref_force[1].item()
+        ref_force[0] *= CD_NON_DIM
+    else:
+        _, cl_cruise = get_force_1d_t(geom, ref_data[0, 1], ref_aoa).cpu().detach().numpy()
 
     if isplot:
         plt.plot(aoas, clcds[:, 0, 1], '-o')
@@ -142,6 +233,7 @@ def predict_buffet_force(vae_model: frameVAE, flags: dict, ys: np.array, conditi
         plot_obj = None
     # print(ref_aoa, cl_cruise)
     # plt.show()
+
     if is_uq <= 0:
         if isforce:
             seri = Series(datas={'AoA': aoas, 'Cl': clcds[:, 0, 1]})
@@ -233,6 +325,7 @@ def buffet_uq(aoas1, recons_values, cl_cruise, buf, is_uq, n_samples1 = None, fl
     print(bufs.shape, std_bufs.shape)
     return np.array([bufs, std_bufs])
 
+'''
 def predict_buffet(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, sep_check: bool,
                     n_samples : int = 1, is_uq: bool = False, device: str = 'cpu', plot: bool = False):
     
@@ -268,7 +361,7 @@ def predict_buffet(vae_model: frameVAE, flags: dict, ys: np.array, condition: di
     for i_c in range(n_c):
         fF = PhysicalSec(condition['ma'], aoas[i_c], condition['re'])
         recons = predict_field(vae_model, flags, ref_data[:, 1:], aoas[i_c], ref_aoa, mu1, log_var1, n_samples)
-        clss[i_c], cdss[i_c], x1ss[i_c], cfss[i_c] = predict_series(recons, geom, aoas[i_c], fF, n_samples, is_uq)
+        clss[i_c], cdss[i_c], x1ss[i_c], cfss[i_c] = get_features_series(recons, geom, aoas[i_c], fF, n_samples, is_uq)
        
     # plt.plot(aoas, cdss)
     # print(ref_aoa, cl_ref)
@@ -287,6 +380,7 @@ def predict_buffet(vae_model: frameVAE, flags: dict, ys: np.array, condition: di
         # sig_bufs = np.std(_bufs, axis=0)
 
     return avg_bufs, sig_bufs, (ref_aoa, cl_ref), mu1.squeeze().detach(), log_var1.squeeze().detach()
+'''
 
 def get_format_data(folder):
     _, _, foil, _ = cfl3d.readprt_foil(folder, j0=40, j1=341, fname='cfl3d.prt', coordinate='xy')
@@ -310,7 +404,7 @@ def get_format_data(folder):
         ys = np.concatenate((y_l[::-1], y_u[1:]), axis=0)
 
         if iv == 4:
-            ys *= 1000
+            ys *= CF_NON_DIM
         yss.append(ys)
 
 

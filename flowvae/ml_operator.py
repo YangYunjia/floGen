@@ -18,8 +18,7 @@ from typing import List, Callable, NewType, Union, Any, NewType, Tuple
 from flowvae.vae import EncoderDecoder
 from flowvae.dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
-from flowvae.post import get_force_1dc
-from flowvae.utils import MDCounter
+from .utils import MDCounter
 
 def _check_existance_checkpoint(epoch, folder):
 
