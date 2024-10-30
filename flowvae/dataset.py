@@ -382,8 +382,9 @@ class ConditionDataset(Dataset):
 
         
         '''
-        from flowvae.post import clustcos, get_force_1d
-
+        from flowvae.post import get_force_1d_t
+        from cfdpost.utils import clustcos
+        
         print('Dataset is changed to output force as flowfield...')
         force_file_path = os.path.join(self.data_base, 'force.npy')
 
@@ -401,7 +402,7 @@ class ConditionDataset(Dataset):
                 geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
                 aoa  = self.all_index[i, 3]
                 profile = sample[1]
-                forces[i] = get_force_1d(torch.from_numpy(geom).float(), 
+                forces[i] = get_force_1d_t(torch.from_numpy(geom).float(), 
                                         torch.from_numpy(profile).float(), aoa)
 
             if info == 'non-dim':

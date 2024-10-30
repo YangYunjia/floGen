@@ -25,7 +25,7 @@ Tensor = NewType('Tensor', torch.tensor)
 
 # from utils import get_force
 
-from flowvae.post import get_aoa, get_vector, get_force_cl, WORKCOD, get_force_1dc
+from flowvae.post import get_force_cl, WORKCOD
 
 class AutoEncoder(nn.Module):
 
