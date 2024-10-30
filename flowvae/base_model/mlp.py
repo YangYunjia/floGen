@@ -71,7 +71,7 @@ class mlpDecoder(nn.Module):
         return result.view(tuple([-1] + self.out_sizes))
     
 
-def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layers: dict = {}) -> nn.Module:
+def mlp(in_features: int, out_features: int, hidden_dims: List[int], last_actv: bool = True, basic_layers: dict = {}) -> nn.Module:
     '''
     return a multi layer percetron model
 
@@ -80,13 +80,19 @@ def mlp(in_features: int, out_features: int, hidden_dims: List[int], basic_layer
     ```
     
     - `basic_layers`
-        - `dropout`: (float, default = 0.) if > 0, add a dropout layer after each linear layer with rate = `dropout`
+        - `dropout`:   (float, default = 0.) if > 0, add a dropout layer after each linear layer with rate = `dropout`
+        - `batchnorm`: (bool, default = True)
+        - `actv`:      (nn.Module, default = nn.LeakyReLU)
+
+    - `last_actv`: (bool, default = True) whether to add the aux layers and activation layers after the last linear layer
 
     '''
 
-    return _decoder_input(hidden_dims, in_features, out_features, basic_layers)
+    return _decoder_input(hidden_dims, in_features, out_features, last_actv, basic_layers)
 
-def _decoder_input(typ: Union[float, List[int]], ld: int, lfd: int, basic_layers: dict = {}) -> nn.Module:
+def _decoder_input(typ: Union[float, List[int]], ld: int, lfd: int, 
+                   last_actv: bool = True,
+                   basic_layers: dict = {}) -> nn.Module:
 
     basic_layers = _update_basic_layer(basic_layers, dimension=0)
 
@@ -122,11 +128,18 @@ def _decoder_input(typ: Union[float, List[int]], ld: int, lfd: int, basic_layers
     elif isinstance(typ, list):
         layers = []
         h0 = ld
-        for h in typ + [lfd]:
+        for h in typ:
             layers.append(nn.Linear(h0, h))
             layers += _make_aux_layers(basic_layers, h)
             layers.append(basic_layers['actv']())
             h0 = h
+
+        layers.append(nn.Linear(h0, lfd))
+
+        if last_actv:    
+            layers += _make_aux_layers(basic_layers, h)
+            layers.append(basic_layers['actv']())
+
 
         return nn.Sequential(*layers)
 
