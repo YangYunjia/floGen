@@ -361,7 +361,7 @@ class EncoderDecoder(AutoEncoder):
         produce geometry data
         - x01, x0p: the x coordinate data for smooth calculation
         '''
-        from flowvae.post import clustcos
+        from cfdpost.utils import clustcos
         
         nn = 201
         xx = [clustcos(i, nn) for i in range(nn)]
