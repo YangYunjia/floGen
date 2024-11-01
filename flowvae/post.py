@@ -53,7 +53,7 @@ def _aoa_rot_t(aoa: Tensor) -> Tensor:
     
     '''
     aoa = aoa * np.pi / 180
-    return torch.cat((torch.cos(aoa).unsqueeze(1), -torch.sin(aoa).unsqueeze(1)), dim=1).squeeze()
+    return torch.cat((torch.cos(aoa).unsqueeze(1), -torch.sin(aoa).unsqueeze(1)), dim=1)#.squeeze(-1)
 
 def _xy_2_cl_t(dfp: Tensor, aoa: float) -> Tensor:
     '''
@@ -68,8 +68,8 @@ def _xy_2_cl_t(dfp: Tensor, aoa: float) -> Tensor:
     Tensor: (CD, CL)
     '''
     aoa = torch.FloatTensor([aoa])
-    # print(dfp.size(), _rot_metrix.size(), _aoa_rot(aoa).size())
-    return torch.einsum('p,prs,s->r', dfp, _rot_metrix.to(dfp.device), _aoa_rot_t(aoa).to(dfp.device))
+    # print(dfp.size(), _rot_metrix.size(), _aoa_rot_t(aoa).size())
+    return torch.einsum('p,prs,s->r', dfp, _rot_metrix.to(dfp.device), _aoa_rot_t(aoa).squeeze().to(dfp.device))
 
 def _xy_2_cl_tc(dfp: Tensor, aoa: Tensor) -> Tensor:
     '''
@@ -85,6 +85,7 @@ def _xy_2_cl_tc(dfp: Tensor, aoa: Tensor) -> Tensor:
     ===
     Tensor: (CD, CL),  with size (B, 2)
     '''
+    # print(dfp.shape, _rot_metrix.shape, aoa.shape, _aoa_rot_t(aoa).shape)
     return torch.einsum('bp,prs,bs->br', dfp,  _rot_metrix.to(dfp.device), _aoa_rot_t(aoa).to(dfp.device))
 
 #* function to extract information from 2-D flowfield
