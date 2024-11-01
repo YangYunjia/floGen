@@ -78,6 +78,12 @@ def add_extra_channel(origin_ref_data, device, extra_value = None, isextrachanne
     return ref_data
 
 def predict_field(vae_model, flags, ref_data, aoa_real, aoa_ref, mu1, log_var1, n_samples):
+    '''
+    
+    return:
+    ---
+    - `recons`: torch.Tensor, shape = n_sample, n_channel, H, W
+    '''
     
     aoa_delt = aoa_real - aoa_ref * int(flags['is_ref'])
     if vae_model.cm == 'ed':
@@ -89,6 +95,14 @@ def predict_field(vae_model, flags, ref_data, aoa_real, aoa_ref, mu1, log_var1, 
     return recons
     
 def get_features_series(recons, geom, aoa_real, fF, n_samples, is_uq):
+    '''
+    paras:
+    ---
+    
+    - `is_uq` -> 
+        - if `True`, 
+        - if `False`,  the `recons` will first be averaged across samples (dim=0)
+    '''
     
     _geom = geom.cpu().detach().numpy()
     _recons = torch.mean(recons, dim=0).squeeze().cpu().detach().numpy()
@@ -121,18 +135,18 @@ def get_features_series(recons, geom, aoa_real, fF, n_samples, is_uq):
         # print(recons.shape, aoa_real)
 
         clcd = get_force_1d_tc(geom.unsqueeze(0).repeat(n_samples, 1, 1),
-                                                    recons[:, 0], float(aoa_real) * torch.ones(n_samples, )).cpu().detach().numpy()
+                                                    recons[:, 0], float(aoa_real) * torch.ones(n_samples, ))# .cpu().detach().numpy()
 
         return clcd[:, 1], clcd[:, 0], [x1, mUy, cm]
 
 def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, aoas: np.ndarray = None, ref_aoa: float = 0.0,
-                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False):
+                    n_samples : int = 1, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False):
     '''
     
     returns:
     ---
-    - `recons`
-    - `clcds`:  shape = (n_c x n_samlpes x 2) CL, CD
+    - `recons`  shape = n_samples x n_channel (Cp, Cf) x H x W
+    - `clcds`:  shape = n_c x n_samlpes x 2 (CL, CD)
     - `seri_value01`:  shape = (3 x n_c) X1, Cf, cm
     - `mu1`
     - `log_var1`
@@ -147,7 +161,7 @@ def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: di
     geom = torch.cat((all_x.unsqueeze(0), torch.from_numpy(ys[0]).to(device).float().unsqueeze(0)), dim=0)
     
     n_c = len(aoas)
-    clcds = np.zeros((n_c, n_samples, 2))
+    clcds = torch.zeros((n_c, n_samples, 2))
     ref_data = add_extra_channel(ys, device, condition['ma'], isextrachannel)
 
     if isforce:
@@ -170,7 +184,7 @@ def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: di
             #* get results from profile-predicting model
             fF = PhysicalSec(Minf=condition['ma'], AoA=aoas[i_c], Re=20e6)
             recons = predict_field(vae_model, flags, ref_data[:, 1:], aoas[i_c], ref_aoa, mu1, log_var1, n_samples)
-            clcds[i_c, :, 1], clcds[i_c, :, 0], seri_value = get_features_series(recons, geom, aoas[i_c], fF, n_samples, is_uq=is_uq)
+            clcds[i_c, :, 1], clcds[i_c, :, 0], seri_value = get_features_series(recons, geom, aoas[i_c], fF, n_samples, is_uq=True)
             seri_value01.append(seri_value)
     
     if not isforce:
@@ -179,15 +193,29 @@ def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: di
     return recons, clcds, seri_value01, mu1, log_var1, ref_data, geom
 
 def predict_given_cl(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, cltarg: float, ref_aoa: float = 0.0,
-                    n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False):
+                    n_samples : int = 1, device: str = 'cpu', isforce: bool = True, isextrachannel: bool = False) -> dict:
     
+    '''
+    iterate angle of attack from 1.0 to 5.0 to find the critical AoA that achieve target lift coefficient
+    
+    paras:
+    ---
+    - 
+    
+    return:
+    ---
+    
+    dict:
+    - `aoa` -> critical AoA for target Cl
+    - `result` -> result from `predict_series`
+    '''
     aoa0 = 1.0
     aoa1 = 5.0
     daoa = (aoa1 - aoa0) / 10.
     while daoa > 0.0001:
         aoas = np.arange(aoa0, aoa1, daoa)
         clss = np.mean(predict_series(vae_model, flags, ys, condition, aoas, ref_aoa,
-                    n_samples, is_uq, device, isforce, isextrachannel)[1][:, :, 1], axis=1) - cltarg
+                    n_samples, device, isforce, isextrachannel)[1][:, :, 1].detach().cpu().numpy(), axis=1) - cltarg
         for i in range(len(clss)-1):
             if clss[i] < 0 and clss[i+1] > 0:
                 aoa0 = aoas[i]
@@ -199,7 +227,7 @@ def predict_given_cl(vae_model: frameVAE, flags: dict, ys: np.array, condition: 
 
     return {'aoa':  0.5*(aoa0+aoa1),
             'result': predict_series(vae_model, flags, ys, condition, np.array([0.5*(aoa0+aoa1)]), ref_aoa,
-                    n_samples, is_uq, device, isforce, isextrachannel)[:5]}
+                    n_samples, device, isforce, isextrachannel)[:5]}
 
 def predict_buffet_force(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict, aoas: np.ndarray = None,
                     n_samples : int = 1, is_uq: int = 0, device: str = 'cpu', isforce: bool = True, isplot: bool = False):
