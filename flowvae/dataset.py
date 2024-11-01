@@ -205,7 +205,8 @@ class ConditionDataset(Dataset):
                  test=-1, 
                  data_base='data/', 
                  is_last_test=True, 
-                 channel_take=None):
+                 channel_take=None,
+                 channel_cond: list = None):
 
         super().__init__()
 
@@ -217,6 +218,12 @@ class ConditionDataset(Dataset):
         else:
             self.all_data = np.take(np.load(data_base + file_name + 'data.npy'), channel_take, axis=1)
         self.all_index = np.load(data_base + file_name + 'index.npy')
+        
+        if channel_cond is None:
+            self.cond_index = np.take(self.all_index, range(3, 3+self.condis_dim), axis=1)
+        else:
+            self.cond_index = np.take(self.all_index, channel_cond, axis=1)
+
 
         self.condis_dim = d_c
         self.airfoil_num = int(max(self.all_index[:, 0])) + 1   #   amount of airfoils in dataset
@@ -357,7 +364,7 @@ class ConditionDataset(Dataset):
         op_cod =  int(self.all_index[self.data_idx[idx], 1])
         # print(idx, cod)
         flowfield   = torch.from_numpy(self.all_data[self.data_idx[idx]]).float()
-        condis      = torch.from_numpy(self.all_index[self.data_idx[idx], 3:3+self.condis_dim]).float()
+        condis      = torch.from_numpy(self.cond_index[self.data_idx[idx]]).float()
         # condis      = self.cond[idx]
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
@@ -385,7 +392,7 @@ class ConditionDataset(Dataset):
         op_idx =  int(self.all_index[self.data_idx[idx], 0])
         op_cod =  int(self.all_index[self.data_idx[idx], 1])
         force   = torch.from_numpy(self.all_force[self.data_idx[idx]]).float()
-        condis  = torch.from_numpy(self.all_index[self.data_idx[idx], 3:3+self.condis_dim]).float()
+        condis  = torch.from_numpy(self.cond_index[self.data_idx[idx]]).float()
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
         ref_force   = self.ref_force[op_idx]
@@ -489,14 +496,14 @@ class ConditionDataset(Dataset):
         ed = self.condis_st[idx] + self.condis_all_num[idx]
         if self._output_force_flag: flowfield = self.all_force[st: ed]
         else: flowfield   = self.all_data[st: ed]
-        condis      = self.all_index[st: ed, 3:3+self.condis_dim]
+        condis      = self.cond_index[st: ed]
 
         if ref_idx is None:
             ref         = self.all_data[self.ref_index[idx]]
             ref_aoa     = self.ref_condis[idx]
         else:   
             ref         = self.all_data[st + ref_idx]
-            ref_aoa     = self.all_index[st + ref_idx, 3:3+self.condis_dim]
+            ref_aoa     = self.cond_index[st + ref_idx]
 
         samples = {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
         if self._output_force_flag: 
