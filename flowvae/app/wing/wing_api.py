@@ -72,7 +72,7 @@ class Wing_api():
         models.device = _device
         
         self.sa_type = 0.25 # base on 1/4 chord line
-        self.input_ref = 5
+        self.input_ref = 5 # x, y, z plus cp_2d, cf_2d
         
         if saves_folder is None:
             saves_folder = os.path.join(absolute_file_path, 'saves')

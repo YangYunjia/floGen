@@ -81,8 +81,22 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
 
     Here we modified input and output to be H W, not N = H x W, so that H and W are not input as a argument
     
+    The conditional parameters are added as tokens
+    
+    paras:
+    ---
+    - `dim`:    (C_out)     The channel number of output feature maps
+    - `heads`:  (Nh)        The heads number
+    - `dim_head`: (Ch)      The channel number of each head
+    - `slice_num`: (M)      The slice number
+    - `
+    
+    inputs & outputs:
+    ---
+    B H W C -> B H W C_out
+    
     '''
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0., slice_num=64, kernel=3):  # kernel=3):
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0.):
         super().__init__()
         inner_dim = dim_head * heads
         self.dim_head = dim_head        # Ch
@@ -106,7 +120,7 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
             nn.Dropout(dropout)
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # B N C
         _, H_, W_, _ = x.shape
         N_ = H_ * W_
@@ -135,7 +149,7 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
         ### (3) Deslice
         # 
         out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights) # B Nh N Ch
-        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, H_, W_, self.heads * self.dim_head) # B N Nh Ch
+        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, H_, W_, self.heads * self.dim_head) # B N Nh*Ch
         return self.to_out(out_x)
 
 
@@ -198,7 +212,17 @@ class Physics_Attention_Structured_Mesh_3D(nn.Module):
         return self.to_out(out_x)
 
 class Transolver_block(nn.Module):
-    """Transformer encoder block."""
+    '''
+    Transformer block
+    
+    `hidden_dim`:   (C)
+    
+    inputs & outputs
+    ---
+    
+    B N (H W) C -> B N (H W) C
+    
+    '''
 
     def __init__(
             self,
@@ -207,51 +231,53 @@ class Transolver_block(nn.Module):
             dropout: float,
             act='gelu',
             mlp_ratio=4,
-            last_layer=False,
+            is_last_block=False,
             out_dim=1,
             slice_num=32,
-    ):
+    ) -> None:
         super().__init__()
-        self.last_layer = last_layer
+        self.is_last_block = is_last_block
         self.ln_1 = nn.LayerNorm(hidden_dim)
         self.Attn = Physics_Attention_Structured_Mesh_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
                                                          dropout=dropout, slice_num=slice_num)
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False)   # , res=False, act=act
-        if self.last_layer:
-            self.ln_3 = nn.LayerNorm(hidden_dim)
-            self.mlp2 = nn.Linear(hidden_dim, out_dim)
+        
+        if self.is_last_block:
+            self.last_layer = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, out_dim))
+        else:
+            self.last_layer = nn.Identity() # place holder
 
-    def forward(self, fx):
+    def forward(self, fx: torch.Tensor) -> torch.Tensor:
         fx = self.Attn(self.ln_1(fx)) + fx
         fx = self.mlp(self.ln_2(fx)) + fx
-        if self.last_layer:
-            return self.mlp2(self.ln_3(fx))
-        else:
-            return fx
+        fx = self.last_layer(fx)
+        return fx
 
 
-class Model(nn.Module):
+class Transolver(nn.Module):
     def __init__(self,
-                 space_dim=1,
-                 n_layers=5,
-                 n_hidden=256,
+                 space_dim: int = 1,
+                 fun_dim: int = 1,
+                 out_dim: int = 1,
+                 n_layers: int = 5,
+                 n_hidden: int = 256,
+                 n_head: int = 8,
+                 slice_num: int = 32,
+                 mlp_ratio: int = 4,
                  dropout=0.0,
-                 n_head=8,
                  Time_Input=False,
                  act='gelu',
-                 mlp_ratio=1,
-                 fun_dim=1,
-                 out_dim=1,
-                 slice_num=32,
                  ref=8,
                  unified_pos=False,
+                 device: str = 'cuda:0'
                  ):
-        super(Model, self).__init__()
+        super().__init__()
         self.__name__ = 'Transolver_2D'
-        self.ref = ref
+        # self.ref = ref
         self.unified_pos = unified_pos
+        self.device = device
 
         if self.unified_pos:
             raise NotImplementedError
@@ -273,7 +299,7 @@ class Model(nn.Module):
                                                       mlp_ratio=mlp_ratio,
                                                       out_dim=out_dim,
                                                       slice_num=slice_num,
-                                                      last_layer=(_ == n_layers - 1))
+                                                      is_last_block=(_ == n_layers - 1))
                                      for _ in range(n_layers)])
         self.initialize_weights()
         self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))
@@ -309,7 +335,7 @@ class Model(nn.Module):
             reshape(batchsize, size_x, size_y, self.ref * self.ref).contiguous()
         return pos
 
-    def forward(self, x, fx, T=None):
+    def forward(self, x, fx, T=None) -> torch.Tensor:
         # if self.unified_pos:
         #     x = self.pos.repeat(x.shape[0], 1, 1, 1).reshape(x.shape[0], self.H * self.W, self.ref * self.ref)
         if fx is not None:

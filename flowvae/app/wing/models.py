@@ -18,7 +18,7 @@ from flowvae.base_model.utils import Decoder, Encoder
 from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
-
+from flowvae.base_model.trans import Transolver
 
 device = 'cuda:0'
 
@@ -404,7 +404,19 @@ class ounetbedmodel(basiconetmodel, BranchUnet):
         self.de_type = de_type
         self.coder_type = coder_type
         self.set_basic(h_e1, h_e2, h_lstm, nt, coder_type, coder_kernel, last_size)
+
+class WingTransformer(Transolver):
+    
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=1) -> None:
         
+        super().__init__(3, h_in, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio)
+        
+    
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        
+        x = torch.cat((inputs, code[:, :2, None, None].repeat((1, 1, *inputs.size()[2:]))), dim=1).permute(0, 2, 3, 1)
+        fx = super().forward(x=x, fx=None)
+        return [fx.permute(0, 3, 1, 2)]
         
 '''
 

@@ -112,7 +112,11 @@ class FlowDataset(Dataset):
             self.data_idx = np.loadtxt(fname, dtype=np.int32)
                 
             print(f'> load flow field index from {fname}')
-            print(f'> total size of data: {self.all_data.shape}')
+            print(f'> total size of data:')
+            print(f'>   inputs -> {self.inputs.shape}')
+            print(f'>   output -> {self.output.shape}')
+            if self.auxs is not None:
+                print(f'>   auxs   -> {self.auxs.shape}')
             
         elif c_mtd == 'all':
             self.data_idx = list(range(self.all_output.shape[0]))
