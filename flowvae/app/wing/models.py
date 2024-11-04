@@ -407,16 +407,27 @@ class ounetbedmodel(basiconetmodel, BranchUnet):
 
 class WingTransformer(Transolver):
     
-    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=1) -> None:
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
-        super().__init__(3, h_in, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio)
+        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)])
         
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = inputs.permute(0, 2, 3, 1)
+        if self.is_flatten:
+            x = x.reshape((-1, H_*W_, C_))
+            fx = code[:, None, :2].repeat((1, H_*W_, 1))
+        else:
+            fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
+        return super()._process(x, fx)
     
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
         
-        x = torch.cat((inputs, code[:, :2, None, None].repeat((1, 1, *inputs.size()[2:]))), dim=1).permute(0, 2, 3, 1)
-        fx = super().forward(x=x, fx=None)
-        return [fx.permute(0, 3, 1, 2)]
+        return [super().forward(inputs, code).reshape(B_, H_, W_, -1).permute(0, 3, 1, 2)]
         
 '''
 

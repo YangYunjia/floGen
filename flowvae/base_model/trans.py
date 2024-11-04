@@ -101,13 +101,17 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
         inner_dim = dim_head * heads
         self.dim_head = dim_head        # Ch
         self.heads = heads              # Nh
+        self.slice_num = slice_num      # M
         self.scale = dim_head ** -0.5
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
         self.temperature = nn.Parameter(torch.ones([1, heads, 1, 1]) * 0.5)
 
-        self.in_project_x = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
-        self.in_project_fx = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
+        self.in_project_x = nn.Identity()
+        self.in_project_fx = nn.Identity()
+        
+        self._prepare_projection(dim, inner_dim, kernel)
+
         self.in_project_slice = nn.Linear(dim_head, slice_num)  # Ch -> M
         for l in [self.in_project_slice]:
             torch.nn.init.orthogonal_(l.weight)  # use a principled initialization
@@ -119,17 +123,30 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
             nn.Linear(inner_dim, dim),
             nn.Dropout(dropout)
         )
+        
+    def _prepare_projection(self, dim, inner_dim, kernel):
+        
+        self.in_project_x = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
+        self.in_project_fx = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward_slice(self, x):
+        
         # B N C
-        _, H_, W_, _ = x.shape
-        N_ = H_ * W_
+        N_ = self._point_size(x)
+        N0_ = self._structural_size(x)
+        
         x = x.permute(0, 3, 1, 2)  # B C H W
 
         ### (1) Slice
         # B C H W -> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
         fx_mid = self.in_project_fx(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
         x_mid  = self.in_project_x( x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
+        
+        return x_mid, fx_mid, N_, N0_
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
         
         slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
         slice_norm = slice_weights.sum(2)  # B Nh M
@@ -149,9 +166,52 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
         ### (3) Deslice
         # 
         out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights) # B Nh N Ch
-        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, H_, W_, self.heads * self.dim_head) # B N Nh*Ch
+        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, *N0_, self.heads * self.dim_head) # B N Nh*Ch
         return self.to_out(out_x)
+    
+    @staticmethod
+    def _point_size(x: torch.Tensor) -> int:
+        _, H_, W_, _ = x.shape
+        return H_ * W_
+    
+    @staticmethod
+    def _structural_size(x: torch.Tensor) -> tuple:
+        _, H_, W_, _ = x.shape
+        return (H_, W_)
+        
+    
+    def get_slice_weight(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        return:
+        ---
+        
+        `torch.Tensor`:   B Nh H W M 
+        
+        '''
+        N_ = self._point_size(x)
+        N0_ = self._structural_size(x)
+        
+        x = x.permute(0, 3, 1, 2)  # B C H W
+        x_mid  = self.in_project_x(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
+        slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
+        
+        return slice_weights.reshape(-1, self.heads, *N0_, self.slice_num)
 
+class Physics_Attention(Physics_Attention_Structured_Mesh_2D):
+    
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0):
+        super().__init__(dim, heads, dim_head, slice_num, kernel, dropout)
+        
+    
+    def _prepare_projection(self, dim, inner_dim, kernel):
+        self.in_project_x = nn.Linear(dim, inner_dim)
+        self.in_project_fx = nn.Linear(dim, inner_dim)
+        
+    def _forward_slice(self, x):
+        _, N_, _ = x.shape
+        fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
+        x_mid = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
+        return x_mid, fx_mid, N_, [N_]
 
 class Physics_Attention_Structured_Mesh_3D(nn.Module):
     ## for structured mesh in 3D space
@@ -234,11 +294,16 @@ class Transolver_block(nn.Module):
             is_last_block=False,
             out_dim=1,
             slice_num=32,
+            mesh_type='2d'
     ) -> None:
         super().__init__()
         self.is_last_block = is_last_block
         self.ln_1 = nn.LayerNorm(hidden_dim)
-        self.Attn = Physics_Attention_Structured_Mesh_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+        if mesh_type == '2d':
+            self.Attn = Physics_Attention_Structured_Mesh_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+                                                         dropout=dropout, slice_num=slice_num)
+        elif mesh_type == 'point':
+            self.Attn = Physics_Attention(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
                                                          dropout=dropout, slice_num=slice_num)
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
@@ -254,6 +319,16 @@ class Transolver_block(nn.Module):
         fx = self.mlp(self.ln_2(fx)) + fx
         fx = self.last_layer(fx)
         return fx
+    
+    def get_slice_weight(self, fx: torch.Tensor) -> torch.Tensor:
+        '''
+        return:
+        ---
+        
+        `torch.Tensor`:   B Nh H W M 
+        
+        '''
+        return self.Attn.get_slice_weight(self.ln_1(fx))
 
 
 class Transolver(nn.Module):
@@ -266,6 +341,7 @@ class Transolver(nn.Module):
                  n_head: int = 8,
                  slice_num: int = 32,
                  mlp_ratio: int = 4,
+                 mesh_type: str = '2d',
                  dropout=0.0,
                  Time_Input=False,
                  act='gelu',
@@ -299,7 +375,8 @@ class Transolver(nn.Module):
                                                       mlp_ratio=mlp_ratio,
                                                       out_dim=out_dim,
                                                       slice_num=slice_num,
-                                                      is_last_block=(_ == n_layers - 1))
+                                                      is_last_block=(_ == n_layers - 1),
+                                                      mesh_type=mesh_type)
                                      for _ in range(n_layers)])
         self.initialize_weights()
         self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))
@@ -335,7 +412,16 @@ class Transolver(nn.Module):
             reshape(batchsize, size_x, size_y, self.ref * self.ref).contiguous()
         return pos
 
-    def forward(self, x, fx, T=None) -> torch.Tensor:
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+
+        fx = self._process(*args, **kwargs)
+        for block in self.blocks:
+            fx = block(fx)
+
+        return fx
+    
+    def _process(self, x: torch.Tensor, fx: torch.Tensor, T=None) -> torch.Tensor:
+        
         # if self.unified_pos:
         #     x = self.pos.repeat(x.shape[0], 1, 1, 1).reshape(x.shape[0], self.H * self.W, self.ref * self.ref)
         if fx is not None:
@@ -349,8 +435,23 @@ class Transolver(nn.Module):
         #     Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
         #     Time_emb = self.time_fc(Time_emb)
         #     fx = fx + Time_emb
-
+        
+        return fx
+        
+    
+    def get_slice_weight(self, *args, **kwargs) -> torch.Tensor:
+        '''
+        return:
+        ---
+        
+        `torch.Tensor`:   B Nh H W M 
+        
+        '''
+        fx = self._process(*args, **kwargs)
+        slice_weights = []
+        
         for block in self.blocks:
+            slice_weights.append(block.get_slice_weight(fx))
             fx = block(fx)
 
-        return fx
+        return slice_weights
