@@ -137,7 +137,7 @@ def _decoder_input(typ: Union[float, List[int]], ld: int, lfd: int,
         layers.append(nn.Linear(h0, lfd))
 
         if last_actv:    
-            layers += _make_aux_layers(basic_layers, h)
+            layers += _make_aux_layers(basic_layers, lfd)
             layers.append(basic_layers['actv']())
 
 
