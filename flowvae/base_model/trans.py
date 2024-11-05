@@ -13,90 +13,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-import torch.nn as nn
-import torch
-
 from flowvae.base_model.mlp import mlp
 
-
-class Physics_Attention_Irregular_Mesh(nn.Module):
-    ## for irregular meshes in 1D, 2D or 3D space
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0., slice_num=64):
-        super().__init__()
-        inner_dim = dim_head * heads
-        self.dim_head = dim_head
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-        self.softmax = nn.Softmax(dim=-1)
-        self.dropout = nn.Dropout(dropout)
-        self.temperature = nn.Parameter(torch.ones([1, heads, 1, 1]) * 0.5)
-
-        self.in_project_x = nn.Linear(dim, inner_dim)
-        self.in_project_fx = nn.Linear(dim, inner_dim)
-        self.in_project_slice = nn.Linear(dim_head, slice_num)
-        for l in [self.in_project_slice]:
-            torch.nn.init.orthogonal_(l.weight)  # use a principled initialization
-        self.to_q = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_k = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_v = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        # B N C
-        B, N, C = x.shape
-
-        ### (1) Slice
-        fx_mid = self.in_project_fx(x).reshape(B, N, self.heads, self.dim_head) \
-            .permute(0, 2, 1, 3).contiguous()  # B H N C
-        x_mid = self.in_project_x(x).reshape(B, N, self.heads, self.dim_head) \
-            .permute(0, 2, 1, 3).contiguous()  # B H N C
-        slice_weights = self.softmax(self.in_project_slice(x_mid) / self.temperature)  # B H N G
-        slice_norm = slice_weights.sum(2)  # B H G
-        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)
-        slice_token = slice_token / ((slice_norm + 1e-5)[:, :, :, None].repeat(1, 1, 1, self.dim_head))
-
-        ### (2) Attention among slice tokens
-        q_slice_token = self.to_q(slice_token)
-        k_slice_token = self.to_k(slice_token)
-        v_slice_token = self.to_v(slice_token)
-        dots = torch.matmul(q_slice_token, k_slice_token.transpose(-1, -2)) * self.scale
-        attn = self.softmax(dots)
-        attn = self.dropout(attn)
-        out_slice_token = torch.matmul(attn, v_slice_token)  # B H G D
-
-        ### (3) Deslice
-        out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights)
-        out_x = rearrange(out_x, 'b h n d -> b n (h d)')
-        return self.to_out(out_x)
-
-
-class Physics_Attention_Structured_Mesh_2D(nn.Module):
-    '''
-    for structured mesh in 2D space
+class Physics_Attention(nn.Module):
     
-    B H W C(hidden_dim) -> B H W C(hidden_dim)
-
-    Here we modified input and output to be H W, not N = H x W, so that H and W are not input as a argument
-    
-    The conditional parameters are added as tokens
-    
-    paras:
-    ---
-    - `dim`:    (C_out)     The channel number of output feature maps
-    - `heads`:  (Nh)        The heads number
-    - `dim_head`: (Ch)      The channel number of each head
-    - `slice_num`: (M)      The slice number
-    - `
-    
-    inputs & outputs:
-    ---
-    B H W C -> B H W C_out
-    
-    '''
-    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0.):
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0.):
         super().__init__()
         inner_dim = dim_head * heads
         self.dim_head = dim_head        # Ch
@@ -109,8 +30,7 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
 
         self.in_project_x = nn.Identity()
         self.in_project_fx = nn.Identity()
-        
-        self._prepare_projection(dim, inner_dim, kernel)
+        self._prepare_projection(dim, inner_dim)
 
         self.in_project_slice = nn.Linear(dim_head, slice_num)  # Ch -> M
         for l in [self.in_project_slice]:
@@ -123,27 +43,11 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
             nn.Linear(inner_dim, dim),
             nn.Dropout(dropout)
         )
-        
-    def _prepare_projection(self, dim, inner_dim, kernel):
-        
-        self.in_project_x = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
-        self.in_project_fx = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
-
-    def _forward_slice(self, x):
-        
-        # B N C
-        N_ = self._point_size(x)
-        N0_ = self._structural_size(x)
-        
-        x = x.permute(0, 3, 1, 2)  # B C H W
-
-        ### (1) Slice
-        # B C H W -> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
-        fx_mid = self.in_project_fx(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
-        x_mid  = self.in_project_x( x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
-        
-        return x_mid, fx_mid, N_, N0_
-
+    
+    def _prepare_projection(self, dim, inner_dim):
+        self.in_project_x = nn.Linear(dim, inner_dim)
+        self.in_project_fx = nn.Linear(dim, inner_dim)
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
@@ -164,21 +68,15 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
         out_slice_token = torch.matmul(attn, v_slice_token)  # B Nh M Ch
 
         ### (3) Deslice
-        # 
         out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights) # B Nh N Ch
         out_x = out_x.permute(0, 2, 1, 3).reshape(-1, *N0_, self.heads * self.dim_head) # B N Nh*Ch
         return self.to_out(out_x)
     
-    @staticmethod
-    def _point_size(x: torch.Tensor) -> int:
-        _, H_, W_, _ = x.shape
-        return H_ * W_
-    
-    @staticmethod
-    def _structural_size(x: torch.Tensor) -> tuple:
-        _, H_, W_, _ = x.shape
-        return (H_, W_)
-        
+    def _forward_slice(self, x: torch.Tensor):
+        _, N_, _ = x.shape
+        fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
+        x_mid = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
+        return x_mid, fx_mid, N_, [N_]
     
     def get_slice_weight(self, x: torch.Tensor) -> torch.Tensor:
         '''
@@ -188,88 +86,86 @@ class Physics_Attention_Structured_Mesh_2D(nn.Module):
         `torch.Tensor`:   B Nh H W M 
         
         '''
-        N_ = self._point_size(x)
-        N0_ = self._structural_size(x)
-        
-        x = x.permute(0, 3, 1, 2)  # B C H W
-        x_mid  = self.in_project_x(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
+        x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
         slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
         
         return slice_weights.reshape(-1, self.heads, *N0_, self.slice_num)
 
-class Physics_Attention(Physics_Attention_Structured_Mesh_2D):
+class Physics_Attention_2D(Physics_Attention):
+
+    '''
+    for structured mesh in 2D space
+
+    Here we modified input and output to be H W, not N = H x W, so that H and W are not input as a argument
     
+    The conditional parameters are added as tokens
+    
+    paras:
+    ---
+    - `dim`:    (C_out)     The channel number of output feature maps
+    - `heads`:  (Nh)        The heads number
+    - `dim_head`: (Ch)      The channel number of each head
+    - `slice_num`: (M)      The slice number
+    - `
+    
+    inputs & outputs:
+    ---
+    B H W C -> B H W C_out
+    
+    '''
     def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0):
-        super().__init__(dim, heads, dim_head, slice_num, kernel, dropout)
+        self.kernel = kernel
+        super().__init__(dim, heads, dim_head, slice_num, dropout)
         
-    
-    def _prepare_projection(self, dim, inner_dim, kernel):
-        self.in_project_x = nn.Linear(dim, inner_dim)
-        self.in_project_fx = nn.Linear(dim, inner_dim)
+    def _prepare_projection(self, dim, inner_dim):
         
-    def _forward_slice(self, x):
-        _, N_, _ = x.shape
-        fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
-        x_mid = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
-        return x_mid, fx_mid, N_, [N_]
+        kernel = self.kernel
+        self.in_project_x = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
+        self.in_project_fx = nn.Conv2d(dim, inner_dim, kernel, 1, kernel // 2)
 
-class Physics_Attention_Structured_Mesh_3D(nn.Module):
-    ## for structured mesh in 3D space
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0., slice_num=32, H=32, W=32, D=32, kernel=3):
-        super().__init__()
-        inner_dim = dim_head * heads
-        self.dim_head = dim_head
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-        self.softmax = nn.Softmax(dim=-1)
-        self.dropout = nn.Dropout(dropout)
-        self.temperature = nn.Parameter(torch.ones([1, heads, 1, 1]) * 0.5)
-        self.H = H
-        self.W = W
-        self.D = D
-
-        self.in_project_x = nn.Conv3d(dim, inner_dim, kernel, 1, kernel // 2)
-        self.in_project_fx = nn.Conv3d(dim, inner_dim, kernel, 1, kernel // 2)
-        self.in_project_slice = nn.Linear(dim_head, slice_num)
-        for l in [self.in_project_slice]:
-            torch.nn.init.orthogonal_(l.weight)  # use a principled initialization
-        self.to_q = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_k = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_v = nn.Linear(dim_head, dim_head, bias=False)
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
+    def _forward_slice(self, x: torch.Tensor):
+        
         # B N C
-        B, N, C = x.shape
-        x = x.reshape(B, self.H, self.W, self.D, C).contiguous().permute(0, 4, 1, 2, 3).contiguous()  # B C H W
+        _, H_, W_, _ = x.shape
+        N_ = H_ * W_
+        N0_ = [H_, W_]
+        
+        x = x.permute(0, 3, 1, 2)  # B C H W
 
         ### (1) Slice
-        fx_mid = self.in_project_fx(x).permute(0, 2, 3, 4, 1).contiguous().reshape(B, N, self.heads, self.dim_head) \
-            .permute(0, 2, 1, 3).contiguous()  # B H N C
-        x_mid = self.in_project_x(x).permute(0, 2, 3, 4, 1).contiguous().reshape(B, N, self.heads, self.dim_head) \
-            .permute(0, 2, 1, 3).contiguous()  # B H N G
-        slice_weights = self.softmax(
-            self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B H N G
-        slice_norm = slice_weights.sum(2)  # B H G
-        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)
-        slice_token = slice_token / ((slice_norm + 1e-5)[:, :, :, None].repeat(1, 1, 1, self.dim_head))
+        # B C H W -> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
+        fx_mid = self.in_project_fx(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
+        x_mid  = self.in_project_x( x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
+        
+        return x_mid, fx_mid, N_, N0_
 
-        ### (2) Attention among slice tokens
-        q_slice_token = self.to_q(slice_token)
-        k_slice_token = self.to_k(slice_token)
-        v_slice_token = self.to_v(slice_token)
-        dots = torch.matmul(q_slice_token, k_slice_token.transpose(-1, -2)) * self.scale
-        attn = self.softmax(dots)
-        attn = self.dropout(attn)
-        out_slice_token = torch.matmul(attn, v_slice_token)  # B H G D
+class Physics_Attention_3D(Physics_Attention):
 
-        ### (3) Deslice
-        out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights)
-        out_x = rearrange(out_x, 'b h n d -> b n (h d)')
-        return self.to_out(out_x)
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0):
+        self.kernel = kernel
+        super().__init__(dim, heads, dim_head, slice_num, dropout)
+        
+    def _prepare_projection(self, dim, inner_dim):
+        
+        kernel = self.kernel
+        self.in_project_x = nn.Conv3d(dim, inner_dim, kernel, 1, kernel // 2)
+        self.in_project_fx = nn.Conv3d(dim, inner_dim, kernel, 1, kernel // 2)
+
+    def _forward_slice(self, x: torch.Tensor):
+        
+        # B N C
+        _, H_, W_, D_, _ = x.shape
+        N_ = H_ * W_ * D_
+        N0_ = [H_, W_, D_]
+        
+        x = x.permute(0, 4, 1, 2, 3)  # B C H W
+
+        ### (1) Slice
+        # B C H W -> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
+        fx_mid = self.in_project_fx(x).permute(0, 2, 3, 4, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
+        x_mid  = self.in_project_x( x).permute(0, 2, 3, 4, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
+        
+        return x_mid, fx_mid, N_, N0_
 
 class Transolver_block(nn.Module):
     '''
@@ -300,7 +196,10 @@ class Transolver_block(nn.Module):
         self.is_last_block = is_last_block
         self.ln_1 = nn.LayerNorm(hidden_dim)
         if mesh_type == '2d':
-            self.Attn = Physics_Attention_Structured_Mesh_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+            self.Attn = Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+                                                         dropout=dropout, slice_num=slice_num)
+        elif mesh_type == '3d':
+            self.Attn = Physics_Attention_3D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
                                                          dropout=dropout, slice_num=slice_num)
         elif mesh_type == 'point':
             self.Attn = Physics_Attention(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
