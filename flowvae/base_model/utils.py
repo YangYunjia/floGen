@@ -42,13 +42,12 @@ class IntpConv(nn.Module):
 
     '''
 
-    def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None):
+    def __init__(self, size=None, scale_factor=None, mode=None):
         super().__init__()
         self.scale_factor = scale_factor
         self.size = size
         self.mode = mode
         self.conv = nn.Identity()
-        self.padding = int((kernel_size - 1) / 2)
 
     def forward(self, inpt):
         result = F.interpolate(inpt, size=self.size, scale_factor=self.scale_factor, mode=self.mode, align_corners=False)
@@ -58,16 +57,18 @@ class IntpConv(nn.Module):
 class IntpConv1d(IntpConv):
 
     def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None, bias=True):
-        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
+        super().__init__(size, scale_factor, mode)
+        
         if mode is None:    self.mode = 'linear'
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding, bias=bias)
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=int((kernel_size - 1) / 2), bias=bias)
 
 class IntpConv2d(IntpConv):
 
     def __init__(self, in_channels, out_channels, kernel_size, size=None, scale_factor=None, mode=None, bias=True):
-        super().__init__(in_channels, out_channels, kernel_size, size, scale_factor, mode)
+        super().__init__(size, scale_factor, mode)
+        
         if mode is None:    self.mode = 'bilinear'
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=self.padding, bias=bias)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=int((kernel_size - 1) / 2), bias=bias)
 
 class Convbottleneck(nn.Module):
 

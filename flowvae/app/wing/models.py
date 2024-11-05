@@ -407,9 +407,9 @@ class ounetbedmodel(basiconetmodel, BranchUnet):
 
 class WingTransformer(Transolver):
     
-    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False) -> None:
         
-        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)])
+        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape)
         
         self.is_flatten = is_flatten
         
@@ -417,17 +417,12 @@ class WingTransformer(Transolver):
         
         _, C_, H_, W_ = inputs.shape
         x  = inputs.permute(0, 2, 3, 1)
-        if self.is_flatten:
-            x = x.reshape((-1, H_*W_, C_))
-            fx = code[:, None, :2].repeat((1, H_*W_, 1))
-        else:
-            fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
+        fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
         return super()._process(x, fx)
     
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
-        
-        return [super().forward(inputs, code).reshape(B_, H_, W_, -1).permute(0, 3, 1, 2)]
+        return [super().forward(inputs, code).permute(0, 3, 1, 2)]
         
 '''
 

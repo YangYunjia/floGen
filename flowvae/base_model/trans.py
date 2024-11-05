@@ -12,8 +12,10 @@ https://github.com/thuml/Transolver/ (Transolver_Structured_Mesh_2D.py)
 import torch
 import torch.nn as nn
 import numpy as np
+from functools import reduce
 
 from flowvae.base_model.mlp import mlp
+from flowvae.base_model.utils import IntpConv
 
 class Physics_Attention(nn.Module):
     
@@ -73,10 +75,11 @@ class Physics_Attention(nn.Module):
         return self.to_out(out_x)
     
     def _forward_slice(self, x: torch.Tensor):
-        _, N_, _ = x.shape
+        N0_ = x.shape[1:-1]
+        N_ = reduce(lambda x, y: x*y, N0_)
         fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
         x_mid = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
-        return x_mid, fx_mid, N_, [N_]
+        return x_mid, fx_mid, N_, N0_
     
     def get_slice_weight(self, x: torch.Tensor) -> torch.Tensor:
         '''
@@ -133,7 +136,7 @@ class Physics_Attention_2D(Physics_Attention):
         x = x.permute(0, 3, 1, 2)  # B C H W
 
         ### (1) Slice
-        # B C H W -> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
+        # B C H W --CNN--> B Nh*Ch H W -> B (H W) Nh*Ch -> B N Nh Ch-> B Nh N Ch
         fx_mid = self.in_project_fx(x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
         x_mid  = self.in_project_x( x).permute(0, 2, 3, 1).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch: `x`
         
@@ -171,12 +174,17 @@ class Transolver_block(nn.Module):
     '''
     Transformer block
     
-    `hidden_dim`:   (C)
+    - `num_heads`:    (Nh) default = 8
+    - `hidden_dim`:   (C)  default = 256
+    
+    - remark Nov 5, 24 -> move last_block mark to Transolver class
     
     inputs & outputs
     ---
     
-    B N (H W) C -> B N (H W) C
+        B N0 C0 --upsampling--> B N C
+                --Attention --> B N C
+                --dnsampling--> B N1 C1
     
     '''
 
@@ -184,16 +192,17 @@ class Transolver_block(nn.Module):
             self,
             num_heads: int,
             hidden_dim: int,
-            dropout: float,
+            dropout: float = 0.,
             act='gelu',
             mlp_ratio=4,
-            is_last_block=False,
-            out_dim=1,
             slice_num=32,
-            mesh_type='2d'
+            mesh_type='2d',
+            downsampling: nn.Module = nn.Identity(),
+            upsampling: nn.Module = nn.Identity()
     ) -> None:
+        
         super().__init__()
-        self.is_last_block = is_last_block
+        
         self.ln_1 = nn.LayerNorm(hidden_dim)
         if mesh_type == '2d':
             self.Attn = Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
@@ -208,15 +217,17 @@ class Transolver_block(nn.Module):
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False)   # , res=False, act=act
         
-        if self.is_last_block:
-            self.last_layer = nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, out_dim))
-        else:
-            self.last_layer = nn.Identity() # place holder
+        self.upsampling = upsampling
+        self.dnsampling = downsampling
 
     def forward(self, fx: torch.Tensor) -> torch.Tensor:
+        # upsampling
+        fx = self.upsampling(fx)
+        # attention
         fx = self.Attn(self.ln_1(fx)) + fx
         fx = self.mlp(self.ln_2(fx)) + fx
-        fx = self.last_layer(fx)
+        # downsampling
+        fx = self.dnsampling(fx)
         return fx
     
     def get_slice_weight(self, fx: torch.Tensor) -> torch.Tensor:
@@ -229,6 +240,24 @@ class Transolver_block(nn.Module):
         '''
         return self.Attn.get_slice_weight(self.ln_1(fx))
 
+class Downsampling(nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.up = nn.AvgPool2d(kernel_size=5, stride=4, padding=2)
+    
+    def forward(self, x):
+        return self.up(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+    
+class Upsampling(nn.Module):
+    def __init__(self, size):
+        super().__init__()
+        self.size = size
+    
+    def forward(self, x):
+        result = torch.nn.functional.interpolate(x.permute(0, 3, 1, 2), size=self.size, mode='bilinear', align_corners=False)
+        
+        return result.permute(0, 2, 3, 1)
 
 class Transolver(nn.Module):
     def __init__(self,
@@ -241,6 +270,7 @@ class Transolver(nn.Module):
                  slice_num: int = 32,
                  mlp_ratio: int = 4,
                  mesh_type: str = '2d',
+                 u_shape: bool = False,
                  dropout=0.0,
                  Time_Input=False,
                  act='gelu',
@@ -264,19 +294,38 @@ class Transolver(nn.Module):
         self.Time_Input = Time_Input
         self.n_hidden = n_hidden
         self.space_dim = space_dim
+        self.n_layers = n_layers
+        self.n_head = n_head
+        self.slice_num = slice_num
+        self.mlp_ratio = mlp_ratio
+        self.mesh_type = mesh_type
 
         if Time_Input:
             self.time_fc = nn.Sequential(nn.Linear(n_hidden, n_hidden), nn.SiLU(), nn.Linear(n_hidden, n_hidden))
-
-        self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
-                                                      dropout=dropout,
-                                                      act=act,
-                                                      mlp_ratio=mlp_ratio,
-                                                      out_dim=out_dim,
-                                                      slice_num=slice_num,
-                                                      is_last_block=(_ == n_layers - 1),
-                                                      mesh_type=mesh_type)
-                                     for _ in range(n_layers)])
+            
+        
+        if not u_shape:
+            self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
+                                                        dropout=dropout,
+                                                        act=act,
+                                                        mlp_ratio=mlp_ratio,
+                                                        slice_num=slice_num,
+                                                        mesh_type=mesh_type)
+                                        for _ in range(n_layers)])
+        else:
+            self.is_compiled = False
+            # build the downsampling part of the model
+            self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
+                                                        dropout=dropout,
+                                                        act=act,
+                                                        mlp_ratio=mlp_ratio,
+                                                        slice_num=slice_num,
+                                                        mesh_type=mesh_type,
+                                                        downsampling=Downsampling())
+                                        for _ in range(int(n_layers / 2))])
+                    
+        self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden), nn.Linear(n_hidden, out_dim))
+        
         self.initialize_weights()
         self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))
 
@@ -316,7 +365,8 @@ class Transolver(nn.Module):
         fx = self._process(*args, **kwargs)
         for block in self.blocks:
             fx = block(fx)
-
+            
+        fx = self.last_layer(fx)
         return fx
     
     def _process(self, x: torch.Tensor, fx: torch.Tensor, T=None) -> torch.Tensor:
@@ -336,7 +386,42 @@ class Transolver(nn.Module):
         #     fx = fx + Time_emb
         
         return fx
+    
+    def compile(self, *args, **kwargs) -> None:
+        '''
+        Calculate the feature map size after downsampling, for initialize the upsampling path
         
+        '''
+        
+        print('--------------------')
+        print('Compiling the model with a batch of training data')
+        sizes = []
+        fx = self._process(*args, **kwargs)
+        
+        for ib in range(int(self.n_layers / 2)):
+            sizes.append(fx.shape[1:-1])
+            print(f'    Encoder Layer {ib:d}: {fx.shape} ->')
+            fx = self.blocks[ib](fx)
+            
+        block_list_n = []
+        if self.n_layers % 2 > 0:
+            # middle block
+            print(f'    Middle Layer:')
+            block_list_n.append(Transolver_block(num_heads=self.n_head, hidden_dim=self.n_hidden,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type))
+        for ib in range(int(self.n_layers / 2)):
+            print(f'    Decoder Layer {ib:d}: -> {sizes[-ib-1]}')
+            block_list_n.append(Transolver_block(num_heads=self.n_head, hidden_dim=self.n_hidden,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type,
+                                                        downsampling=Upsampling(size=sizes[-ib-1])))
+            
+        self.blocks.extend(nn.ModuleList(block_list_n))
+        self.is_compiled = True
+        print('--------------------')
     
     def get_slice_weight(self, *args, **kwargs) -> torch.Tensor:
         '''

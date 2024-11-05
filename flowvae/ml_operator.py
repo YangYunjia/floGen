@@ -261,6 +261,7 @@ class ModelOperator():
 
         self.set_optimizer('Adam', lr=self.paras['init_lr'])
         # self.set_scheduler('ReduceLROnPlateau', mode='min', factor=0.1, patience=5)
+        print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
 
     @property
     def model(self):
@@ -279,12 +280,23 @@ class ModelOperator():
         '''
         initial operator: things below will be done:
         1. clear history of training, set epoch current epoch to 0
+        2.0. compile model if needed
         2. initial model
         3. initial optimizer (initial scheduler at the same time in func. set_optimizer)
         4. set best loss to a BIG number
         '''
         self.history = {'loss': {'train':MDCounter(), 'val':MDCounter()}, 'lr':[]}
         self.epoch = 0
+        
+        if hasattr(self.model, 'is_compiled'):
+            load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
+            for test_data in self.dataloaders['train']:
+                test_data, _ = self._load_batch_data(test_data, load_kwargs)
+                input_args, input_kwargs = self._forward_model(test_data, forward_kwargs)
+                break
+            self.model.compile(*input_args, **input_kwargs)
+            self.model.to(self.device)   
+            
         if init_model and self._model is not None:
             self._model.apply(reset_paras)
         if init_optimitor and self._optimizer is not None:
@@ -388,8 +400,10 @@ class ModelOperator():
                         # 前向, track history if only in train
                         with torch.set_grad_enabled(phase == 'train'):
 
-                            output = self._forward_model(data, forward_kwargs)
-
+                            input_args, input_kwargs = self._forward_model(data, forward_kwargs)
+                            output = self._model(*input_args, **input_kwargs)
+                            
+                            # print(output.size(), data['label'].size())
                             loss_dict = self._calculate_loss(data, output, loss_kwargs)
                             loss = loss_dict['loss']
 
@@ -454,10 +468,9 @@ class ModelOperator():
         return batch_data, batch_size
 
     def _forward_model(self, data, kwargs):
-        return self._model(data['input'])
+        return [data['input']], {}
 
     def _calculate_loss(self, data, output, kwargs):
-        # print(output.size(), data['label'].size())
         return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
     
     def _end_of_epoch(self):
@@ -570,14 +583,15 @@ class BasicAEOperator(ModelOperator):
                  split_train_ratio: float = 0.9, recover_split: str = None, 
                  batch_size: int = 8, shuffle: bool = True,
                  ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
+        
         self.ref = ref
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
 
     def _forward_model(self, data, kwargs):
-        return self._model(data['input'][:, self.input_channels[0]: self.input_channels[1]])
+        return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
     
     def _calculate_loss(self, data, output, kwargs):
         # print(output[0].size(), data['label'].size())
@@ -597,7 +611,7 @@ class BasicCondAEOperator(BasicAEOperator):
 
     def _forward_model(self, data, kwargs):
         # print(data['aux'].size(), data['input'].size())
-        return self._model(data['input'][:, self.input_channels[0]: self.input_channels[1]], code=data['aux'])
+        return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {'code':data['aux']}
 
 class AEOperator(ModelOperator):
     '''
@@ -755,14 +769,12 @@ class AEOperator(ModelOperator):
         ipt1, ipt2 = kwargs['ipt']
 
         if self.paras['code_mode'] in ['ex', 'semi', 'ae']:
-            result_field = self._model(real_field[:, ipt1: ipt2], code=delt_labels)
+            return [real_field[:, ipt1: ipt2]], {'code': delt_labels}
         elif self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
-            result_field = self._model(refs_field[:, ipt1: ipt2], code=delt_labels)
+            return [refs_field[:, ipt1: ipt2]], {'code': delt_labels}
         elif self.paras['code_mode'] in ['im']:
-            result_field = self._model(real_field[:, ipt1: ipt2])
+            return [real_field[:, ipt1: ipt2]], {}
         
-        return result_field
-
     def _calculate_loss(self, data, output, kwargs):
         weights = {}
         for cm in ['sm', 'indx', 'aero', 'ge']:
