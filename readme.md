@@ -8,17 +8,15 @@ FlowGen is a universal flowfield generator based on machine learning and implent
 
 You can find the documentation of flowGen [here](https://flogen.readthedocs.io/en/latest/).
 
-**Author:** 
+**Authors:** 
 
 - Yunjia Yang, Tsinghua University, yyj980401@126.com
 - Yuqi Cheng, yc4330@columbia.edu (UI for Webwing)
 
-**Contributor (former user):** 
+**Thanks to:** 
 
 - Runze Li, lirunze16@tsinghua.org.cn
-- Zuwei Tan (Supersonic 2D inlet)
-- Gongyan Liu (Temperature field of a data center)
-- Jiazhe Li (Supersonic 2D single expansion ramp nozzle)
+- Mengxin Liu, for wing dataset estabilishment
 
 **Citation:**
 
