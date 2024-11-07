@@ -417,7 +417,7 @@ class Transolver(nn.Module):
                                                         mlp_ratio=self.mlp_ratio,
                                                         slice_num=self.slice_num,
                                                         mesh_type=self.mesh_type,
-                                                        downsampling=Upsampling(size=sizes[-ib-1])))
+                                                        upsampling=Upsampling(size=sizes[-ib-1])))
             
         self.blocks.extend(nn.ModuleList(block_list_n))
         self.is_compiled = True

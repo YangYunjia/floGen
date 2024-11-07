@@ -223,13 +223,12 @@ class ConditionDataset(Dataset):
             self.all_data = np.take(np.load(data_base + file_name + 'data.npy'), channel_take, axis=1)
         self.all_index = np.load(data_base + file_name + 'index.npy')
         
+        self.condis_dim = d_c
         if channel_cond is None:
             self.cond_index = np.take(self.all_index, range(3, 3+self.condis_dim), axis=1)
         else:
             self.cond_index = np.take(self.all_index, channel_cond, axis=1)
 
-
-        self.condis_dim = d_c
         self.airfoil_num = int(max(self.all_index[:, 0])) + 1   #   amount of airfoils in dataset
         # print(self.all_index[-1][0])
         self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int32)       #   amount of conditions for each airfoil, a array of (N_airfoil, )

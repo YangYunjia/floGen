@@ -2,7 +2,7 @@ from flowvae.dataset import FlowDataset
 import numpy as np
 
 
-def cal_loss(vae_model, errors: list, fldata: FlowDataset, paras, wing_class, nn: int, device, ref=-1, ref_channels=(None, None), recon_channels=(None, None), input_channels=(None, None)):
+def cal_loss(vae_model, errors: list, fldata: FlowDataset, paras, wing_class, nn: int, device, ref=-1, ref_channels=(None, None), recon_channels=(None, None), input_channels=(None, None), loss_type='L2'):
     errs = []
     for i_f in range(nn):
         inputs = fldata.inputs[i_f].unsqueeze(0).to(device)
@@ -32,6 +32,9 @@ def cal_loss(vae_model, errors: list, fldata: FlowDataset, paras, wing_class, nn
         if np.abs(cl_real - cl_recon)[0] > 0.05:
             print(i_f, paras[i_f][0], np.abs(cl_recon - cl_real))
         
-        errs.append(np.concatenate((np.mean((output - outputs)**2, axis=(1,2))**0.5, cl_real, cl_recon)))
+        if loss_type == 'L2':
+            errs.append(np.concatenate((np.mean((output - outputs)**2, axis=(1,2))**0.5, cl_real, cl_recon)))
+        elif loss_type == 'L1':
+            errs.append(np.concatenate((np.mean(abs(output - outputs), axis=(1,2)), cl_real, cl_recon)))
 
     errors.append(errs)
