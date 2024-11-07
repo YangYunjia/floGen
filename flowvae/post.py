@@ -250,91 +250,88 @@ def get_force_cl(aoa: float, **kwargs):
     return fld
 
 #* function to extract pressure force from 1-d pressure profile
-def get_xyforce_1d_t(geom: Tensor, profile: Tensor) -> Tensor:
+# numpy.ndarray version in `cfdpost.utils`
+def get_dxyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
+    '''
+    integrate the force on each surface grid cell, batch data
+    
+    paras:
+    ---
+    - `geom`  Tensor  (B, N, 2) -> (x, y)
+    - `cp`    Tensor  (B, N)
+    - `cf`    Tensor  (B, N), default is `None`
+
+    ### retrun
+    Tensor (B, N-1, 2) -> (dFx, dFy)
+    
+    '''
+    
+    dfp_n  = (0.5 * (cp[:, 1:] + cp[:, :-1])).unsqueeze(1)
+    if cf is None:
+        dfv_t  = torch.zeros_like(dfp_n)
+    else:
+        dfv_t = (0.5 * (cf[:, 1:] + cf[:, :-1])).unsqueeze(1)
+
+    dr     = (geom[:, 1:] - geom[:, :-1])
+    # print(torch.cat((dfv_t, -dfp_n), dim=1).shape, dr.shape)
+    return torch.einsum('blj,lpk,bjk->bjp', torch.cat((dfv_t, -dfp_n), dim=1), _rot_metrix.to(dfv_t.device), dr)
+
+def get_xyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
     integrate the force on x and y direction
 
     param:
     ===
-    `geom`:    The geometry (x, y), shape: (2, N)
-    
-    `profile`: The pressure profile, shape: (N, ); should be non_dimensional pressure profile by freestream condtion
-
-        Cp = (p - p_inf) / 0.5 * rho * U^2
-
-    return:
-    ===
-    Tensor: (Fx, Fy)
-    '''
-    dfp_n  = 0.5 * (profile[1:] + profile[:-1]).unsqueeze(0)
-    dfv_t  = torch.zeros_like(dfp_n)
-    dr      = (geom[:, 1:] - geom[:, :-1]).permute(1, 0)
-    # print(dfp_n.device, dr.device)
-
-    return torch.einsum('lj,lpk,jk->p', torch.cat((dfv_t, -dfp_n), dim=0), _rot_metrix.to(dfv_t.device), dr)
-
-def get_xyforce_1d_tc(geom: Tensor, profile: Tensor) -> Tensor:
-    '''
-    batch version of integrate the force on x and y direction
-
-    param:
-    ===
-    `geom`:    The geometry (x, y), shape: (B, 2, N)
-    
-    `profile`: The pressure profile, shape: (B, N); should be non_dimensional pressure profile by freestream condtion
-
-        Cp = (p - p_inf) / 0.5 * rho * U^2
+    - `geom`  Tensor  (B, N, 2) -> (x, y)
+    - `cp`    Tensor  (B, N)
+        The pressure profile; should be non_dimensional pressure profile by freestream condtion
+        
+        `Cp = (p - p_inf) / 0.5 * rho * U^2`
+        
+    - `cf`    Tensor  (B, N), default is `None`
+        The friction profile; should be non_dimensional pressure profile by freestream condtion
+        
+        `Cf = tau / 0.5 * rho * U^2`
 
     return:
     ===
-    Tensor: (Fx, Fy)
-    '''    
-    dfp_n  = 0.5 * (profile[:, 1:] + profile[:, :-1]).unsqueeze(1)
-    dfv_t  = torch.zeros_like(dfp_n)
-    dr     = (geom[:, :, 1:] - geom[:, :, :-1]).permute(0, 2, 1)
-
-    return torch.einsum('blj,lpk,bjk->bp', torch.cat((dfv_t, -dfp_n), dim=1), _rot_metrix.to(dfv_t.device), dr)
-
-def get_force_1d_t(geom: Tensor, profile: Tensor, aoa: float) -> Tensor:
+    Tensor: (B, 2) -> (Fx, Fy)
     '''
-    integrate the lift and drag
 
-    param:
-    ===
-    `geom`:    The geometry (x, y), shape: (2, N)
+    dr_tail = geom[:, 0] - geom[:, -1]
+    dfp_n_tail = 0.5 * (cp[:, 0] + cp[:, -1]).unsqueeze(1)
+    dfv_t_tail = torch.zeros_like(dfp_n_tail)
     
-    `profile`: The pressure profile, shape: (N, ); should be non_dimensional pressure profile by freestream condtion
-
-        Cp = (p - p_inf) / 0.5 * rho * U^2
+    force_surface = torch.sum(get_dxyforce_1d_t(geom, cp, cf), dim=1)
+    force_tail = torch.einsum('bl,lpk,bk->bp', torch.cat((dfv_t_tail, -dfp_n_tail), dim=1), _rot_metrix.to(dfp_n_tail.device), dr_tail)
     
-    `aoa`:  angle of attack
+    return force_surface + force_tail
 
-    return:
-    ===
-    Tensor: (CD, CL)
-    '''
-    dfp = get_xyforce_1d_t(geom, profile)
-    return _xy_2_cl_t(dfp, aoa)
-
-def get_force_1d_tc(geom: Tensor, profile: Tensor, aoa: Tensor) -> Tensor:
+def get_force_1d_t(geom: Tensor, aoa: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
     batch version of integrate the lift and drag
 
     param:
     ===
-    `geom`:    The geometry (x, y), shape: (B, 2, N)
-    
-    `profile`: The pressure profile, shape: (B, N); should be non_dimensional pressure profile by freestream condtion
-
-        Cp = (p - p_inf) / 0.5 * rho * U^2
-    
-    `aoa`:  angle of attack, shape: (B, )
+    - `geom`  Tensor  (B, N, 2) -> (x, y)
+    - `cp`    Tensor  (B, N)
+        The pressure profile; should be non_dimensional pressure profile by freestream condtion
+        
+        `Cp = (p - p_inf) / 0.5 * rho * U^2`
+        
+    - `cf`    Tensor  (B, N), default is `None`
+        The friction profile; should be non_dimensional pressure profile by freestream condtion
+        
+        `Cf = tau / 0.5 * rho * U^2`
+        
+    - `aoa`   Tensor (B,), in angle degree
 
     return:
     ===
-    Tensor: (CD, CL),  with size (B, 2)
+    Tensor: (B, 2) -> (CD, CL)
     '''
-    dfp = get_xyforce_1d_tc(geom, profile)
+    
+    dfp = get_xyforce_1d_t(geom, cp, cf)
     return _xy_2_cl_tc(dfp, aoa)
 
 def get_flux_1d_t(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rho: Tensor) -> Tensor:
