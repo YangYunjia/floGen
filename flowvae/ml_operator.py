@@ -722,11 +722,16 @@ class AEOperator(ModelOperator):
         ipt1, ipt2 = self.channel_markers[0]
         rst1, rst2 = self.channel_markers[1]
         # reconstruction type
-        if self.recon_type in ['1d-clcd', 'force']:
-            if self.paras['code_mode'] in ['ex', 'semi', 'ae', 'im']:
-                raise KeyError('Can not use force model in ex, semi, ae, im')
-            self.all_dataset.change_to_force(info='non-dim')  # change dataset.flowfield to forces 
+        if self.recon_type in ['1d-clcd', 'force', 'cltarg', 'aoatarg']:
+            assert not self.paras['code_mode'] in ['ex', 'semi', 'ae', 'im'], 'Can not use force model in ex, semi, ae, im'
+            
+            if self.recon_type in ['1d-clcd', 'force']: info = 'non-dim'    # compatitiy with old version code -> cd, cl (calculated with field data)
+            else: info = self.recon_type                                    # 'cltarge' -> cd, AoA (from all_index)
+            
+            self.all_dataset.change_to_force(info=info)  # change dataset.flowfield to forces 
                                                                 # (currently only applied to 1D distribution )
+            is_force = True
+            
         elif self.recon_type in ['field']:
             erc = self.all_dataset.n_extra_ref_channel
             # input channel marker
@@ -736,12 +741,15 @@ class AEOperator(ModelOperator):
             if rst1 is None:    rst1 = erc
             else:   rst1 += erc
             if rst2 is not None:    rst2 += erc
+            is_force = False
         
         # reference marker
-        load_kwargs = {'is_ref':    int(self.paras['ref'])}
+        load_kwargs = {'is_ref':    int(self.paras['ref']),
+                       'is_force':  is_force}
         forward_kwargs = {'ipt':    (ipt1, ipt2)}
         loss_kwargs = {'is_ref':    int(self.paras['ref']),
-                       'rst':       (rst1, rst2)}
+                       'rst':       (rst1, rst2),
+                       'is_force':  is_force}
 
         return load_kwargs, forward_kwargs, loss_kwargs
 
@@ -756,7 +764,7 @@ class AEOperator(ModelOperator):
             'real_labels' : batch_data['condis'].to(self.device),
             'delt_labels' : batch_data['condis'].to(self.device) - batch_data['ref_aoa'].to(self.device) * kwargs['is_ref']
         }
-        if self.recon_type in ['1d-clcd', 'force']:
+        if kwargs['is_force']:
             data['ref_force'] = batch_data['ref_force'].to(self.device)
 
         batch_size = data['real_field'].size(0)
@@ -784,16 +792,17 @@ class AEOperator(ModelOperator):
         real_field = data['real_field']
         refs_field = data['refs_field']
 
-        if self.recon_type == 'field':
+
+        if kwargs['is_force']:
+            # B. reconstruct aerodynamic coefficients
+            real = real_field
+            ref  = data['ref_force'] * kwargs['is_ref']
+        else:
             rst1, rst2 = kwargs['rst']
             # A. reconstruct field
             real = real_field[:, rst1: rst2]
             ref  = refs_field[:, rst1: rst2] * kwargs['is_ref']
-        elif self.recon_type in ['1d-clcd', 'force']:
-            # B. reconstruct aerodynamic coefficients
-            real = real_field
-            ref  = data['ref_force'] * kwargs['is_ref']
-
+            
         if self.paras['code_mode'] in ['ed', 'ved', 'ved1']:
             # the vae without prior index loss (must be ed mode)
             # if not reference, the parameter ref is set to zero by multiply with the flag

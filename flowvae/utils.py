@@ -155,10 +155,10 @@ def load_encoder_decoder(_id):
     elif _id in [50]:
         _model_type = BranchEncoderDecoder
 
-    elif _id > 95 and _id < 105:
+    elif _id > 95 and _id <= 105:
         _model_type = EncoderDecoder
 
-        if _id == 100: hidden_dims = [128, 256, 128]
+        if _id in [100, 105]: hidden_dims = [128, 256, 128]
         elif _id == 102: hidden_dims = [512, 512, 256]
         elif _id == 101: hidden_dims = [256, 512, 256]
         elif _id == 99: hidden_dims = [64, 128, 64]
@@ -166,7 +166,11 @@ def load_encoder_decoder(_id):
         elif _id == 97: hidden_dims = [32, 32]
         elif _id == 96: hidden_dims = [32]
 
-        _encoder = convEncoder(in_channels=3, last_size=[5], hidden_dims=[64, 128, 256])
+        if _id in [105]:
+            i_p = 2
+        else:
+            i_p = 3
+        _encoder = convEncoder(in_channels=i_p, last_size=[5], hidden_dims=[64, 128, 256])
         _decoder = mlpDecoder(out_sizes=[2], hidden_dims=hidden_dims)
     
     

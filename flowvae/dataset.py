@@ -266,7 +266,7 @@ class ConditionDataset(Dataset):
                 airfoil_idx = int(idx[0])
                 self.condis_st[airfoil_idx] = i
                 self.ref_index[airfoil_idx] = int(idx[2]) + i  # i_ref
-                self.ref_condis[airfoil_idx] = idx[3 + self.condis_dim: 3 + 2 * self.condis_dim]           # aoa_ref
+                self.ref_condis[airfoil_idx] = self.cond_index[i]           # aoa_ref
             
             self.condis_all_num[airfoil_idx] += 1
         
@@ -398,12 +398,12 @@ class ConditionDataset(Dataset):
         condis  = torch.from_numpy(self.cond_index[self.data_idx[idx]]).float()
         refence     = self.refr[op_idx]
         ref_cond    = self.ref_condis[op_idx]
-        ref_force   = self.ref_force[op_idx]
+        ref_force   = torch.from_numpy(self.ref_force[op_idx]).float()
           
         sample = {'flowfields': force, 'condis': condis, 
                   'index': op_idx, 'code_index': op_cod,
                   'ref': refence, 'ref_aoa': ref_cond, 'ref_force': ref_force}
-        
+        # print(sample['condis'], sample['ref_force'], sample['ref_aoa'])
         return sample
     
     def change_to_force(self, info=''):
@@ -411,37 +411,50 @@ class ConditionDataset(Dataset):
 
         
         '''
-        from flowvae.post import get_force_1d_t
-        from cfdpost.utils import clustcos
+        from cfdpost.utils import clustcos, get_force_1d
         
-        print('Dataset is changed to output force as flowfield...')
-        force_file_path = os.path.join(self.data_base, 'force.npy')
-
-        if os.path.exists(force_file_path):
-            self.all_force = np.load(force_file_path)
-
-        else:
-            forces = torch.zeros(len(self.all_data), 2)
-
-            nn = 201
-            xx = [clustcos(i, nn) for i in range(nn)]
-            all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
-
-            for i, sample in enumerate(self.all_data):
-                geom = np.concatenate((all_x.reshape((1, -1)), sample[0].reshape((1, -1))), axis=0)
-                aoa  = self.all_index[i, 3]
-                profile = sample[1]
-                forces[i] = get_force_1d_t(torch.from_numpy(geom).float(), 
-                                        torch.from_numpy(profile).float(), aoa)
-
-        if info == 'non-dim':
+        if info in ['cltarg', 'aoatarg']:
+            if info == 'cltarg':    
+                forces = np.take(self.all_index, [10, 3], axis=1)    # cd, aoa
+                _repr = 'AoA / Cd'
+            if info == 'aoatarg':   
+                forces = np.take(self.all_index, [10, 9], axis=1)    # cd, cl
+                _repr = 'Cl / Cd'
+                
+            print('Dataset is changed to output force %s as flowfield...' % _repr)
+            # nondim
             param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
-            print('>    non-dimensional parameters for Cl/Cd will be %.2f' % param)
+            print('>    non-dimensional parameters for %s will be %.6f' % (_repr, param))
             forces[:, 0] *= param
-
-            self.all_force = forces.detach().numpy()
-            np.save(force_file_path, self.all_force)
         
+            print('Dataset is changed to output force as flowfield...')
+            self.all_force = forces
+            
+        else:
+            force_file_path = os.path.join(self.data_base, 'force.npy')
+            if os.path.exists(force_file_path):
+                self.all_force = np.load(force_file_path)
+
+            else:
+                forces = np.zeros((len(self.all_data), 2))
+
+                nn = 201
+                xx = [clustcos(i, nn) for i in range(nn)]
+                all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+
+                for i, sample in enumerate(self.all_data):
+                    geom = np.stack((all_x, sample[0]), axis=0).transpose(1, 0)
+                    aoa  = self.all_index[i, 3]
+                    forces[i] = get_force_1d(geom, aoa, sample[1], sample[2] / 1000.)
+
+                if info == 'non-dim':
+                    param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+                    print('>    non-dimensional parameters for Cl/Cd will be %.6f' % param)
+                    forces[:, 0] *= param
+
+                self.all_force = forces
+                np.save(force_file_path, self.all_force)
+
         self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
         self.get_item = self._get_force_item
         self._output_force_flag = True
