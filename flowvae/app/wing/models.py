@@ -18,7 +18,7 @@ from flowvae.base_model.utils import Decoder, Encoder
 from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
-from flowvae.base_model.trans import Transolver
+from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver
 
 device = 'cuda:0'
 
@@ -423,7 +423,48 @@ class WingTransformer(Transolver):
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
+
+class WingEDTransformer(EncoderDecoderTransolver):
+    
+    def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
+        assert h_in >= 5, 'must input reference'
+        super().__init__(3, 2, 5, h_out, n_layers_enc, n_layers_dec, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], add_mesh=0)
+        
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor, **kwargs) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = inputs.permute(0, 2, 3, 1)
+        fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
+        return super()._process(x[:, :, :, :3], fx, x)
+    
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        return [super().forward(inputs, code).permute(0, 3, 1, 2)]
+
+class WingEDTransformer_Mesh(EncoderDecoderTransolver):
+    
+    def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
+        
+        assert h_in >= 5, 'must input reference'
+        super().__init__(3, 2, 5, h_out, n_layers_enc, n_layers_dec, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], add_mesh=3)
+        
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor, **kwargs) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = inputs.permute(0, 2, 3, 1)
+        fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
+        return super()._process(x[:, :, :, :3], fx, x)
+     
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        mesh = inputs[:, :3].permute(0, 2, 3, 1)
+        return [super().forward(inputs, code, mesh=mesh, ref_mesh=mesh).permute(0, 3, 1, 2)]
+
 '''
 
 This part is for airfoil prediction models

@@ -7,6 +7,7 @@ The basic models of transformer-based models
 reference
 ---
 https://github.com/thuml/Transolver/ (Transolver_Structured_Mesh_2D.py)
+https://github.com/jadore801120/attention-is-all-you-need-pytorch/ (encoder - decoder)
 
 '''
 import torch
@@ -19,7 +20,13 @@ from flowvae.base_model.utils import IntpConv
 
 class Physics_Attention(nn.Module):
     
-    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0.):
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0., is_add_mesh=0):
+        '''
+        `is_add_mesh`
+            - `0` -> original
+            - `1 ~ 3` -> add mesh (1 ~ 3 D)
+        
+        '''
         super().__init__()
         inner_dim = dim_head * heads
         self.dim_head = dim_head        # Ch
@@ -32,6 +39,7 @@ class Physics_Attention(nn.Module):
 
         self.in_project_x = nn.Identity()
         self.in_project_fx = nn.Identity()
+        self.is_add_mesh = is_add_mesh  # whether to add 3D mesh as the only `x` to calculate weights
         self._prepare_projection(dim, inner_dim)
 
         self.in_project_slice = nn.Linear(dim_head, slice_num)  # Ch -> M
@@ -47,40 +55,64 @@ class Physics_Attention(nn.Module):
         )
     
     def _prepare_projection(self, dim, inner_dim):
-        self.in_project_x = nn.Linear(dim, inner_dim)
-        self.in_project_fx = nn.Linear(dim, inner_dim)
+        if self.is_add_mesh > 0:
+            self.in_project_x  = nn.Linear(dim + self.is_add_mesh, inner_dim)
+            self.in_project_fx = nn.Linear(dim + self.is_add_mesh, inner_dim)
+        else:
+            self.in_project_x = nn.Linear(dim, inner_dim)
+            self.in_project_fx = nn.Linear(dim, inner_dim)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, x_cross: torch.Tensor) -> torch.Tensor:
 
+        # calculate `x`, `fx` for self attention
         x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
+        slice_token, slice_weights = self._project_token(x_mid, fx_mid, N_)  # B Nh M Ch,   B Nh N M
         
-        slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
-        slice_norm = slice_weights.sum(2)  # B Nh M
-
-        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)    # B Nh M Ch
-        slice_token = slice_token / ((slice_norm + 1e-5)[:, :, :, None].repeat(1, 1, 1, self.dim_head))
+        # calculate `x` for cross attention, the `fx` (value) remains the same for cross attention
+        x_mid_cross, fx_mid_cross, _, _ = self._forward_slice(x_cross)
+        slice_token_cross, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
 
         ### (2) Attention among slice tokens
-        q_slice_token = self.to_q(slice_token)
-        k_slice_token = self.to_k(slice_token)
-        v_slice_token = self.to_v(slice_token)
-        dots = torch.matmul(q_slice_token, k_slice_token.transpose(-1, -2)) * self.scale
-        attn = self.softmax(dots)
-        attn = self.dropout(attn)
-        out_slice_token = torch.matmul(attn, v_slice_token)  # B Nh M Ch
+        out_slice_token = self._calculate_attention(q=slice_token, k=slice_token_cross, v=slice_token_cross)  # B Nh M Ch
 
         ### (3) Deslice
-        out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights) # B Nh N Ch
-        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, *N0_, self.heads * self.dim_head) # B N Nh*Ch
-        return self.to_out(out_x)
+        return self._deslice(out_slice_token, slice_weights, N0_)
     
     def _forward_slice(self, x: torch.Tensor):
+        
         N0_ = x.shape[1:-1]
         N_ = reduce(lambda x, y: x*y, N0_)
         fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
-        x_mid = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
+        x_mid  = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
         return x_mid, fx_mid, N_, N0_
     
+    def _project_token(self, x_mid: torch.Tensor, fx_mid: torch.Tensor, N_: int) -> torch.Tensor:
+        
+        slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
+        slice_norm    = slice_weights.sum(2)  # B Nh M
+        # Nov. 8 2024 -> move non-dimensional for slice here -> the weights used for reconstruct will be different
+        slice_weights = slice_weights / ((slice_norm + 1e-5)[:, :, None, :].repeat(1, 1, N_, 1))
+        
+        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)    # B Nh M Ch
+        
+        return slice_token, slice_weights
+
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        
+        q_slice_token = self.to_q(q)
+        k_slice_token = self.to_k(k)
+        v_slice_token = self.to_v(v)
+        dots = torch.matmul(q_slice_token, k_slice_token.transpose(-1, -2)) * self.scale
+        attn = self.softmax(dots)
+        attn = self.dropout(attn)
+        return torch.matmul(attn, v_slice_token)  # B Nh M Ch
+    
+    def _deslice(self, out_slice_token: torch.Tensor, slice_weights: torch.Tensor, N0_) -> torch.Tensor:
+        
+        out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights) # B Nh N Ch
+        out_x = out_x.permute(0, 2, 1, 3).reshape(-1, *N0_, self.heads * self.dim_head) # B N Nh*Ch
+        return self.to_out(out_x)
+        
     def get_slice_weight(self, x: torch.Tensor) -> torch.Tensor:
         '''
         return:
@@ -170,6 +202,7 @@ class Physics_Attention_3D(Physics_Attention):
         
         return x_mid, fx_mid, N_, N0_
 
+
 class Transolver_block(nn.Module):
     '''
     Transformer block
@@ -197,22 +230,16 @@ class Transolver_block(nn.Module):
             mlp_ratio=4,
             slice_num=32,
             mesh_type='2d',
+            is_add_mesh=0,
             downsampling: nn.Module = nn.Identity(),
             upsampling: nn.Module = nn.Identity()
     ) -> None:
         
         super().__init__()
         
-        self.ln_1 = nn.LayerNorm(hidden_dim)
-        if mesh_type == '2d':
-            self.Attn = Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num)
-        elif mesh_type == '3d':
-            self.Attn = Physics_Attention_3D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num)
-        elif mesh_type == 'point':
-            self.Attn = Physics_Attention(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num)
+        self.ln_1 = nn.LayerNorm(hidden_dim + is_add_mesh)
+        self.Attn = self.fetch_attention_layer(num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh)
+        self.is_add_mesh = is_add_mesh
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False)   # , res=False, act=act
@@ -220,11 +247,23 @@ class Transolver_block(nn.Module):
         self.upsampling = upsampling
         self.dnsampling = downsampling
 
+    def fetch_attention_layer(self, num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh) -> Physics_Attention:
+        if mesh_type == '2d':
+            return Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+                                                         dropout=dropout, slice_num=slice_num)
+        elif mesh_type == '3d':
+            return Physics_Attention_3D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+                                                         dropout=dropout, slice_num=slice_num)
+        elif mesh_type == 'point':
+            return Physics_Attention(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
+                                                         dropout=dropout, slice_num=slice_num, is_add_mesh=is_add_mesh)
+
     def forward(self, fx: torch.Tensor) -> torch.Tensor:
         # upsampling
         fx = self.upsampling(fx)
         # attention
-        fx = self.Attn(self.ln_1(fx)) + fx
+        fx = self.ln_1(fx)
+        fx = self.Attn(fx, fx) + fx[:, :, :, self.is_add_mesh:]
         fx = self.mlp(self.ln_2(fx)) + fx
         # downsampling
         fx = self.dnsampling(fx)
@@ -239,6 +278,32 @@ class Transolver_block(nn.Module):
         
         '''
         return self.Attn.get_slice_weight(self.ln_1(fx))
+
+class Transolver_block_cross(Transolver_block):
+    
+    def __init__(self, num_heads, hidden_dim, dropout = 0, act='gelu', mlp_ratio=4, slice_num=32, mesh_type='2d', is_add_mesh=0, downsampling = nn.Identity(), upsampling = nn.Identity()):
+        
+        super().__init__(num_heads, hidden_dim, dropout, act, mlp_ratio, slice_num, mesh_type, is_add_mesh, downsampling, upsampling)
+        self.ln_1_cross = nn.LayerNorm(hidden_dim)
+        self.ln_1_self  = nn.LayerNorm(hidden_dim)
+        self.cross_Attn = self.fetch_attention_layer(num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh=0)
+        
+        
+    def forward(self, fx: torch.Tensor, enc: torch.Tensor) -> torch.Tensor:
+        # upsampling
+        fx = self.upsampling(fx)
+        # attention
+        fx = self.ln_1(fx)
+        fx = self.Attn(fx, fx) + fx[:, :, :, self.is_add_mesh:]
+        
+        enc = self.ln_1_cross(enc)
+        fx  = self.ln_1_self(fx)
+        fx = self.cross_Attn(fx, enc) + fx
+        
+        fx = self.mlp(self.ln_2(fx)) + fx
+        # downsampling
+        fx = self.dnsampling(fx)
+        return fx
 
 class Downsampling(nn.Module):
     
@@ -270,7 +335,8 @@ class Transolver(nn.Module):
                  slice_num: int = 32,
                  mlp_ratio: int = 4,
                  mesh_type: str = '2d',
-                 u_shape: bool = False,
+                 u_shape: int = False,
+                 add_mesh: int = 0,
                  dropout=0.0,
                  Time_Input=False,
                  act='gelu',
@@ -278,6 +344,12 @@ class Transolver(nn.Module):
                  unified_pos=False,
                  device: str = 'cuda:0'
                  ):
+        '''
+        `u_shape`:
+            - `0` -> original
+            - `1` -> original + down/upsampling
+        
+        '''
         super().__init__()
         self.__name__ = 'Transolver_2D'
         # self.ref = ref
@@ -299,20 +371,22 @@ class Transolver(nn.Module):
         self.slice_num = slice_num
         self.mlp_ratio = mlp_ratio
         self.mesh_type = mesh_type
+        self.add_mesh = add_mesh
 
         if Time_Input:
             self.time_fc = nn.Sequential(nn.Linear(n_hidden, n_hidden), nn.SiLU(), nn.Linear(n_hidden, n_hidden))
             
         
-        if not u_shape:
+        if u_shape == 0:
             self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
                                                         dropout=dropout,
                                                         act=act,
                                                         mlp_ratio=mlp_ratio,
                                                         slice_num=slice_num,
-                                                        mesh_type=mesh_type)
+                                                        mesh_type=mesh_type,
+                                                        is_add_mesh=add_mesh)
                                         for _ in range(n_layers)])
-        else:
+        elif u_shape == 1:
             self.is_compiled = False
             # build the downsampling part of the model
             self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
@@ -361,9 +435,14 @@ class Transolver(nn.Module):
         return pos
 
     def forward(self, *args, **kwargs) -> torch.Tensor:
+        '''
+        B N C -> B N C
+        '''
 
         fx = self._process(*args, **kwargs)
         for block in self.blocks:
+            if self.add_mesh:
+                fx = torch.cat((kwargs['mesh'], fx), dim=-1)
             fx = block(fx)
             
         fx = self.last_layer(fx)
@@ -439,3 +518,57 @@ class Transolver(nn.Module):
             fx = block(fx)
 
         return slice_weights
+    
+class EncoderDecoderTransolver(Transolver):
+    
+    def __init__(self, space_dim = 1, fun_dim = 1, ref_dim = 1, out_dim = 1, n_layers_enc = 3, n_layers_dec = 3, n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, mesh_type = '2d', add_mesh = 0, dropout=0, Time_Input=False, act='gelu', ref=8, unified_pos=False, device = 'cuda:0'):
+        super().__init__(space_dim, fun_dim, out_dim, 0, n_hidden, n_head, slice_num, mlp_ratio, mesh_type, -1, add_mesh, dropout, Time_Input, act, ref, unified_pos, device)
+        
+        self.enc_blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
+                                        dropout=dropout,
+                                        act=act,
+                                        mlp_ratio=mlp_ratio,
+                                        slice_num=slice_num,
+                                        mesh_type=mesh_type,
+                                        is_add_mesh=add_mesh)
+                        for _ in range(n_layers_enc)])
+        # build decoder with cross attention
+        self.dec_blocks = nn.ModuleList([Transolver_block_cross(num_heads=n_head, hidden_dim=n_hidden,
+                                        dropout=dropout,
+                                        act=act,
+                                        mlp_ratio=mlp_ratio,
+                                        slice_num=slice_num,
+                                        mesh_type=mesh_type,
+                                        is_add_mesh=add_mesh)
+                        for _ in range(n_layers_dec)])
+        
+        self.preprocess_ref = mlp(in_features=ref_dim, out_features=n_hidden, hidden_dims=[n_hidden * 2], last_actv=False)
+        
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        
+        fr, fx = self._process(*args, **kwargs)
+        for block in self.enc_blocks:
+            if self.add_mesh > 0:
+                fr = torch.cat((kwargs['mesh_ref'], fr), dim=-1)
+            fr = block(fr)
+        
+        for block in self.dec_blocks:
+            if self.add_mesh > 0:
+                fx = torch.cat((kwargs['mesh'], fx), dim=-1)
+            fx = block(fx, fr)
+        
+        fx = self.last_layer(fx)
+        return fx
+    
+    def _process(self, x: torch.Tensor, fx: torch.Tensor, fr: torch.Tensor, T=None) -> torch.Tensor:
+
+        if fx is not None:
+            fx = torch.cat((x, fx), -1)
+            fx = self.preprocess(fx)
+        else:
+            fx = self.preprocess(x)
+            fx = fx + self.placeholder[None, None, :]
+
+        fr = self.preprocess_ref(fr)
+        
+        return fr, fx
