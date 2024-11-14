@@ -155,7 +155,7 @@ def load_encoder_decoder(_id):
     elif _id > 95 and _id <= 105:
         _model_type = EncoderDecoder
 
-        if _id in [100, 105]: hidden_dims = [128, 256, 128]
+        if _id in [100, 105, 104]: hidden_dims = [128, 256, 128]
         elif _id == 102: hidden_dims = [512, 512, 256]
         elif _id == 101: hidden_dims = [256, 512, 256]
         elif _id == 99: hidden_dims = [64, 128, 64]
@@ -165,6 +165,8 @@ def load_encoder_decoder(_id):
 
         if _id in [105]:
             i_p = 2
+        elif _id in [104]:
+            i_p = 4
         else:
             i_p = 3
         _encoder = convEncoder(in_channels=i_p, last_size=[5], hidden_dims=[64, 128, 256])

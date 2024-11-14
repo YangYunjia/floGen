@@ -392,10 +392,10 @@ class ConditionDataset(Dataset):
         
         if info in ['cltarg', 'aoatarg']:
             if info == 'cltarg':    
-                forces = np.take(self.all_index, [10, 3], axis=1)    # cd, aoa
+                forces = np.take(self.all_index, [10, 3], axis=1)    # cd, aoa (for ma model)
                 _repr = 'AoA / Cd'
             if info == 'aoatarg':   
-                forces = np.take(self.all_index, [10, 9], axis=1)    # cd, cl
+                forces = np.take(self.all_index, [10, 9], axis=1)    # cd, cl (for aoa model)
                 _repr = 'Cl / Cd'
                 
             print('Dataset is changed to output force %s as flowfield...' % _repr)
