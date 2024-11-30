@@ -35,7 +35,7 @@ There are several ways to define the reference area ($S_\text{ref}$) of the kink
 
 ![alt text](_static/images/datasets/wingrefarea.png)
 
-**A brief summary of common kink wing models**
+**A brief summary of typical kink wing models**
 
 | | CRM | DLR-F6 | CHN-T1 | Boeing 787 | Airbus 320
 |-|-|-|-|-|-|
@@ -47,20 +47,21 @@ There are several ways to define the reference area ($S_\text{ref}$) of the kink
 | mean aero chord (tape) |  | 0.126 | | 6.437 | 3.705 (d)
 | taper ratio (tape) | 0.275 | 0.38 | | 0.18 | 0.33 (d)
 | 1/4 chord sweep | 35 deg. | 25.15 deg. | | 32.2 deg. | 25.0 deg.
-| upper surface dihedral angle | 0.8 ~ 6.5 deg. (b) | 5.2 deg. | | 6 deg. | 4.4 deg. (d)
+| LE dihedral angle | 0.8 ~ 6.5 deg. (b) | 5.2 deg. | | 6 deg. | 4.4 deg. (d)
 | fuseluge location | 10% | 12.7% |  | 8% | 12% (d)
 | kink location | 37% | 40.1% | | 37.44% (a) | 39.2% (d)
-| thickness kink location | | | | 38.64% (a) | 38.11% (d)
+| thickness kink location | / | / | | 38.64% (a) | 38.11% (d)
 | root adjustment | 67.2% | 100% | | 88% | 100% (d)
-| t/c root | 0.1542 | | | 0.1449 (a) | 0.1394 (d)
-| t/c break/root | 0.6822 | | | 0.6472 (a) | 0.7166 (d)
-| t/c tip/root | 0.6161 | | | 0.6056 (a) | 
-| inner twist | -5.95 deg. (b)| | | -3 deg. (b) | -3 deg. (b,e)
-| outer twist | -4.91 deg. (b)| | | -3 deg. (b) | -1.16 deg. (b,e)
+| t/c center | 0.1542 | 0.1629 | | 0.1449 (a) | 0.1394 (d)
+| t/c break/center | 0.6822 | 0.7316 |  | 0.6472 (a) | 0.7166 (d)
+| t/c tip/center | 0.6161 | 0.7306 | | 0.6056 (a) | 
+| inner twist (w.r.t center) | -5.95 deg. (b)| -4.11 deg. | | -3 deg. (b) | -3 deg. (b,e)
+| outer twist (w.r.t kink)| -4.91 deg. (b)| -2.03 deg. | | -3 deg. (b) | -1.16 deg. (b,e)
 | reference | [NASA](https://ntrs.nasa.gov/citations/20080034653) | [AIAA DPW2](https://aiaa-dpw.larc.nasa.gov/Workshop2/DLR-F6-geom.html) | | [Piano X](https://www.lissys.uk/samp1/b787.html) | (d) (e)
 
 - (a) originally defined with exposed ratio, transferred to overall ratio
 - (b) should be a distributed value
+    ![alt text](_static/images/datasets/wingdistributed.png)
 - (c) originally wimpress or Airbus, transfered to Piano
 - (d) measured from [figure](https://skybrary.aero/aircraft/a20n)
 - (e) measured from [literature](https://doi.org/10.2514/6.2017-3264)
