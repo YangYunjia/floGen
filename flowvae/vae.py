@@ -21,7 +21,7 @@ import copy
 from typing import List, Callable, NewType, Union, Any, TypeVar, Tuple
 # from torch import tensor as Tensor
 
-Tensor = NewType('Tensor', torch.tensor)
+Tensor = NewType('Tensor', torch.Tensor)
 
 # from utils import get_force
 

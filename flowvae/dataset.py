@@ -222,7 +222,7 @@ class ConditionDataset(Dataset):
         else:
             self.cond_index = np.take(self.all_index, channel_cond, axis=1)
 
-        self.airfoil_num = int(self.all_index[-1][0]) + 1   #   amount of airfoils in dataset
+        self.airfoil_num = len(np.unique(self.all_index[:, 0]))   #   amount of airfoils in dataset
         # print(self.all_index[-1][0])
         self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int32)       #   amount of conditions for each airfoil, a array of (N_airfoil, )
         self.condis_st      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the start index of each airfoil in the serial dataset
@@ -254,13 +254,20 @@ class ConditionDataset(Dataset):
         print(' *** number of airfoils:  %d' % self.airfoil_num)
 
         airfoil_idx = -1
+        last_idx    = -1
+        # if input igroup is not contiuns, it will be replaced with a continues one in running
         for i, idx in enumerate(self.all_index):
-            if idx[0] != airfoil_idx:
-                airfoil_idx = int(idx[0])
+            if idx[0] != last_idx:
+                airfoil_idx += 1
+                last_idx     = int(idx[0])
+
                 self.condis_st[airfoil_idx] = i
                 self.ref_index[airfoil_idx] = int(idx[2]) + i  # i_ref
-                self.ref_condis[airfoil_idx] = self.cond_index[i]           # aoa_ref
+                self.ref_condis[airfoil_idx] = self.cond_index[int(idx[2]) + i]           # aoa_ref
             
+            if idx[0] != airfoil_idx:
+                self.all_index[i, 0] = airfoil_idx
+                
             self.condis_all_num[airfoil_idx] += 1
         
         self.ref_condis = torch.from_numpy(self.ref_condis).float()
@@ -435,6 +442,8 @@ class ConditionDataset(Dataset):
         self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
         self.get_item = self._get_force_item
         self._output_force_flag = True
+        
+        return param
 
     '''
     def change_to_force(self, info=''):
