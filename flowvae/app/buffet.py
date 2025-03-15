@@ -50,7 +50,11 @@ def first_argmin(l):
 
 class Ploter():
 
-    def __init__(self, name: str = None, symbol: str = 'o', color: str = 'r', ref_aoa: float = 0.0, instant_plot: bool = False) -> None:
+    def __init__(self, ax = None, name: str = None, symbol: str = 'o', color: str = 'r', ref_aoa: float = 0.0, instant_plot: bool = False) -> None:
+        if ax is None:
+            _, self.ax = plt.subplots()
+        else:
+            self.ax = ax
         self.name = name
         self.symbol = symbol
         self.color = color
@@ -901,15 +905,15 @@ class Buffet():
         if p is not None:
             hl_aoa = np.arange(seri.AoA[0], seri.AoA[-1]+0.4, 0.01)
             aoas = np.array(seri.AoA)
-            plt.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name) #!
-            # plt.plot(aoas - p.ref_aoa, seri.X1, p.symbol, c=p.color, label=p.name)
-            # plt.plot(aoas[ll['i_lb']:ll['i_ub']+1] - p.ref_aoa, seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name)
-            plt.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color) #!
-            plt.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], 
+            p.ax.plot(aoas - p.ref_aoa, seri.Cl, p.symbol, c=p.color, label=p.name) #!
+            # p.ax.plot(aoas - p.ref_aoa, seri.X1, p.symbol, c=p.color, label=p.name)
+            # p.ax.plot(aoas[ll['i_lb']:ll['i_ub']+1] - p.ref_aoa, seri.Cl[ll['i_lb']:ll['i_ub']+1], '-', c=p.color, label=p.name)
+            p.ax.plot(hl_aoa - p.ref_aoa, f_cl_aoa_all(hl_aoa), '--', c=p.color) #!
+            p.ax.plot([-2 - p.ref_aoa, bufs[1,0] - p.ref_aoa], 
                     [ll['slope'] * (-2 - self.paras['daoa']) + ll['intercept'], ll['slope'] * (bufs[1,0] - self.paras['daoa']) + ll['intercept']], 
                     '-.', c=p.color, lw=0.8)
-            plt.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color) #!
-            plt.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
+            p.ax.plot([AoA_sep - p.ref_aoa], f_cl_aoa_all(AoA_sep), 's', c=p.color) #!
+            p.ax.plot([bufs[1,0] - p.ref_aoa], [bufs[1,1]], '^', c=p.color)
             if p.instant_plot:
                 plt.show() 
 
@@ -1059,10 +1063,10 @@ class Buffet():
             print('buffet not found')
         
         if p is not None:
-            plt.plot(seri.AoA, seri.series[self.paras['dfcri']], 'o', c=p.color)
-            plt.plot(AoAGrid, fcria(AoAGrid), '-', c='gray')
-            plt.plot(AoAGrid[1:len(values)+1], values, '--', c=p.color)
-            plt.show()
+            p.ax.plot(seri.AoA, seri.series[self.paras['dfcri']], 'o', c=p.color)
+            p.ax.plot(AoAGrid, fcria(AoAGrid), '-', c='gray')
+            p.ax.plot(AoAGrid[1:len(values)+1], values, '--', c=p.color)
+            p.ax.show()
         
         self.process_values = values
         return (aoa_buf, cl_buf)

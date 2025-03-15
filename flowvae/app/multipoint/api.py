@@ -118,7 +118,7 @@ def predict_field(vae_model, flags, ref_data, aoa_real, aoa_ref, mu1, log_var1, 
         samp1 = samp1 + ref_data.repeat([n_samples] + [1 for _ in range(ref_data.dim()-1)])
     return samp1
     
-def get_features_series(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, is_uq):
+def get_features_series(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, is_uq, nondim_cf = 1.):
     '''
     paras:
     ---
@@ -138,7 +138,7 @@ def get_features_series(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, i
     _geom = geom.cpu().detach().numpy()
     _recons = torch.mean(recons, dim=0).squeeze().cpu().detach().numpy()
     _cp = _recons[0]
-    _cf = _recons[1]
+    _cf = _recons[1] / nondim_cf
     
     fF.setlimdata(_geom[0], _geom[1], _cp, _cf)   # x, y, Cp, Cf
     # fF.locate_basic()
@@ -159,7 +159,7 @@ def get_features_series(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, i
         # only include Cp to cal. force
         # print(recons.shape, aoa_real.shape)
         # clcd = get_force_1d(geom, torch.mean(recons, dim=0)[0], aoa_real).cpu().detach().numpy()
-        clcd = get_force_1d(_geom, aoa_real, _cp, _cf)
+        clcd = get_force_1d(_geom.transpose(1, 0), aoa_real, _cp, _cf)
         
         returns['cl'] = clcd[1]
         returns['cd'] = clcd[0]
@@ -174,6 +174,12 @@ def get_features_series(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, i
         returns['cd'] = clcd[:, 0]
 
     return returns
+
+def get_features_series0(recons: Tensor, geom: Tensor, aoa_real, fF, n_samples, is_uq, nondim_cf = 1.):
+    
+    returns = get_features_series(recons, geom, aoa_real, fF, n_samples, is_uq, nondim_cf)
+    
+    return returns['cl'], returns['cd'], returns['auxs'][0], returns['auxs'][1]
 
 def predict_series(vae_model: frameVAE, flags: dict, ys: np.array, condition: dict = None, ocs: np.ndarray = None, ref_oc: float = 0.0, aoas_real: np.ndarray = None,
                     n_samples : int = 1, device: str = 'cpu', isforce: bool = True, ref_force: Tensor = None, isextrachannel: float = False):
