@@ -24,13 +24,16 @@ from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
 
-def nondim_index_values(index):
+def nondim_index_values(model_version: str = 'aoa'):
     '''
     get non-dimensionalize index values (according to minmax of Dataset No. 17)
+    return the range_value and min_value
     
     paras:
     ===
-    - `index`: normal order
+    - `model_version`: 
+        - `aoa`: first two index are: aoa, mach
+        - `cl`: first two index are: mach, cl
     '''
     range_values = np.array([4.98356865e+00, 1.29940258e-01, 3.49481674e+01, 2.99908783e+00, 3.99400411e+00, 7.98910782e-01, 5.99364106e+00, 1.99938913e-01,
                              5.62159090e-02, 2.37829522e-01, 1.71319984e-01, 3.83469554e-01, 7.06469046e-01, 1.10903631e+00, 1.39157365e+00, 1.18536700e+00,
@@ -41,7 +44,11 @@ def nondim_index_values(index):
                             -3.00000000e-01,-3.23770400e-03,-4.19250390e-02,-1.73883091e-01,-2.25613883e-01,-2.98053582e-01,-3.45981178e-01,-4.43266647e-01,
                             -3.66290589e-01,-3.13444839e-01,-5.00000000e-01,-1.67536969e-01,-8.25543820e-02])
     
-    return (index - min_values) / range_values
+    if model_version in ['cl']:
+        range_values[0:2] = [1.29940258e-01, 9.78320385e-01]
+        min_values[0:2]   = [7.20032034e-01, -4.35158583e-02]
+    
+    return range_values, min_values
 
 def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
     
@@ -56,8 +63,20 @@ def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tenso
 
 class Wing_api():
     
-    def __init__(self, saves_folder: str = None, device: str = 'default') -> None:
+    version_folder = {
+        'aoa':  ['0330_25_Run3', 'modelcl21_1658_Run0_cl', 'modelcl21_1658_Run0'],  
+        'cl':   ['0330_25_Run3', '0420_1082_Run2', '0328_589_Run1']
+    }
+    
+    def __init__(self, saves_folder: str = None, model_version: str = 'aoa', device: str = 'default') -> None:
+        '''
         
+        paras:
+        ===
+        - `model_version`: 
+            - `aoa`: use aoa as input first two index are: aoa, mach
+            - `cl`: use cl as input first two index are: mach, cl
+        '''
         if device == 'default':
             if torch.cuda.is_available():
                 _device = 'cuda:0'
@@ -79,18 +98,20 @@ class Wing_api():
         
         # load airfoil prediction model
         self.model_2d = models.bresnetunetmodel(h_e=[16, 32, 64], h_d1=[64, 128], h_d2=[512, 256, 128, 64], h_out=2, h_in=1, device=_device)
-        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, '0330_25_Run3'), device=_device)
+        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][0]), device=_device)
         
         # load SLD prediction model
         self.model_sld = models.triinput_simplemodel1(h_e1=[32, 32], h_e2=[16, 16], h_e3=[16], h_d1=[64, 101], nt=101)
-        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0_cl'), device=_device)
+        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, self.version_folder[model_version][1]), device=_device)
         
         # load airfoil-to-wing model
         self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
                                   h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=_device)
-        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, 'modelcl21_1658_Run0'), device=_device)
+        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][2]), device=_device)
         
         self.info = {}
+        self.nondimension_coefs = nondim_index_values(model_version=model_version)
+        self.model_version = model_version
     
     @staticmethod
     def display_sectional_airfoil(ax, inputs: np.ndarray, write_to_file: str = None):
@@ -172,7 +193,7 @@ class Wing_api():
         wg.read_formatted_geometry(inputs, ftype=1)
         wg.reconstruct_surface_grids(nx=161, nzs=[101])
         deltaindex, nondimgeom = wg.get_normalized_sectional_geom()
-        nondim_inputs = nondim_index_values(inputs)
+        nondim_inputs = (inputs - self.nondimension_coefs[1]) / self.nondimension_coefs[0]
         wing_paras = torch.from_numpy(nondim_inputs).unsqueeze(0).float().to(self.device)
         
         if real_sld is None:
@@ -183,7 +204,7 @@ class Wing_api():
             sld_3d = torch.from_numpy(real_sld).unsqueeze(0).float().to(self.device)
         
         # swept theory transfer of OC and Geom
-        ma3d = inputs[1]
+        ma3d = inputs[0 if self.model_version in ['cl'] else 1]
         re3d = 6.429
         
         if self.sa_type > 0.:
@@ -224,6 +245,42 @@ class Wing_api():
         
         wg.read_formatted_surface(geometry=None, data=output_3d[0].detach().cpu().numpy(), isnormed=True)
         wg.lift_distribution()
+        
+        if self.model_version in ['cl']:
+            # when input is lift coefficient, the surface distributions are first generated by the model
+            # to get the angle of attack, it is searched in -2 to 16 deg., a CL is calculated from the 
+            # surface distribution and AOA, to match the given CL
+            
+            aoa_range = [-2, 16]
+            aoa0 = aoa_range[0]
+            aoa1 = aoa_range[1]
+            daoa = (aoa1 - aoa0) / 2.
+            cltarg = inputs[1]
+            while daoa > 0.01:
+                aoas = np.linspace(aoa0, aoa1, 3)
+                cl_left = -10.
+                for i in range(len(aoas)):
+                    wg.aoa = aoas[i]
+                    wg.lift_distribution()
+                    cl_right = wg.cl[0]
+                    if i > 0 and (cl_left - cltarg) * (cl_right - cltarg) < 0:
+                        aoa0 = aoas[i-1]
+                        aoa1 = aoas[i]
+                        daoa = (aoa1 - aoa0) / 2.
+                        break
+                    cl_left = cl_right
+                else:
+                    raise RuntimeError('not found aoa in -2.0 ~ 16.0')
+
+            # another method is use the total force and given lift to calculate drag
+            # from triangle relation. It has a little larger error.
+            
+            # wg.aoa = 0
+            # wg.lift_distribution()
+            # print(wg.cl)
+            # calc_f = (wg.cl[0]**2 + wg.cl[1]**2)**0.5
+            # wg.aoa = (np.arctan2(wg.cl[1], wg.cl[0]) - np.arccos(inputs[1] / calc_f)) / np.pi * 180
+            # wg.lift_distribution()
         
         return wg
     

@@ -327,6 +327,10 @@ class ModelOperator():
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
     def split_dataset(self, recover, train_r=0.9, test_r=0.0):
+        '''
+        Do not use test_r here! 
+        
+        '''
         self.dataset_size = {}
 
         if train_r >= 1.0:
