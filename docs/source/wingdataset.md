@@ -228,7 +228,7 @@ The dataset has been used in:
 **Citation:**
 
 ```text
-Yang, Yunjia, Runze Li, Yufei Zhang, Lu Lu, and Haixin Chen. 2024. "Rapid aerodynamic prediction of swept wings via physics-embedded transfer learning". https://arxiv.org/abs/2409.12711
+Yang, Yunjia, Runze Li, Yufei Zhang, Lu Lu, and Haixin Chen. 2024. "Rapid aerodynamic prediction of swept wings via physics-embedded transfer learning". AIAA J, 2024
 ```
 ### Sampling
 
@@ -352,4 +352,66 @@ The original mesh grid version (with 61 spanwise points) can be found in `wingcl
 
 ## B-3. Kink Wings
 
+This dataset contains kink wings with different airfoil profile, planform parameter (with curved thickness, camber, dihedral, and twist spanwise distribution), and operating conditions (incl. Angle of Attack and freestream Mach number). A total of ## wings are available now.
+
+The dataset has been used in:
+
+**Citation:**
+
+```text
+##
+```
+
+### Sampling
+
+#### sectional airfoil profile
+
+The CST coefficients of sectional airfoil are from dataset A-3, which contains 1420 airfoils with various performance. CST coefficients determine the thickness and camber distribution along streamwise. When using these CSTs to generate wings, at each spanwise location a maximum thickness and maximum camber is prescribed by *spanwise thickness / camber distribution*.
+
+The normalized thickness and camber line are below:
+
+![B3 profile](_static/images/datasets/airfoila3thick.png)
+#### wing geometry
+
+Each airfoil is used as the reference sectional airfoil to construct two wings. 
+
+- The projection shape of the wing is by first construct the trapezoidal part (marked by right slash lines) of the wing and then determin the kink and extra surface between root and kink.
+
+    -  The trapezoidal part is determined with the sweep angle, aspect ratio, and tapper ratio. 
+    - The extra surface is determined with the root adjustment ratio and kink location. 
+    - The fuselage line is fixed at 10%, and **only the outer part** of the wing (marked by light blue) are simulated.
+
+- The dihedral of the wing (on y axis) is distributed, and controled by two points at the kink and tip. It is linear between root and kink with the angle $\tan(\Gamma_\text{LE,kink}) = y_\text{LE,kink}/z_\text{kink}$, the $y_\text{LE, tip}$ at tip is decided with $\Gamma_\text{LE,tip}$, and a Cubic Spline is constructed with kink, tip point and the slope at kink.
+
+- The sectional airfoil, as mentioned above, has the same CSTs spanwise, and spanwise-distributed max. thickness ($t$) and max. camber ($\delta$) are decided by Cubic Spline the link the control points (CPs).
+
+    - The thickness has 4 CPs spanwise, locates at the root, kink, midpoint of kink and tip, and tip. The max. thickness values at these 4 CPs are $t_\text{root}$, $r_{t,2}\cdot t_\text{root}$, $r_{t,2}r_{t,3}\cdot t_\text{root}$, $r_{t,2}r_{t,3}r_{t,4}\cdot t_\text{root}$. 
+    - The camber has 5 CPs, with the extra one locates at the midpoint of root and kink. The sectional airfoil at the CP #3 has the same camber line of the reference airfoil. The camber line of the airfoil at CP #0, #1, #2, and #4 are linearly scaled with factors $r_{\delta,1}r_{\delta,2}$, $r_{\delta,2}$, and $r_{\delta,4}$.
+
+- The twist angle of the wing also decided by 5 CPs. With CP #0 being zero, the twist angle at outer CPs are accumulated.
+
+![alt text](_static/images/datasets/kinkwingparas.png)
+
+The wing planform parameters are randomly sampled from the range below:
+
+|Parameter	|Symbol	|lower bound	|upper bound|
+|-|-|-|-|
+| sweep angle	|$\Lambda_\text{LE}$	|25°	|40°|
+| dihedral angle (tip)	|$\Gamma_\text{LE, tip}$	|4°	|6°|
+| dihedral angle (kink)	|$\Gamma_\text{LE, kink}$	|0.5°	|6°|
+| aspect ratio (trape.)	|$AR$	|8	| 11 |
+| tapper ratio (trape.)	|$TR$	|0.15	| 0.40 |
+| kink location | $\eta_\text{k}$ | 36% | 42% |
+| root adjustment | $\kappa_\text{root}$ | 50% | 110% |
+| root rela. thickness | $t_\text{root}$ | 0.14 | 0.17
+| spanwise thick. CP2 | $r_\text{t,2}$ | 0.60 | 0.70 
+| spanwise thick. CP3 | $r_\text{t,3}$ | 0.90 | 0.98 
+| spanwise thick. CP4 | $r_\text{t,4}$ | 0.92 | 1.00 
+| spanwise camber CP1 | $r_{\delta,1}$ | 0.3 | 0.8 
+| spanwise camber CP2 | $r_{\delta,2}$ | 0.5 | 1.0 
+| spanwise camber CP4 | $r_{\delta,4}$ | 0.0 | 0.8 
+| twist CP1	|$\alpha_\text{twist,1}$	|-4°	|-2°|
+| twist CP2	|$\alpha_\text{twist,2}$	|-4°	|-2°|
+| twist CP3	|$\alpha_\text{twist,3}$	|-3°	|-1°|
+| twist CP4	|$\alpha_\text{twist,4}$	|-3°	|-1°|
 
