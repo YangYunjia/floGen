@@ -388,14 +388,14 @@ class ounetedmodel(basiconetmodel, Unet):
 class ounetbedmodel(basiconetmodel, BranchUnet):
 
     def __init__(self, h_e, h_e1, h_e2, h_d, h_lstm=None, de_type='prod', coder_type='onet', coder_kernel=1, nt=101, h_out=1, h_in=1, 
-                 last_size=6, decoder_input_size=None, device='cuda:0'):
+                 last_size=6, decoder_layer_sizes=[11, 21, 41, 81, 161, 321], nn_out=321, device='cuda:0'):
         
         encoder = ResnetEncoder_Unet(in_channels=h_in, last_size=[nt, last_size], hidden_dims=h_e, strides=(1,2))
         decoders = []
         for i in range(h_out):
             decoders.append(ResnetDecoder_Unet(out_channels=1, last_size=[nt, last_size], hidden_dims=h_d, 
-                                          sizes=[[101,11],[101,21],[101,41],[101,81],[101,161],[101,321]],
-                                          output_size=[nt, 321], encoder_hidden_dims=[h_e[-i] for i in range(1, len(h_e)+1)]+[h_in]))
+                                          sizes=[[nt,nn] for nn in decoder_layer_sizes],
+                                          output_size=[nt, nn_out], encoder_hidden_dims=[h_e[-i] for i in range(1, len(h_e)+1)]+[h_in]))
         
         BranchUnet.__init__(self, latent_dim=0, encoder=encoder, decoder=decoders, code_mode=de_type, decoder_input_layer=nn.Identity(), device=device)
 
