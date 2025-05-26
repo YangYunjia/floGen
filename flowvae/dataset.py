@@ -27,13 +27,17 @@ class FlowDataset(Dataset):
     
     
     '''
+    default_split_paras = {
+        'method': 'load',   # overall selection methods (load, random, all)
+        'nTest':  0,        # overall test amounts
+        'isLastTest': True,
+        'indexFileNum': -1, # Number of the index file
+        'indexFileName': None,
+    }
 
     def __init__(self, file_name: Union[str, List[str]], 
-                 c_mtd: str = 'fix', 
-                 c_no: int = -1, 
-                 test: int = 0, 
+                 split_paras: dict = {},
                  data_base: str = 'data', 
-                 is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
                  aux_channel_take: List[int] = None,
@@ -44,13 +48,14 @@ class FlowDataset(Dataset):
         
         super().__init__()
 
+        
+        # input and output data (swapaxis, flatten, take channel)
         self.data_base = data_base
         self.flatten = flatten
         
         if isinstance(file_name, str):
             self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
-            self.all_aux = None
             self.fname = file_name
         elif isinstance(file_name, List):
             self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
@@ -77,7 +82,13 @@ class FlowDataset(Dataset):
             self.inputs = self.all_input
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
-            
+        
+        self.inputs = torch.from_numpy(self.inputs).float()
+        if unsqueeze is not None:
+            self.inputs = self.inputs.unsqueeze(unsqueeze)
+        self.output = torch.from_numpy(self.output).float()
+        
+        # aux data
         if isinstance(file_name, List) and len(file_name) > 2:
             self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
             if aux_channel_take is None:
@@ -89,14 +100,39 @@ class FlowDataset(Dataset):
             self.all_aux = None
             self.auxs    = None
 
-        self.inputs = torch.from_numpy(self.inputs).float()
-        if unsqueeze is not None:
-            self.inputs = self.inputs.unsqueeze(unsqueeze)
-        self.output = torch.from_numpy(self.output).float()
+        # select training and testing dataset
+        # decide default parameters
+        self._split_paras = {}
+        for k in self.__class__.default_split_paras.keys():
+            self._split_paras[k] = split_paras[k] if k in split_paras.keys() else self.__class__.default_split_paras[k]
+        if self._split_paras['indexFileName'] is None:
+            self._split_paras['indexFileName'] = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % self._split_paras['indexFileNum'])
+        
+        # decide which array contains the index information
+        self.all_index = [self.all_output, self.all_input, self.all_aux][marker_idx]
+        
+        self.data_idx = []
+        self._select_index()
 
-        self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
+    def _load_index_file(self):
+        
+        fname = self._split_paras['indexFileName']
+        
+        assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
+        self.data_idx = np.loadtxt(fname, dtype=np.int32)
+            
+        print(f'> load flow field index from {fname}')
+        print(f'> total size of data:')
+        print(f'>   inputs -> {self.inputs.shape}')
+        print(f'>   output -> {self.output.shape}')
+        if self.auxs is not None:
+            print(f'>   auxs   -> {self.auxs.shape}')
+            
+    def _save_data_idx(self):
+        assert not os.path.exists(self._split_paras['indexFileName']), ' *** ERROR *** Data index file \'%s\' exist' % self._split_paras['indexFileName']
+        np.savetxt(self._split_paras['indexFileName'], self.data_idx, fmt='%d')
 
-    def _select_index(self, c_mtd, test, no, is_last, fname):
+    def _select_index(self):
         '''
         select among the conditions of each airfoil for training
         '''
@@ -104,35 +140,27 @@ class FlowDataset(Dataset):
 
         print('# selecting data from data.npy #')
 
-        if c_mtd == 'load':
-            if fname is None:
-                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
-            
-            assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
-            self.data_idx = np.loadtxt(fname, dtype=np.int32)
-                
-            print(f'> load flow field index from {fname}')
-            print(f'> total size of data:')
-            print(f'>   inputs -> {self.inputs.shape}')
-            print(f'>   output -> {self.output.shape}')
-            if self.auxs is not None:
-                print(f'>   auxs   -> {self.auxs.shape}')
-            
-        elif c_mtd == 'all':
-            self.data_idx = list(range(self.all_output.shape[0]))
-        else:
-                
-            if is_last:
-                self.data_idx = list(range(self.all_output.shape[0] - test))
-            else:
-                self.data_idx = random.sample(range(self.all_output.shape[0]), self.all_output.shape[0] - test)
+        if self._split_paras['method'] == 'load':
+            self._load_index_file()
 
-            self.save_data_idx(no)
+        else:
+            
+            if self._split_paras['method'] == 'all':
+                self.data_idx = list(range(self.all_output.shape[0]))
+            
+            elif self._split_paras['method'] == 'random':
+                    
+                if self._split_paras['isLastTest']:
+                    self.data_idx = list(range(self.all_output.shape[0] - self._split_paras['nTest']))
+                else:
+                    self.data_idx = random.sample(range(self.all_output.shape[0]), self.all_output.shape[0] - self._split_paras['nTest'])
+
+            else:
+                raise KeyError(f"split method {self._split_paras['method']} not available")
+            
+            self._save_data_idx()
 
         self.dataset_size = len(self.data_idx)
-
-    def save_data_idx(self, no):
-        np.savetxt(os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no), self.data_idx, fmt='%d')
 
     def normalize(self) -> None:
         self.inputs = self.inputs.detach().numpy()
