@@ -18,7 +18,65 @@ from functools import reduce
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.utils import IntpConv
 
-class Physics_Attention(nn.Module):
+class Attention(nn.Module):
+    
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+        '''
+        B M C -> B M C
+        M: patch number (for ViT = Mh x Mw patch number at h & w)
+        C: channel for each patch (dim)
+        
+        '''
+        
+        super().__init__()
+        
+        inner_dim = dim_head * heads
+        self.dim_head = dim_head        # Ch
+        self.heads = heads              # Nh
+        
+        self.scale = dim_head ** -0.5
+        self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+        
+        self.norm = nn.LayerNorm(dim)
+
+        #  from input channel (C) to multi-head and channel in each head
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(dim, inner_dim, bias=False)
+        
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor, x_cross: torch.Tensor) -> torch.Tensor:
+        x       = self.norm(x)    # B M C
+        x_cross = self.norm(x_cross)    # B M C
+        
+        M_ = x.shape[1]
+        # B M C -> B M (Nh Ch)
+        # q, k, v = [ly(x).reshape(-1, M_, self.heads, self.dim_head).permute(0, 2, 1, 3) for ly in [self.to_q, self.to_k, self.to_v]]
+        q = self.to_q(x).reshape(-1, M_, self.heads, self.dim_head).permute(0, 2, 1, 3)
+        k = self.to_k(x_cross).reshape(-1, M_, self.heads, self.dim_head).permute(0, 2, 1, 3)
+        v = self.to_v(x_cross).reshape(-1, M_, self.heads, self.dim_head).permute(0, 2, 1, 3)
+        
+        out = self._calculate_attention(q, k, v).permute(0, 2, 1, 3).reshape(-1, M_, self.heads * self.dim_head)
+
+        return self.to_out(out)
+    
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        '''
+        B Nh M Ch -> B Nh M Ch
+        
+        '''
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        attn = self.softmax(dots)
+        attn = self.dropout(attn)
+        return torch.matmul(attn, v)  # B Nh M Ch
+
+class Physics_Attention(Attention):
     
     def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0., is_add_mesh=0):
         '''
@@ -27,16 +85,13 @@ class Physics_Attention(nn.Module):
             - `1 ~ 3` -> add mesh (1 ~ 3 D)
         
         '''
-        super().__init__()
+        super().__init__(dim, heads, dim_head, dropout)
+        
         inner_dim = dim_head * heads
-        self.dim_head = dim_head        # Ch
-        self.heads = heads              # Nh
         self.slice_num = slice_num      # M
-        self.scale = dim_head ** -0.5
-        self.softmax = nn.Softmax(dim=-1)
-        self.dropout = nn.Dropout(dropout)
         self.temperature = nn.Parameter(torch.ones([1, heads, 1, 1]) * 0.5)
 
+        # mapping bet. physical data to slices
         self.in_project_x = nn.Identity()
         self.in_project_fx = nn.Identity()
         self.is_add_mesh = is_add_mesh  # whether to add 3D mesh as the only `x` to calculate weights
@@ -45,14 +100,11 @@ class Physics_Attention(nn.Module):
         self.in_project_slice = nn.Linear(dim_head, slice_num)  # Ch -> M
         for l in [self.in_project_slice]:
             torch.nn.init.orthogonal_(l.weight)  # use a principled initialization
+        
+        # the heads are difference in getting projection weights and values to be projected
         self.to_q = nn.Linear(dim_head, dim_head, bias=False)
         self.to_k = nn.Linear(dim_head, dim_head, bias=False)
         self.to_v = nn.Linear(dim_head, dim_head, bias=False)
-
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        )
     
     def _prepare_projection(self, dim, inner_dim):
         if self.is_add_mesh > 0:
@@ -64,8 +116,8 @@ class Physics_Attention(nn.Module):
     
     def forward(self, x: torch.Tensor, x_cross: torch.Tensor) -> torch.Tensor:
 
-        # calculate `x`, `fx` for self attention
-        x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
+        # calculate slices `x`, `fx` for self attention
+        x_mid, fx_mid, N_, N0_ = self._forward_slice(x) 
         slice_token, slice_weights = self._project_token(x_mid, fx_mid, N_)  # B Nh M Ch,   B Nh N M
         
         # calculate `x` for cross attention, the `fx` (value) remains the same for cross attention
@@ -73,21 +125,50 @@ class Physics_Attention(nn.Module):
         slice_token_cross, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
 
         ### (2) Attention among slice tokens
-        out_slice_token = self._calculate_attention(q=slice_token, k=slice_token_cross, v=slice_token_cross)  # B Nh M Ch
+        q = self.to_q(slice_token)
+        k = self.to_k(slice_token_cross)
+        v = self.to_v(slice_token_cross)
+        out_slice_token = self._calculate_attention(q, k, v)  # B Nh M Ch
 
         ### (3) Deslice
         return self._deslice(out_slice_token, slice_weights, N0_)
     
     def _forward_slice(self, x: torch.Tensor):
+        '''
+        expand input channel (C -> Nh x Ch), split to several head
+        the output x_mid and fx_mid are actully the pre-version WEIGHT of each node point(N) to each slice(M) at each head(Nh)
+                                                                                                           ^
+                                                                                        the slice is expanded later from here(Ch) to slices(M)
+        (two parts: x -> projection weights, and fx -> value)
+        
+        ### inputs:
+            tensor:  B x (...) x C
+            |
+            expand (mlp, conv. etc. to (...)) -> then flatten (...) to N
+            |
+            tensor:  B x N x (Nh x Ch)
+            |
+            tensor:  B x Nh | N x Ch (Nh = each head) 
+        
+        '''
         
         N0_ = x.shape[1:-1]
         N_ = reduce(lambda x, y: x*y, N0_)
-        fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B H N C
-        x_mid  = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B H N C
+        fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
+        x_mid  = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B Nh N Ch
         return x_mid, fx_mid, N_, N0_
     
     def _project_token(self, x_mid: torch.Tensor, fx_mid: torch.Tensor, N_: int) -> torch.Tensor:
+        '''
+        project from physical mesh data (N) to several slices (M)
         
+        weights: N -> M (softmax)
+        
+                                     B x Nh x N x M
+        projection: B x Nh x N x Ch        ->         B x Nh x M x Ch
+         
+        
+        '''
         slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
         slice_norm    = slice_weights.sum(2)  # B Nh M
         # Nov. 8 2024 -> move non-dimensional for slice here -> the weights used for reconstruct will be different
@@ -96,16 +177,6 @@ class Physics_Attention(nn.Module):
         slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)    # B Nh M Ch
         
         return slice_token, slice_weights
-
-    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        
-        q_slice_token = self.to_q(q)
-        k_slice_token = self.to_k(k)
-        v_slice_token = self.to_v(v)
-        dots = torch.matmul(q_slice_token, k_slice_token.transpose(-1, -2)) * self.scale
-        attn = self.softmax(dots)
-        attn = self.dropout(attn)
-        return torch.matmul(attn, v_slice_token)  # B Nh M Ch
     
     def _deslice(self, out_slice_token: torch.Tensor, slice_weights: torch.Tensor, N0_) -> torch.Tensor:
         
@@ -202,7 +273,6 @@ class Physics_Attention_3D(Physics_Attention):
         
         return x_mid, fx_mid, N_, N0_
 
-
 class Transolver_block(nn.Module):
     '''
     Transformer block
@@ -247,23 +317,23 @@ class Transolver_block(nn.Module):
         self.upsampling = upsampling
         self.dnsampling = downsampling
 
-    def fetch_attention_layer(self, num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh) -> Physics_Attention:
+    def fetch_attention_layer(self, num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh) -> Attention:
+        dim_head = hidden_dim // num_heads
         if mesh_type == '2d':
-            return Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num)
+            return Physics_Attention_2D(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout, slice_num=slice_num)
         elif mesh_type == '3d':
-            return Physics_Attention_3D(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num)
+            return Physics_Attention_3D(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout, slice_num=slice_num)
         elif mesh_type == 'point':
-            return Physics_Attention(hidden_dim, heads=num_heads, dim_head=hidden_dim // num_heads,
-                                                         dropout=dropout, slice_num=slice_num, is_add_mesh=is_add_mesh)
+            return Physics_Attention(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout, slice_num=slice_num, is_add_mesh=is_add_mesh)
+        elif mesh_type == 'ViT':
+            return Attention(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout)
 
     def forward(self, fx: torch.Tensor) -> torch.Tensor:
         # upsampling
         fx = self.upsampling(fx)
         # attention
         fx = self.ln_1(fx)
-        fx = self.Attn(fx, fx) + fx[:, :, :, self.is_add_mesh:]
+        fx = self.Attn(fx, fx) + fx[..., self.is_add_mesh:]
         fx = self.mlp(self.ln_2(fx)) + fx
         # downsampling
         fx = self.dnsampling(fx)
@@ -323,6 +393,7 @@ class Upsampling(nn.Module):
         result = torch.nn.functional.interpolate(x.permute(0, 3, 1, 2), size=self.size, mode='bilinear', align_corners=False)
         
         return result.permute(0, 2, 3, 1)
+
 
 class Transolver(nn.Module):
     def __init__(self,
@@ -572,3 +643,85 @@ class EncoderDecoderTransolver(Transolver):
         fr = self.preprocess_ref(fr)
         
         return fr, fx
+    
+
+def pair(t):
+    return t if isinstance(t, tuple) else (t, t)
+
+def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32):
+    
+    y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
+    assert (dim % 4) == 0, "feature dimension must be multiple of 4 for sincos emb"
+    omega = torch.arange(dim // 4) / (dim // 4 - 1)
+    omega = 1.0 / (temperature ** omega)
+
+    y = y.flatten()[:, None] * omega[None, :]
+    x = x.flatten()[:, None] * omega[None, :]
+    pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim=1)
+    return pe.type(dtype)
+
+class ViT(nn.Module):
+    
+    def __init__(self,
+                 image_size,
+                 patch_size,
+                 fun_dim: int = 3,
+                 out_dim: int = 1,
+                 n_layers: int = 5,
+                 n_hidden: int = 256,
+                 n_head: int = 8,
+                 mlp_ratio: int = 4,
+                 add_mesh: int = 0,
+                 dropout=0.0,
+                 act='gelu',
+                 device: str = 'cuda:0'
+                 ):
+
+        super().__init__()
+        image_height, image_width = pair(image_size)
+        patch_height, patch_width = pair(patch_size)
+
+        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+
+        patch_dim = fun_dim * patch_height * patch_width
+        
+        self.ph, self.pw, self.nh, self.nw = patch_height, patch_width, image_height // patch_height, image_width // patch_width
+
+        self.to_patch_embedding = nn.Sequential(
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, n_hidden),
+            nn.LayerNorm(n_hidden),
+        )
+
+        self.pos_embedding = posemb_sincos_2d(h = self.nh, w = self.nw, dim = n_hidden) 
+
+        self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
+                                                    dropout=dropout,
+                                                    act=act,
+                                                    mlp_ratio=mlp_ratio,
+                                                    slice_num=None,
+                                                    mesh_type='ViT',
+                                                    is_add_mesh=add_mesh)
+                                    for _ in range(n_layers)])
+        
+        self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden), nn.Linear(n_hidden, self.ph * self.pw * out_dim))
+        self.out_dim = out_dim
+        self.device = device
+
+    def forward(self, img: torch.Tensor):
+        
+        C0_ = img.shape[1]
+        img = img.reshape(-1, C0_, self.nh, self.ph, self.nw, self.pw).permute(0, 2, 4, 3, 5, 1).reshape(-1, self.nh * self.nw, self.ph * self.pw * C0_)
+
+        fx = self.to_patch_embedding(img)
+        fx += self.pos_embedding.to(self.device, dtype=fx.dtype)
+
+        for block in self.blocks:
+            fx = block(fx)
+            
+        fx = self.last_layer(fx)
+        
+        results = fx.reshape(-1, self.nh, self.nw, self.ph, self.pw, self.out_dim).permute(0, 5, 1, 3, 2, 4).reshape(-1, self.out_dim, self.nh * self.ph, self.nw * self.pw)
+        
+        return results
+    
