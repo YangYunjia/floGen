@@ -38,8 +38,6 @@ class Attention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
         
-        self.norm = nn.LayerNorm(dim)
-
         #  from input channel (C) to multi-head and channel in each head
         self.to_q = nn.Linear(dim, inner_dim, bias=False)
         self.to_k = nn.Linear(dim, inner_dim, bias=False)
@@ -51,8 +49,9 @@ class Attention(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, x_cross: torch.Tensor) -> torch.Tensor:
-        x       = self.norm(x)    # B M C
-        x_cross = self.norm(x_cross)    # B M C
+        
+        if x_cross is None:
+            x_cross = x
         
         M_ = x.shape[1]
         # B M C -> B M (Nh Ch)
@@ -121,8 +120,11 @@ class Physics_Attention(Attention):
         slice_token, slice_weights = self._project_token(x_mid, fx_mid, N_)  # B Nh M Ch,   B Nh N M
         
         # calculate `x` for cross attention, the `fx` (value) remains the same for cross attention
-        x_mid_cross, fx_mid_cross, _, _ = self._forward_slice(x_cross)
-        slice_token_cross, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
+        if x_cross is not None:
+            x_mid_cross, fx_mid_cross, _, _ = self._forward_slice(x_cross)
+            slice_token_cross, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
+        else:
+            slice_token_cross = slice_token
 
         ### (2) Attention among slice tokens
         q = self.to_q(slice_token)
@@ -155,7 +157,7 @@ class Physics_Attention(Attention):
         N0_ = x.shape[1:-1]
         N_ = reduce(lambda x, y: x*y, N0_)
         fx_mid = self.in_project_fx(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
-        x_mid  = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head) .permute(0, 2, 1, 3)  # B Nh N Ch
+        x_mid  = self.in_project_x(x).reshape(-1, N_, self.heads, self.dim_head).permute(0, 2, 1, 3)  # B Nh N Ch
         return x_mid, fx_mid, N_, N0_
     
     def _project_token(self, x_mid: torch.Tensor, fx_mid: torch.Tensor, N_: int) -> torch.Tensor:
@@ -306,13 +308,18 @@ class Transolver_block(nn.Module):
     ) -> None:
         
         super().__init__()
+        if act == 'gelu':
+            act_layer = nn.GELU
+        else:
+            act_layer = nn.LeakyReLU
         
         self.ln_1 = nn.LayerNorm(hidden_dim + is_add_mesh)
         self.Attn = self.fetch_attention_layer(num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh)
         self.is_add_mesh = is_add_mesh
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
-        self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False)   # , res=False, act=act
+        self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False,
+                       basic_layers={'actv': act_layer})   # , res=False, act=act
         
         self.upsampling = upsampling
         self.dnsampling = downsampling
@@ -333,7 +340,7 @@ class Transolver_block(nn.Module):
         fx = self.upsampling(fx)
         # attention
         fx = self.ln_1(fx)
-        fx = self.Attn(fx, fx) + fx[..., self.is_add_mesh:]
+        fx = self.Attn(fx, None) + fx[..., self.is_add_mesh:]
         fx = self.mlp(self.ln_2(fx)) + fx
         # downsampling
         fx = self.dnsampling(fx)
