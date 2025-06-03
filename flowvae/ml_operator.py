@@ -22,7 +22,10 @@ from .utils import MDCounter
 
 def _check_existance_checkpoint(epoch, folder):
 
-    paths = os.path.join(folder, 'checkpoint_epoch_' + str(epoch))
+    if epoch == -1:
+        paths = os.path.join(folder, 'best_model')
+    else:
+        paths = os.path.join(folder, 'checkpoint_epoch_' + str(epoch))
     if not os.path.exists(paths):
         raise IOError("checkpoint not exist in {}".format(paths))
     return paths
@@ -46,8 +49,13 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     model.to(device)
     path = _check_existance_checkpoint(epoch=epoch, folder=folder)
     save_dict = torch.load(path, map_location=device)
-    model.load_state_dict(save_dict['model_state_dict'], strict=False)
-    last_error = save_dict['history']['loss']
+    
+    if epoch == -1:
+        model.load_state_dict(save_dict, strict=True)
+        last_error = None
+    else:
+        model.load_state_dict(save_dict['model_state_dict'], strict=True)
+        last_error = save_dict['history']['loss']
 #     print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
     if set_to_eval: model.eval()
     return last_error
@@ -370,7 +378,7 @@ class ModelOperator():
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
             print("Random Split Dataset length: (Train: %d, Val: %d, Test: %d)" % (self.dataset_size['train'], self.dataset_size['val'], self.dataset_size['test']))
 
-    def train_model(self, save_check, save_best=True, v_tqdm=True):
+    def train_model(self, save_check, save_best=True, v_tqdm=True, update_lr_batch=False):
 
         load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
         #* *** Training section ***
@@ -423,18 +431,23 @@ class ModelOperator():
                             if phase == 'train':
                                 loss.backward()
                                 self._optimizer.step()
+                                if update_lr_batch:
+                                    self._scheduler.step()
 
                         # loss.item() gives the value of the tensor, multiple in the later is for weighted average
                         running_loss += MDCounter(loss_dict) * batch_size
+                        
+
 
                 epoch_loss = running_loss / self.dataset_size[phase]
                 
                 if phase == 'train':
                     self.history['lr'].append(self._optimizer.param_groups[0]['lr'])
-                    if self._scheduler_name in ['ReduceLROnPlateau']:
-                        self._scheduler.step(epoch_loss['loss'])
-                    else:
-                        self._scheduler.step()
+                    if not update_lr_batch:
+                        if self._scheduler_name in ['ReduceLROnPlateau']:
+                            self._scheduler.step(epoch_loss['loss'])
+                        else:
+                            self._scheduler.step()
 
                 output_str = ''
                 for key in epoch_loss.keys():

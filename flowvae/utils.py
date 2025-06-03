@@ -60,13 +60,27 @@ class MDCounter(dict):
             if torch.is_tensor(self[k]):
                 self[k] = self[k].item()
 
+class warmup_lr():
+    
+    def __init__(self, epoch_ratio=1, base=0.95):
+        self.epoch_ratio = epoch_ratio
+        self.base = base
+    
+    def __call__(self, epoch):
+        epoch /= self.epoch_ratio
+        if epoch < 20:
+            lr =  1 + 0.5 * epoch
+        else:
+            lr =  10 * self.base**(epoch - 20)
+        return lr
 
-def warmup_lr(epoch):
-    if epoch < 20:
-        lr =  1 + 0.5 * epoch
-    else:
-        lr =  10 * 0.95**(epoch - 20)
-    return lr
+# def warmup_lr(epoch, epoch_ratio=1):
+#     epoch /= epoch_ratio
+#     if epoch < 20:
+#         lr =  1 + 0.5 * epoch
+#     else:
+#         lr =  10 * 0.95**(epoch - 20)
+#     return lr
 
 
 def warmup_lr_4(epoch):
