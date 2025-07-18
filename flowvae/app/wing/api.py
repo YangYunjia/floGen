@@ -61,6 +61,11 @@ def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tenso
     
     return data_new
 
+
+'''
+api to transfer learning model
+
+'''
 class Wing_api():
     
     version_folder = {
