@@ -433,7 +433,29 @@ class WingTransformer(Transolver):
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
+    
+class WingPlainTransformer(Transolver):
+    '''
+    concatenate the code to the input before processing, fx to be sinusoidal position encoding
+    '''
+    
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False, placeholder={'type': 'random'}) -> None:
+        
+        super().__init__(3, 0, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape, placeholder=placeholder)
+        
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = torch.cat((inputs.permute(0, 2, 3, 1), code[:, None, None, :2].repeat((1, H_, W_, 1))), dim=-1)
+        return super()._process(x, fx=None)
+    
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        return [super().forward(inputs, code).permute(0, 3, 1, 2)]
 
+   
 class WingEDTransformer(EncoderDecoderTransolver):
     
     def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
