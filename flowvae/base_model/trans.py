@@ -390,7 +390,7 @@ class Downsampling(nn.Module):
     
     def forward(self, x):
         return self.up(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-    
+
 class Upsampling(nn.Module):
     def __init__(self, size):
         super().__init__()
@@ -416,6 +416,7 @@ class Transolver(nn.Module):
                  u_shape: int = False,
                  add_mesh: int = 0,
                  dropout=0.0,
+                 placeholder: dict = None,
                  Time_Input=False,
                  act='gelu',
                  ref=8,
@@ -479,7 +480,14 @@ class Transolver(nn.Module):
         self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden), nn.Linear(n_hidden, out_dim))
         
         self.initialize_weights()
-        self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))
+        
+        if placeholder is not None:
+            if placeholder['type'] in ['random']:
+                self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))[None, None, :]
+            elif placeholder['type'] in ['sincos']:
+                self.placeholder = posemb_sincos_2d(h = placeholder['nh'], w = placeholder['nw'], dim = n_hidden)
+            else:
+                raise KeyError()
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -531,11 +539,10 @@ class Transolver(nn.Module):
         # if self.unified_pos:
         #     x = self.pos.repeat(x.shape[0], 1, 1, 1).reshape(x.shape[0], self.H * self.W, self.ref * self.ref)
         if fx is not None:
-            fx = torch.cat((x, fx), -1)
-            fx = self.preprocess(fx)
+            fx = self.preprocess(torch.cat((x, fx), -1))
         else:
             fx = self.preprocess(x)
-            fx = fx + self.placeholder[None, None, :]
+            fx = fx + self.placeholder
 
         # if T is not None:
         #     Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
