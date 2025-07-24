@@ -18,7 +18,7 @@ from flowvae.base_model.utils import Decoder, Encoder
 from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
-from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver
+from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver, ViT
 from flowvae.utils import device_select
 from huggingface_hub import PyTorchModelHubMixin
 
@@ -390,14 +390,14 @@ class ounetedmodel(basiconetmodel, Unet):
 class ounetbedmodel(basiconetmodel, BranchUnet):
 
     def __init__(self, h_e, h_e1, h_e2, h_d, h_lstm=None, de_type='prod', coder_type='onet', coder_kernel=1, nt=101, h_out=1, h_in=1, 
-                 last_size=6, decoder_input_size=None, device='cuda:0'):
+                 last_size=6, decoder_layer_sizes=[11, 21, 41, 81, 161, 321], nn_out=321, device='cuda:0'):
         
         encoder = ResnetEncoder_Unet(in_channels=h_in, last_size=[nt, last_size], hidden_dims=h_e, strides=(1,2))
         decoders = []
         for i in range(h_out):
             decoders.append(ResnetDecoder_Unet(out_channels=1, last_size=[nt, last_size], hidden_dims=h_d, 
-                                          sizes=[[101,11],[101,21],[101,41],[101,81],[101,161],[101,321]],
-                                          output_size=[nt, 321], encoder_hidden_dims=[h_e[-i] for i in range(1, len(h_e)+1)]+[h_in]))
+                                          sizes=[[nt,nn] for nn in decoder_layer_sizes],
+                                          output_size=[nt, nn_out], encoder_hidden_dims=[h_e[-i] for i in range(1, len(h_e)+1)]+[h_in]))
         
         BranchUnet.__init__(self, latent_dim=0, encoder=encoder, decoder=decoders, code_mode=de_type, decoder_input_layer=nn.Identity(), device=device)
 
@@ -406,6 +406,16 @@ class ounetbedmodel(basiconetmodel, BranchUnet):
         self.de_type = de_type
         self.coder_type = coder_type
         self.set_basic(h_e1, h_e2, h_lstm, nt, coder_type, coder_kernel, last_size)
+
+class WingViT(ViT):
+    
+    def __init__(self, image_size, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, add_mesh = 0, dropout=0, act='gelu', device = 'cuda:0'):
+        super().__init__(image_size, patch_size, fun_dim + 2, out_dim, n_layers, n_hidden, n_head, mlp_ratio, add_mesh, dropout, act, device)
+        
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        cat_inputs = torch.concatenate((inputs, code[:, :2, None, None].repeat((1, 1, H_, W_))), axis=1)
+        return [super().forward(cat_inputs)]
 
 class WingTransformer(Transolver):
     
@@ -425,7 +435,29 @@ class WingTransformer(Transolver):
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
+    
+class WingPlainTransformer(Transolver):
+    '''
+    concatenate the code to the input before processing, fx to be sinusoidal position encoding
+    '''
+    
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False, placeholder={'type': 'random'}) -> None:
+        
+        super().__init__(3, 0, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape, placeholder=placeholder)
+        
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = torch.cat((inputs.permute(0, 2, 3, 1), code[:, None, None, :2].repeat((1, H_, W_, 1))), dim=-1)
+        return super()._process(x, fx=None)
+    
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        return [super().forward(inputs, code).permute(0, 3, 1, 2)]
 
+   
 class WingEDTransformer(EncoderDecoderTransolver):
     
     def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:

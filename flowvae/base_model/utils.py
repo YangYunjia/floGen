@@ -90,7 +90,7 @@ class Convbottleneck(nn.Module):
 
 default_basic_layers_0d = {
     'actv':     nn.LeakyReLU,
-    'batchnorm':  False,
+    'norm':     'none',
     'dropout':    0.,
 }
 
@@ -122,8 +122,12 @@ def _update_basic_layer(basic_layers: dict, dimension: int = 1):
         basic_layers_n = copy.deepcopy(default_basic_layers_0d)
         for key in basic_layers: basic_layers_n[key] = basic_layers[key]
 
-        if basic_layers_n['batchnorm']:   basic_layers_n['_bn'] = nn.BatchNorm1d
-        if basic_layers_n['dropout'] > 0.:   basic_layers_n['_drop'] = nn.Dropout(basic_layers_n['dropout'])
+        if basic_layers_n['norm'] == 'batch':   
+            basic_layers_n['_bn'] = nn.BatchNorm1d
+        elif basic_layers_n['norm'] == 'layer':
+            basic_layers_n['_bn'] = nn.LayerNorm
+        if basic_layers_n['dropout'] > 0.:   
+            basic_layers_n['_drop'] = nn.Dropout(basic_layers_n['dropout'])
 
     elif dimension == 1:   
         basic_layers_n = copy.deepcopy(default_basic_layers_1d)

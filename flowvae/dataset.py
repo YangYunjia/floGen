@@ -27,30 +27,35 @@ class FlowDataset(Dataset):
     
     
     '''
+    default_split_paras = {
+        'method': 'load',   # overall selection methods (load, random, all)
+        'nTest':  0,        # overall test amounts
+        'isLastTest': True,
+        'indexFileNum': -1, # Number of the index file
+        'indexFileName': None,
+    }
 
     def __init__(self, file_name: Union[str, List[str]], 
-                 c_mtd: str = 'fix', 
-                 c_no: int = -1, 
-                 test: int = 0, 
+                 split_paras: dict = {},
                  data_base: str = 'data', 
-                 is_last_test: bool = True, 
                  input_channel_take: List[int] = None,
                  output_channel_take: List[int] = None,
                  aux_channel_take: List[int] = None,
                  flatten: bool = False, 
                  swap_axis: tuple = None, 
                  unsqueeze: int = None,
-                 index_fname: str = None) -> None:
+                 marker_idx: int = 1) -> None:
         
         super().__init__()
 
+        
+        # input and output data (swapaxis, flatten, take channel)
         self.data_base = data_base
         self.flatten = flatten
         
         if isinstance(file_name, str):
             self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
             self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
-            self.all_aux = None
             self.fname = file_name
         elif isinstance(file_name, List):
             self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
@@ -77,7 +82,13 @@ class FlowDataset(Dataset):
             self.inputs = self.all_input
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
-            
+        
+        self.inputs = torch.from_numpy(self.inputs).float()
+        if unsqueeze is not None:
+            self.inputs = self.inputs.unsqueeze(unsqueeze)
+        self.output = torch.from_numpy(self.output).float()
+        
+        # aux data
         if isinstance(file_name, List) and len(file_name) > 2:
             self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
             if aux_channel_take is None:
@@ -89,14 +100,39 @@ class FlowDataset(Dataset):
             self.all_aux = None
             self.auxs    = None
 
-        self.inputs = torch.from_numpy(self.inputs).float()
-        if unsqueeze is not None:
-            self.inputs = self.inputs.unsqueeze(unsqueeze)
-        self.output = torch.from_numpy(self.output).float()
+        # select training and testing dataset
+        # decide default parameters
+        self._split_paras = {}
+        for k in self.__class__.default_split_paras.keys():
+            self._split_paras[k] = split_paras[k] if k in split_paras.keys() else self.__class__.default_split_paras[k]
+        if self._split_paras['indexFileName'] is None:
+            self._split_paras['indexFileName'] = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % self._split_paras['indexFileNum'])
+        
+        # decide which array contains the index information
+        self.all_index = [self.all_output, self.all_input, self.all_aux][marker_idx]
+        
+        self.data_idx = []
+        self._select_index()
 
-        self._select_index(c_mtd=c_mtd, test=test, no=c_no, is_last=is_last_test, fname=index_fname)
+    def _load_index_file(self):
+        
+        fname = self._split_paras['indexFileName']
+        
+        assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
+        self.data_idx = np.loadtxt(fname, dtype=np.int32)
+            
+        print(f'> load flow field index from {fname}')
+        print(f'> total size of data:')
+        print(f'>   inputs -> {self.inputs.shape}')
+        print(f'>   output -> {self.output.shape}')
+        if self.auxs is not None:
+            print(f'>   auxs   -> {self.auxs.shape}')
+            
+    def _save_data_idx(self):
+        assert not os.path.exists(self._split_paras['indexFileName']), ' *** ERROR *** Data index file \'%s\' exist' % self._split_paras['indexFileName']
+        np.savetxt(self._split_paras['indexFileName'], self.data_idx, fmt='%d')
 
-    def _select_index(self, c_mtd, test, no, is_last, fname):
+    def _select_index(self):
         '''
         select among the conditions of each airfoil for training
         '''
@@ -104,35 +140,27 @@ class FlowDataset(Dataset):
 
         print('# selecting data from data.npy #')
 
-        if c_mtd == 'load':
-            if fname is None:
-                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
-            
-            assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
-            self.data_idx = np.loadtxt(fname, dtype=np.int32)
-                
-            print(f'> load flow field index from {fname}')
-            print(f'> total size of data:')
-            print(f'>   inputs -> {self.inputs.shape}')
-            print(f'>   output -> {self.output.shape}')
-            if self.auxs is not None:
-                print(f'>   auxs   -> {self.auxs.shape}')
-            
-        elif c_mtd == 'all':
-            self.data_idx = list(range(self.all_output.shape[0]))
-        else:
-                
-            if is_last:
-                self.data_idx = list(range(self.all_output.shape[0] - test))
-            else:
-                self.data_idx = random.sample(range(self.all_output.shape[0]), self.all_output.shape[0] - test)
+        if self._split_paras['method'] == 'load':
+            self._load_index_file()
 
-            self.save_data_idx(no)
+        else:
+            
+            if self._split_paras['method'] == 'all':
+                self.data_idx = list(range(self.all_output.shape[0]))
+            
+            elif self._split_paras['method'] == 'random':
+                    
+                if self._split_paras['isLastTest']:
+                    self.data_idx = list(range(self.all_output.shape[0] - self._split_paras['nTest']))
+                else:
+                    self.data_idx = random.sample(range(self.all_output.shape[0]), self.all_output.shape[0] - self._split_paras['nTest'])
+
+            else:
+                raise KeyError(f"split method {self._split_paras['method']} not available")
+            
+            self._save_data_idx()
 
         self.dataset_size = len(self.data_idx)
-
-    def save_data_idx(self, no):
-        np.savetxt(os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no), self.data_idx, fmt='%d')
 
     def normalize(self) -> None:
         self.inputs = self.inputs.detach().numpy()
@@ -154,7 +182,221 @@ class FlowDataset(Dataset):
             auxs = self.auxs[d_index]
             return {'input': inputs, 'label': labels, 'aux': auxs}
     
+class MCFlowDataset(FlowDataset):
     
+    default_split_paras = {
+        'method': 'load',   # overall + condition selection methods (load, random, all)
+        'nTest':  0,        # overall test amounts
+        'nCond': None,
+        'mapCond': None,
+        'isLastTest': True,
+        'indexFileNum': -1, # Number of the index file
+        'indexFileName': None,
+    }
+    
+    def __init__(self, file_name, 
+                 d_c: int = None,
+                 is_ref: bool = True,
+                 split_paras: dict = {},
+                 data_base = 'data', 
+                 input_channel_take = None, 
+                 output_channel_take = None, 
+                 aux_channel_take = None, 
+                 flatten = False, 
+                 swap_axis = None, 
+                 unsqueeze = None, 
+                 marker_idx: int = 1,
+                 getindex_type: str = 'noref',
+                 channel_cond: list = None):
+        
+        self.is_ref       = is_ref
+        
+        # decide where is the working condition
+        if channel_cond is not None:
+            self.condis_dim = len(channel_cond)
+            self.channel_cond = channel_cond
+        else:
+            if d_c is not None:
+                self.condis_dim = d_c
+                channel_cond_st = [2, 3][is_ref]
+                self.channel_cond = range(channel_cond_st, channel_cond_st + self.condis_dim)
+            else:
+                self.condis_dim = 0
+                self.channel_cond = []
+                print('[Warning] D_C is not set, do not use ref, get_series, etc.')
+        
+        self.airfoil_num = 0
+        
+        super().__init__(file_name, split_paras, data_base, input_channel_take, output_channel_take, aux_channel_take, flatten, swap_axis, unsqueeze, marker_idx)
+                
+        if getindex_type in ['noref']:
+            self.get_item = super().__getitem__
+        elif getindex_type in ['normal']:
+            self.get_item = self._get_normal_item   # with reference
+            
+        self._output_force_flag = False
+        self.n_extra_ref_channel = 0
+
+    def _check_index(self):
+        '''
+        find the start index of each airfoil in the sequencial all-database, also
+        find the reference index and the reference conditions of each airfoil
+
+        '''
+
+        self.airfoil_num = len(np.unique(self.all_index[:, 0]))   #   amount of airfoils in dataset
+        self.condis_all_num = np.zeros((self.airfoil_num,), dtype=np.int32)       #   amount of conditions for each airfoil, a array of (N_airfoil, )
+        self.condis_st      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the start index of each airfoil in the serial dataset
+        self.cond_index = np.take(self.all_index, self.channel_cond, axis=1)
+        
+        if self.is_ref:
+            self.ref_index      = np.zeros((self.airfoil_num,), dtype=np.int32)       #   the index of reference flowfield for each airfoil in the serial dataset
+            self.ref_condis     = np.zeros((self.airfoil_num, self.condis_dim), dtype=np.float64)     #   the aoa of the reference flowfield 
+            self.refr = None            # reference data, size: (N_airfoil, C, H, W)
+
+        print(f'---------------------------------------')
+        print(f'> checking the index in the index.npy')
+
+        airfoil_idx = -1
+        last_idx    = -1
+        # if input igroup is not contiuns, it will be replaced with a continues one in running
+        for i, idx in enumerate(self.all_index):
+            if idx[0] != last_idx:
+                airfoil_idx += 1
+                last_idx     = int(idx[0])
+
+                self.condis_st[airfoil_idx] = i
+                
+                if self.is_ref:
+                    self.ref_index[airfoil_idx] = int(idx[2]) + i  # i_ref
+                    self.ref_condis[airfoil_idx] = self.cond_index[int(idx[2]) + i]           # aoa_ref
+            
+            if idx[0] != airfoil_idx:
+                self.all_index[i, 0] = airfoil_idx
+                
+            self.condis_all_num[airfoil_idx] += 1
+        
+        if self.is_ref:
+            self.ref_condis = torch.from_numpy(self.ref_condis).float()
+            self.refr = torch.from_numpy(np.take(self.all_output, self.ref_index, axis=0)).float()
+
+        print(f'> number of geometries:   {self.airfoil_num:d}')
+        print(f'> number of flow fields:  {len(self.all_index):d}')
+        print(f'> min & max number of flow fields for one geometry:  {min(self.condis_all_num):d}  {max(self.condis_all_num):d}')
+        print(f'---------------------------------------')
+
+    def _select_index(self):
+        
+        '''
+        select among the conditions of each airfoil for training
+        '''
+        self.data_idx = []
+        self.airfoil_idx = []
+        self._check_index()
+
+        print(f'selecting data from data.npy')
+        print(f'> selecting method will be {self._split_paras["method"]}')
+
+        if self._split_paras['method'] == 'load':
+            
+            self._load_index_file()
+
+            for iidx in self.data_idx:
+                if self.all_index[iidx][0] not in self.airfoil_idx:
+                    # load the geometry index
+                    self.airfoil_idx.append(self.all_index[iidx][0])
+            
+        else:
+
+            if self._split_paras['method'] in ['fix', 'random', 'all', 'exrf']:
+                
+                # select airfoil testing part
+                if self._split_paras['isLastTest']:
+                    self.airfoil_idx = list(range(self.airfoil_num - self._split_paras['nTest']))
+                else:
+                    self.airfoil_idx = random.sample(range(self.airfoil_num), self.airfoil_num - self._split_paras['nTest'])
+
+                for i in self.airfoil_idx:
+                    if self._split_paras['method'] == 'random':
+                        # print(self.condis_st[i], self.condis_num)
+                        c_map = random.sample(range(self.condis_all_num[i]), self._split_paras['nCond'])
+                    elif self._split_paras['method'] == 'all':
+                        c_map = list(range(self.condis_all_num[i]))
+                    elif self._split_paras['method'] == 'exrf':
+                        c_map = list(range(self.condis_all_num[i]))
+                        c_map.remove((self.ref_index[i] - self.condis_st[i]))
+                    elif self._split_paras['method'] == 'fix':
+                        c_map = list(self._split_paras['mapCond'])
+
+                    for a_c_map in c_map:
+                        self.data_idx.append(a_c_map + self.condis_st[i])
+                        
+            else:
+                raise KeyError(f"split method {self._split_paras['method']} not available")
+            
+            self._save_data_idx()
+
+        # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
+        # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 
+        self.dataset_size = len(self.data_idx)
+
+        print(f'---------------------------------------')
+
+    def __getitem__(self, index):
+        return self.get_item(index)
+    
+    def _get_normal_item(self, idx):
+
+        # op_cod = idx % self.condis_num
+        # op_idx = int(idx / self.condis_num)
+        op_idx =  int(self.all_index[self.data_idx[idx], 0])
+        op_cod =  int(self.all_index[self.data_idx[idx], 1])
+        # print(idx, cod)
+        flowfield   = torch.from_numpy(self.all_output[self.data_idx[idx]]).float()
+        condis      = torch.from_numpy(self.cond_index[self.data_idx[idx]]).float()
+        # condis      = self.cond[idx]
+        refence     = self.refr[op_idx]
+        ref_cond    = self.ref_condis[op_idx]
+
+        sample = {'flowfields': flowfield, 'condis': condis, 
+                  'index': op_idx, 'code_index': op_cod,
+                  'ref': refence, 'ref_aoa': ref_cond}  # all the reference of the flowfield is transfered, the airfoil geometry (y) is also.
+
+        return sample
+
+    def get_series(self, idx, ref_idx=None):
+
+        st = self.condis_st[idx]
+        ed = self.condis_st[idx] + self.condis_all_num[idx]
+        
+        if self._output_force_flag: flowfield = self.all_force[st: ed]
+        else: flowfield   = self.all_output[st: ed]
+        condis      = self.cond_index[st: ed]
+
+        if self.is_ref:
+            if ref_idx is None:
+                ref         = self.all_output[self.ref_index[idx]]
+                ref_aoa     = self.ref_condis[idx]
+            else:   
+                ref         = self.all_output[st + ref_idx]
+                ref_aoa     = self.cond_index[st + ref_idx]
+            
+        else:
+            ref      = self.all_input[st: ed]
+            ref_aoa  = None
+
+        samples = {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
+        if self._output_force_flag: 
+            samples['ref_force'] = self.ref_force[idx]
+        
+        return samples 
+
+    def allnum_condition(self, idx):
+        return self.condis_all_num[idx]
+    
+    def get_index_info(self, i_f, i_c, i_idx):
+        return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
+
 class ConditionDataset(Dataset):
     '''
 
@@ -542,7 +784,42 @@ class ConditionDataset(Dataset):
     def get_index_info(self, i_f, i_c, i_idx):
         return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
 
-    
     def get_buffet(self, idx):
 
         return self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 3), self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 6)
+    
+class DatasetIterator():
+    '''
+    for FlowDataset, return every sample and whether it is inside training dataset
+    for MCFlowDataset, return all flowfield of every airfoil and whether it is inside training dataset
+    
+    '''
+    
+    def __init__(self, dataset: Union[FlowDataset, MCFlowDataset]):
+        self.dataset = dataset
+        self.current = 0
+        if isinstance(dataset, FlowDataset):
+            self._getitem = self._getitem_flowdataset
+            self.n = dataset.dataset_size
+        elif isinstance(dataset, MCFlowDataset):
+            self._getitem = self._getitem_mcflowdataset
+            self.n = dataset.airfoil_num
+    
+    def __next__(self):
+        if self.current < self.n:
+            results = self._getitem(self.current)
+            self.current += 1
+            return results
+        else:
+            raise StopIteration
+    
+    def __iter__(self):
+        return self
+    
+    def _getitem_flowdataset(self, idx):
+        raise NotImplementedError
+    
+    def _getitem_mcflowdataset(self, idx):
+        return {'sample': self.dataset.get_series(idx),
+                'flag': idx in self.airfoil_idx}
+        
