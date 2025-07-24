@@ -8,13 +8,12 @@ calling cfl3d for outside simulation
 import os
 import numpy as np
 import time
-import pyDOE
-import random
+# import pyDOE
+# import random
 import shutil
 from cst_modeling.section import cst_foil, clustcos, dist_clustcos
 from cfdpost.cfdresult import cfl3d
 from cfdpost.section.physical import PhysicalSec
-from cgrid.foil import CGrid
 from scipy.interpolate import PchipInterpolator as pchip
 
 from scipy.interpolate import interp1d
@@ -25,7 +24,7 @@ import time
 # from flowvae.post import get_buffet
 
 class AirfoilSimulator():
-    
+   
     def __init__(self, n_job: int, base_folder: str = '.', case_folder: str = None, info: str = '') -> None:
         
         current_time = time.time()
@@ -359,6 +358,7 @@ def sim_airfoil_cfl3d(folder, parameters: dict) -> dict:
             log(f'>>> [sample {calname}]  airfoil done (tmax {t_max:.4f} / R0 {R0:.4f} / ttail {tail:.4f})')
 
         #* Build grid
+        from cgrid.foil import CGrid
         cg = CGrid(G_Foil=161, G_Wake=41, G_Grow=81, yp_cri=0.9, rout=20.0, Uinf=300.0, rou=1.1, Re=2E7)
         # cg = FoilGrid(G_Foil=161, G_Wake=41, G_Grow=81, G_Tail=17,  yp_cri=0.9, rout=20.0, Uinf=300.0, rou=1.1, Re=2E7)
 

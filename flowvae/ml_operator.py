@@ -45,7 +45,7 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     '''
     model.to(device)
     path = _check_existance_checkpoint(epoch=epoch, folder=folder)
-    save_dict = torch.load(path, map_location=device)
+    save_dict = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(save_dict['model_state_dict'], strict=False)
     last_error = save_dict['history']['loss']
 #     print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))

@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, jsonify
 
 # establish the wing api instance at the beginning of the client
 # later use it to predict wing results given input parameters
-from flowvae.app.wing.wing_api import Wing_api
+from flowvae.app.wing.api import Wing_api
 wing_api = Wing_api(saves_folder='saves', device='default')
 
 app = Flask(__name__)

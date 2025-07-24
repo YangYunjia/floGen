@@ -13,7 +13,7 @@ setup(name=__name__,
       author='Aerolab',
       author_email='yyj980401@126.com',
       packages=find_packages(),
-      install_requires=['numpy', 'torch'],
+      install_requires=['numpy'],
       classifiers=[
             'Programming Language :: Python :: 3'
       ]

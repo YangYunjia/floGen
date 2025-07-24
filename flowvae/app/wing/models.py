@@ -19,6 +19,8 @@ from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, 
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
 from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver
+from flowvae.utils import device_select
+from huggingface_hub import PyTorchModelHubMixin
 
 device = 'cuda:0'
 
@@ -532,6 +534,18 @@ def bresnetunetmodel(h_e, h_d1, h_d2, sizes=[19, 80, 321], h_out=1, h_in=1, devi
     ae_model = BranchUnet(latent_dim=32, encoder=encodercell, decoder=decodercells, code_mode='ed', code_dim=3, decoder_input_layer=h_d1, device=device)
 
     return ae_model
+
+class bresnetunetmodel1(BranchUnet, PyTorchModelHubMixin):
+
+    def __init__(self, h_e, h_d1, h_d2, sizes=[19, 80, 321], h_out=1, h_in=1, device='default'):
+
+        encodercell = convEncoder_Unet(in_channels=h_in, last_size=[4], hidden_dims=h_e)
+        decodercells = []
+        for _ in range(h_out):
+            decodercells.append(convDecoder_Unet(out_channels=1, last_size=[4], hidden_dims=h_d2, sizes=sizes, last_conv='bottleneck', 
+                                    encoder_hidden_dims=[h_e[-i] for i in range(1, len(h_e)+1)]+[h_in]))
+        # print(device)
+        super().__init__(latent_dim=32, encoder=encodercell, decoder=decodercells, code_mode='ed', code_dim=3, decoder_input_layer=h_d1, device=device_select(device))
 
 
 '''

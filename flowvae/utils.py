@@ -206,4 +206,18 @@ def load_encoder_decoder(_id):
         _model_type = Unet
 
     return _encoder, _decoder, _model_type
-    
+
+
+def device_select(device: str) -> str:
+    if device == 'default':
+        if torch.cuda.is_available():
+            _device = 'cuda:0'
+        elif torch.backends.mps.is_available():
+            _device = 'mps'
+        else:
+            _device = 'cpu'
+
+    else:
+        _device = device
+
+    return _device
