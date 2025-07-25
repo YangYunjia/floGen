@@ -416,7 +416,7 @@ class Transolver(nn.Module):
                  u_shape: int = False,
                  add_mesh: int = 0,
                  dropout=0.0,
-                 placeholder: dict = None,
+                 placeholder: dict = {'type': 'random'},
                  Time_Input=False,
                  act='gelu',
                  ref=8,
@@ -481,13 +481,12 @@ class Transolver(nn.Module):
         
         self.initialize_weights()
         
-        if placeholder is not None:
-            if placeholder['type'] in ['random']:
-                self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))[None, None, :]
-            elif placeholder['type'] in ['sincos']:
-                self.placeholder = posemb_sincos_2d(h = placeholder['nh'], w = placeholder['nw'], dim = n_hidden)
-            else:
-                raise KeyError()
+        if placeholder['type'] in ['random']:
+            self.placeholder = nn.Parameter((1 / (n_hidden)) * torch.rand(n_hidden, dtype=torch.float))
+        elif placeholder['type'] in ['sincos']:
+            self.placeholder = posemb_sincos_2d(h = placeholder['nh'], w = placeholder['nw'], dim = n_hidden)
+        else:
+            raise KeyError()
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -542,7 +541,7 @@ class Transolver(nn.Module):
             fx = self.preprocess(torch.cat((x, fx), -1))
         else:
             fx = self.preprocess(x)
-            fx = fx + self.placeholder
+            fx = fx + self.placeholder.to(self.device, dtype=fx.dtype)
 
         # if T is not None:
         #     Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
@@ -687,6 +686,7 @@ class ViT(nn.Module):
                  mlp_ratio: int = 4,
                  add_mesh: int = 0,
                  dropout=0.0,
+                 pos_embedding='sincos',
                  act='gelu',
                  device: str = 'cuda:0'
                  ):
@@ -707,8 +707,13 @@ class ViT(nn.Module):
             nn.LayerNorm(n_hidden),
         )
 
-        self.pos_embedding = posemb_sincos_2d(h = self.nh, w = self.nw, dim = n_hidden) 
-
+        if pos_embedding in ['trainable']:
+            self.pos_embedding = nn.Parameter((1 / (n_hidden)) * torch.rand((1, self.nh * self.nw, n_hidden), dtype=torch.float))
+        elif pos_embedding in ['sincos']:
+            self.pos_embedding = posemb_sincos_2d(h = self.nh, w = self.nw, dim = n_hidden)
+        else:
+            raise KeyError()
+            
         self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
                                                     dropout=dropout,
                                                     act=act,
