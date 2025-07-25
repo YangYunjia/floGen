@@ -19,8 +19,17 @@ from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, 
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
 from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver, ViT
+from flowvae.base_model.pdet.pde_transformer import PDEImpl
 from flowvae.utils import device_select
-from huggingface_hub import PyTorchModelHubMixin
+
+## saving model with hugging face
+
+try:
+    from huggingface_hub import PyTorchModelHubMixin
+    modelSaving = PyTorchModelHubMixin
+except ImportError:
+    modelSaving = object
+
 
 device = 'cuda:0'
 
@@ -409,8 +418,8 @@ class ounetbedmodel(basiconetmodel, BranchUnet):
 
 class WingViT(ViT):
     
-    def __init__(self, image_size, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, add_mesh = 0, dropout=0, act='gelu', device = 'cuda:0'):
-        super().__init__(image_size, patch_size, fun_dim + 2, out_dim, n_layers, n_hidden, n_head, mlp_ratio, add_mesh, dropout, act, device)
+    def __init__(self, image_size, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, add_mesh = 0, dropout=0, pos_embedding='sincos', act='gelu', device = 'cuda:0'):
+        super().__init__(image_size, patch_size, fun_dim + 2, out_dim, n_layers, n_hidden, n_head, mlp_ratio, add_mesh, dropout, pos_embedding, act, device)
         
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
@@ -441,9 +450,9 @@ class WingPlainTransformer(Transolver):
     concatenate the code to the input before processing, fx to be sinusoidal position encoding
     '''
     
-    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False, placeholder={'type': 'random'}) -> None:
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=3, h_out=3, is_flatten=False, u_shape=False, placeholder={'type': 'random'}) -> None:
         
-        super().__init__(3, 0, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape, placeholder=placeholder)
+        super().__init__(h_in+2, 0, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape, placeholder=placeholder)
         
         self.is_flatten = is_flatten
         
@@ -456,8 +465,7 @@ class WingPlainTransformer(Transolver):
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
-
-   
+ 
 class WingEDTransformer(EncoderDecoderTransolver):
     
     def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
@@ -498,6 +506,35 @@ class WingEDTransformer_Mesh(EncoderDecoderTransolver):
         B_, C_, H_, W_ = inputs.shape
         mesh = inputs[:, :3].permute(0, 2, 3, 1)
         return [super().forward(inputs, code, mesh=mesh, ref_mesh=mesh).permute(0, 3, 1, 2)]
+    
+class WingPDETransformer(PDEImpl):
+
+    def __init__(self, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, 
+                 dropout=0, device = 'cuda:0'):
+        # n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3
+        kwargs = {
+            'in_channels':      fun_dim + 2,
+            'out_channels':     out_dim,
+            'window_size':      int(0.5 * (patch_size[0] + patch_size[1])),    # in PDE stage, the window
+            'patch_size':       int(0.5 * (patch_size[0] + patch_size[1])),    # in patch embedding step, patch
+            'hidden_size':      n_hidden,       # multiple by 2 for each block
+            'depth':            [2, 5, 8, 5, 2] if n_layers == 5 else None,
+            'num_heads':        n_head,
+            'mlp_ratio':        mlp_ratio,
+            'num_classes':      0,              # classification (condition) embedding
+            'class_dropout_prob': 0,            # also for classification (condition) embedding
+            'periodic':         False,
+            'carrier_token_active': False
+        }
+        
+        super().__init__(**kwargs)
+        self.device = device
+
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        cat_inputs = torch.concatenate((inputs, code[:, :2, None, None].repeat((1, 1, H_, W_))), axis=1)
+        return [super().forward(cat_inputs, None, None)]
+
 
 '''
 
@@ -567,7 +604,7 @@ def bresnetunetmodel(h_e, h_d1, h_d2, sizes=[19, 80, 321], h_out=1, h_in=1, devi
 
     return ae_model
 
-class bresnetunetmodel1(BranchUnet, PyTorchModelHubMixin):
+class bresnetunetmodel1(BranchUnet, modelSaving):
 
     def __init__(self, h_e, h_d1, h_d2, sizes=[19, 80, 321], h_out=1, h_in=1, device='default'):
 
