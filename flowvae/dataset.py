@@ -14,6 +14,18 @@ import os
 import random
 from typing import List, Callable, NewType, Union, Tuple
 
+def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
+
+    data: np.ndarray = np.load(file)
+    info = f'> load from file: {file}'
+    if data.dtype != target_type:
+        data = data.astype(target_type)
+        info += f' - change format to {target_type}'
+
+    print(info)
+    return data
+
+
 class FlowDataset(Dataset):
     '''
     This class formulate a normal input-output-pair dataset
@@ -54,12 +66,12 @@ class FlowDataset(Dataset):
         self.flatten = flatten
         
         if isinstance(file_name, str):
-            self.all_output = np.load(os.path.join(data_base, file_name + 'data.npy'))
-            self.all_input = np.load(os.path.join(data_base, file_name + 'index.npy'))
+            self.all_output = load_with_float_check(os.path.join(data_base, file_name + 'data.npy'))
+            self.all_input  = load_with_float_check(os.path.join(data_base, file_name + 'index.npy'))
             self.fname = file_name
         elif isinstance(file_name, List):
-            self.all_output = np.load(os.path.join(data_base, file_name[0] + '.npy'))
-            self.all_input = np.load(os.path.join(data_base, file_name[1] + '.npy'))
+            self.all_output = load_with_float_check(os.path.join(data_base, file_name[0] + '.npy'))
+            self.all_input = load_with_float_check(os.path.join(data_base, file_name[1] + '.npy'))
             self.fname = file_name[0] + file_name[1]
 
         if swap_axis is not None:
@@ -71,7 +83,7 @@ class FlowDataset(Dataset):
             self.all_output = self.all_output.reshape(-1, *self.all_output.shape[2:])
             self.all_input  = np.swapaxes(self.all_input, 1, 2)
             self.all_input  = self.all_input.reshape(-1, *self.all_input.shape[2:])
-            print(self.all_output.shape)
+            print('> shape after flatten: ', self.all_output.shape)
 
         if output_channel_take is None:
             self.output = self.all_output
@@ -83,19 +95,16 @@ class FlowDataset(Dataset):
         else:
             self.inputs = np.take(self.all_input, input_channel_take, axis=1)
         
-        self.inputs = torch.from_numpy(self.inputs).float()
         if unsqueeze is not None:
             self.inputs = self.inputs.unsqueeze(unsqueeze)
-        self.output = torch.from_numpy(self.output).float()
         
         # aux data
         if isinstance(file_name, List) and len(file_name) > 2:
-            self.all_aux = np.load(os.path.join(data_base, file_name[2] + '.npy'))
+            self.all_aux = load_with_float_check(os.path.join(data_base, file_name[2] + '.npy'))
             if aux_channel_take is None:
                 self.auxs = self.all_aux
             else:
                 self.auxs = np.take(self.all_aux, aux_channel_take, axis=1)
-            self.auxs   = torch.from_numpy(self.auxs).float()
         else:
             self.all_aux = None
             self.auxs    = None
@@ -174,12 +183,12 @@ class FlowDataset(Dataset):
     
     def __getitem__(self, index) -> dict:
         d_index = self.data_idx[index]
-        inputs  = self.inputs[d_index]
-        labels  = self.output[d_index]
+        inputs  = torch.from_numpy(self.inputs[d_index])
+        labels  = torch.from_numpy(self.output[d_index])
         if self.all_aux is None:
             return {'input': inputs, 'label': labels}
         else:
-            auxs = self.auxs[d_index]
+            auxs = torch.from_numpy(self.auxs[d_index])
             return {'input': inputs, 'label': labels, 'aux': auxs}
     
 class MCFlowDataset(FlowDataset):
@@ -233,6 +242,8 @@ class MCFlowDataset(FlowDataset):
             self.get_item = super().__getitem__
         elif getindex_type in ['normal']:
             self.get_item = self._get_normal_item   # with reference
+        elif getindex_type in ['origeom']:
+            self.get_item = self._get_origeom_item
             
         self._output_force_flag = False
         self.n_extra_ref_channel = 0
@@ -259,7 +270,7 @@ class MCFlowDataset(FlowDataset):
 
         airfoil_idx = -1
         last_idx    = -1
-        # if input igroup is not contiuns, it will be replaced with a continues one in running
+        # if input igroup is not contiune, it will be replaced with a continue one in running
         for i, idx in enumerate(self.all_index):
             if idx[0] != last_idx:
                 airfoil_idx += 1
@@ -344,6 +355,23 @@ class MCFlowDataset(FlowDataset):
 
     def __getitem__(self, index):
         return self.get_item(index)
+    
+    def _get_origeom_item(self, index):
+        '''
+        get input, output, aux pairs. The input is only geometry. So there is only one
+        for each shape.
+        '''
+
+        d_index = self.data_idx[index]
+        op_idx =  int(self.all_index[d_index, 0])
+        inputs  = torch.from_numpy(self.inputs[op_idx])
+        labels  = torch.from_numpy(self.output[d_index]).float()
+        if self.all_aux is None:
+            return {'input': inputs, 'label': labels}
+        else:
+            auxs = torch.from_numpy(self.auxs[d_index])
+            return {'input': inputs, 'label': labels, 'aux': auxs}
+
     
     def _get_normal_item(self, idx):
 
