@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from .udit import FinalLayer, precompute_freqs_cis_2d, apply_rotary_emb
+from flowvae.base_model.mlp import mlp
 
 ###############################
 # We need to create subclass of Swinv2PreTrainedModel because it sets use_mask_token=True
@@ -63,6 +64,15 @@ class Mlp(nn.Module):
         x = self.drop(x)
         x = x.view(x_size)
         return x
+
+class ZeroLayer(nn.Module):
+
+    def __init__(self, output_shape: Tuple):
+        super().__init__()
+        self.output_shape = output_shape
+    
+    def forward(self, ref: torch.Tensor):
+        return torch.zeros(self.output_shape, device=ref.device, dtype=ref.dtype).unsqueeze(0).tile(ref.shape[0], dim=0)
 
 # Copied from transformers.models.swin.modeling_swin.window_partition
 def window_partition(input_feature, window_size):
@@ -316,11 +326,14 @@ class AdaLayerNormZero(nn.Module):
 
     def __init__(self, embedding_dim: int, num_embeddings: Optional[int] = None, norm_type="layer_norm", bias=True):
         super().__init__()
-        if num_embeddings is not None:
-            raise NotImplementedError
-            self.emb_impl = CombinedTimestepLabelEmbeddings(num_embeddings, embedding_dim)
-        else:
-            self.emb_impl = None
+        # in the current version, time and label embedding are conducted in PDEImpl and get the
+        # embedding vector `c`. Only `c` is passed to Stage and Block, even they have optional
+        # arguments for time and label.
+        
+        # if num_embeddings is not None:
+        #     self.emb_impl = CombinedTimestepLabelEmbeddings(num_embeddings, embedding_dim)
+        # else:
+        #     self.emb_impl = None
 
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=bias)
@@ -336,13 +349,13 @@ class AdaLayerNormZero(nn.Module):
 
     def forward(
         self,
-        timestep: Optional[torch.Tensor] = None,
-        class_labels: Optional[torch.LongTensor] = None,
-        hidden_dtype: Optional[torch.dtype] = None,
+        # timestep: Optional[torch.Tensor] = None,
+        # class_labels: Optional[torch.LongTensor] = None,
+        # hidden_dtype: Optional[torch.dtype] = None,
         emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.emb_impl is not None:
-            emb = self.emb_impl(timestep, class_labels, hidden_dtype=hidden_dtype)
+        # if self.emb_impl is not None:
+        #     emb = self.emb_impl(timestep, class_labels, hidden_dtype=hidden_dtype)
         emb = self.linear(self.silu(emb))
         msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = emb.chunk(6, dim=1)
         return msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate
@@ -428,8 +441,9 @@ class PDEStage(nn.Module):
     def forward(self,
                 hidden_states: torch.Tensor,
                 cond: Optional[torch.Tensor] = None,
-                timestep: Optional[torch.LongTensor] = None,
-                class_labels: Optional[torch.LongTensor] = None, ):
+                # timestep: Optional[torch.LongTensor] = None,
+                # class_labels: Optional[torch.LongTensor] = None, 
+                ):
 
         B, C, H, W = hidden_states.shape
 
@@ -462,8 +476,9 @@ class PDEStage(nn.Module):
 
             hidden_states = window_partition(shifted_hidden_states, self.window_size)
 
-            hidden_states, ct = block(hidden_states, ct, timestep=timestep, class_labels=class_labels, emb=cond,
-                                      attn_mask=attn_mask)
+            hidden_states, ct = block(hidden_states, ct, 
+                                    #   timestep=timestep, class_labels=class_labels, 
+                                      emb=cond, attn_mask=attn_mask)
 
             hidden_states = window_reverse(hidden_states, self.window_size, height_pad, width_pad)
 
@@ -859,8 +874,8 @@ class PDEBlock(nn.Module):
         self.do_propagation = do_propagation
 
     def forward(self, x, carrier_tokens,
-                timestep: Optional[torch.LongTensor] = None,
-                class_labels: Optional[torch.LongTensor] = None,
+                # timestep: Optional[torch.LongTensor] = None,
+                # class_labels: Optional[torch.LongTensor] = None,
                 emb: Optional[torch.LongTensor] = None,
                 attn_mask: Optional[torch.Tensor] = None):
 
@@ -869,7 +884,7 @@ class PDEBlock(nn.Module):
 
         x = x.view(B, H * W, N)
 
-        # Bc = emb.shape[0]
+        Bc = emb.shape[0]
 
         if self.carrier_token_active:
 
@@ -881,8 +896,10 @@ class PDEBlock(nn.Module):
 
 
             ######## DiT block with MSA, MLP, and AdaIN ########
-            msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = self.adain_1(timestep=timestep,
-                                                                                          class_labels=class_labels,                                                                      emb=emb)
+            msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = self.adain_1(emb=emb,
+                                                                                        #   timestep=timestep,
+                                                                                        #   class_labels=class_labels,
+                                                                                          )
             ct_msa = self.hat_norm1(ct)
             ct_msa = ct_msa * (1 + msa_scale[:, None]) + msa_shift[:, None]
 
@@ -906,33 +923,34 @@ class PDEBlock(nn.Module):
 
 
         ########### DiT block with MSA, MLP, and AdaIN ############
-        # msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = self.adain_2(timestep=timestep,
-        #                                                                               class_labels=class_labels,
-        #                                                                               emb=emb)
+        msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = self.adain_2(emb=emb,
+                                                                                    #   timestep=timestep,
+                                                                                    #   class_labels=class_labels,
+                                                                                      )
 
-        # num_windows_total = int(B // Bc)
+        num_windows_total = int(B // Bc)
 
-        # msa_shift = msa_shift.repeat_interleave(num_windows_total, dim=0)
-        # msa_scale = msa_scale.repeat_interleave(num_windows_total, dim=0)
-        # msa_gate = msa_gate.repeat_interleave(num_windows_total, dim=0)
-        # mlp_shift = mlp_shift.repeat_interleave(num_windows_total, dim=0)
-        # mlp_scale = mlp_scale.repeat_interleave(num_windows_total, dim=0)
-        # mlp_gate = mlp_gate.repeat_interleave(num_windows_total, dim=0)
+        msa_shift = msa_shift.repeat_interleave(num_windows_total, dim=0)
+        msa_scale = msa_scale.repeat_interleave(num_windows_total, dim=0)
+        msa_gate = msa_gate.repeat_interleave(num_windows_total, dim=0)
+        mlp_shift = mlp_shift.repeat_interleave(num_windows_total, dim=0)
+        mlp_scale = mlp_scale.repeat_interleave(num_windows_total, dim=0)
+        mlp_gate = mlp_gate.repeat_interleave(num_windows_total, dim=0)
 
         x_msa = self.norm1(x)
 
-        # x_msa = x_msa * (1 + msa_scale[:, None]) + msa_shift[:, None]
+        x_msa = x_msa * (1 + msa_scale[:, None]) + msa_shift[:, None]
 
         x_msa = self.attn(x_msa, attn_mask=attn_mask)
-        # x_msa = x_msa * (1 + msa_gate[:, None])
+        x_msa = x_msa * (1 + msa_gate[:, None])
 
         x = x + self.drop_path(x_msa)
 
         x_mlp = self.norm2(x)
 
-        # x_mlp = x_mlp * (1 + mlp_scale[:, None]) + mlp_shift[:, None]
+        x_mlp = x_mlp * (1 + mlp_scale[:, None]) + mlp_shift[:, None]
         x_mlp = self.mlp(x_mlp)
-        # x_mlp = x_mlp * (1 + mlp_gate[:, None])
+        x_mlp = x_mlp * (1 + mlp_gate[:, None])
         x = x + self.drop_path(x_mlp)
 
         ##########################################################
@@ -1137,6 +1155,8 @@ class PDEImpl(nn.Module):
             num_classes=1000,
             periodic=True,
             carrier_token_active: bool = False,
+            dit_active: bool = False,
+            inj_active: bool = False,
             **kwargs
     ):
         super().__init__()
@@ -1147,12 +1167,17 @@ class PDEImpl(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
+
         self.num_classes = num_classes
         self.num_heads = num_heads
         self.periodic = periodic
 
         self.use_carrier_tokens = carrier_token_active
+        self.dit_active = dit_active
+        self.inj_active = inj_active
+
         self.max_hidden_size = max_hidden_size
+        self.hidden_size_layers = [min(hidden_size * 2 ** i, max_hidden_size) for i in range(self.num_encoder_layers + 1)]
 
         assert self.max_hidden_size >= hidden_size, f"max_hidden_size {max_hidden_size} must be greater than or equal to hidden_size {hidden_size}."
 
@@ -1172,10 +1197,12 @@ class PDEImpl(nn.Module):
 
         # timestep and label embedders
         for i in range(self.num_encoder_layers + 1):
-
-            hidden_size_layer = min(hidden_size * 2 ** i, max_hidden_size)
-            # self.__setattr__(f"t_embedder_{i}", TimestepEmbedder(hidden_size_layer))
-            # self.__setattr__(f"y_embedder_{i}", LabelEmbedder(num_classes, hidden_size_layer, class_dropout_prob))
+            hidden_size_layer = self.hidden_size_layers[i]
+            if inj_active:
+                self.__setattr__(f"c_embedder_{i}", mlp(num_classes, hidden_size_layer, [hidden_size_layer]))
+            if dit_active:
+                self.__setattr__(f"t_embedder_{i}", TimestepEmbedder(hidden_size_layer))
+                self.__setattr__(f"y_embedder_{i}", LabelEmbedder(num_classes, hidden_size_layer, class_dropout_prob))
 
         # encoder
         for i in range(self.num_encoder_layers):
@@ -1244,15 +1271,20 @@ class PDEImpl(nn.Module):
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj.bias, 0)
 
-        # for i in range(self.num_encoder_layers):
+        for i in range(self.num_encoder_layers):
 
-            # Initialize label embedding table:
-            # nn.init.normal_(self.__getattr__(f"y_embedder_{i}").embedding_table.weight, std=0.02)
+            # Initialize condition MLP:
+            if self.inj_active:
+                nn.init.normal_(self.__getattr__(f"c_embedder_{i}")[0].weight, std=0.02)
+                nn.init.normal_(self.__getattr__(f"c_embedder_{i}")[2].weight, std=0.02)
 
-            # Initialize timestep embedding MLP:
-            # nn.init.normal_(self.__getattr__(f"t_embedder_{i}").mlp[0].weight, std=0.02)
-            # nn.init.normal_(self.__getattr__(f"t_embedder_{i}").mlp[2].weight, std=0.02)
+            if self.dit_active:
+                # Initialize timestep embedding MLP:
+                nn.init.normal_(self.__getattr__(f"t_embedder_{i}").mlp[0].weight, std=0.02)
+                nn.init.normal_(self.__getattr__(f"t_embedder_{i}").mlp[2].weight, std=0.02)
 
+                # Initialize label embedding table:
+                nn.init.normal_(self.__getattr__(f"y_embedder_{i}").embedding_table.weight, std=0.02)
 
         blocks = [self.__getattr__(f"encoder_level_{i}") for i in range(self.num_encoder_layers)]
         blocks += [self.latent]
@@ -1276,7 +1308,7 @@ class PDEImpl(nn.Module):
         nn.init.constant_(self.final_layer.out_proj.weight, 0)
         nn.init.constant_(self.final_layer.out_proj.bias, 0)
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, c: Optional[torch.Tensor]) -> torch.Tensor:
         """
         Forward pass of PDE transformer.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -1285,27 +1317,31 @@ class PDEImpl(nn.Module):
         """
         x = self.x_embedder(x)  # (N, C, H, W)
 
-        if t is None:
-            t = torch.Tensor([0]).to(x.device)
+        # if t is None:
+        #     t = torch.Tensor([0]).to(x.device)
 
-        if len(t.shape) == 0:
-            t = t.unsqueeze(0)
-            t = t.repeat(x.shape[0])
-            t = t.to(x.device)
+        # if len(t.shape) == 0:
+        #     t = t.unsqueeze(0)
+        #     t = t.repeat(x.shape[0])
+        #     t = t.to(x.device)
 
         # timestep scaling (from 0 - 1 to 0 - 1000)
-        t = t * 1000.0       
+        # t = t * 1000.0       
 
-        if y is None:
-            y = torch.ones(x.shape[0], dtype=torch.long, device=x.device) * self.num_classes
+        # if y is None:
+        #     y = torch.ones(x.shape[0], dtype=torch.long, device=x.device) * self.num_classes
 
         emb_list = []
         for i in range(self.num_encoder_layers + 1):
-            # t_emb = self.__getattr__(f"t_embedder_{i}")(t)
-            # y_emb = self.__getattr__(f"y_embedder_{i}")(y, self.training)
-            # c = t_emb + y_emb
-            c = None
-            emb_list.append(c)
+            c_emb = torch.zeros((x.shape[0], self.hidden_size_layers[i]), device=x.device, dtype=x.dtype)
+            if self.inj_active:
+                c_emb += self.__getattr__(f"c_embedder_{i}")(c)
+
+            if self.dit_active:
+                c_emb += self.__getattr__(f"t_embedder_{i}")(t)
+                c_emb += self.__getattr__(f"y_embedder_{i}")(y, self.training)
+
+            emb_list.append(c_emb)
 
         residuals_list = []
         for i, c in enumerate(emb_list[:-1]):

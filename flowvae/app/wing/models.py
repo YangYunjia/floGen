@@ -6,10 +6,6 @@ It is a combination of `run.py` (airfoil-to-wing models), `run_2d.py` (airfoil p
 
 '''
 
-from flowvae.ml_operator import ModelOperator, BasicCondAEOperator
-from flowvae.dataset import FlowDataset
-from flowvae.utils import warmup_lr, load_encoder_decoder
-import matplotlib.pyplot as plt
 from torch import nn
 import torch
 from flowvae.vae import DecoderModel, EncoderDecoderLSTM, EncoderDecoder, CondAutoEncoder, Unet, BranchUnet, BranchDecoderModel
@@ -510,10 +506,10 @@ class WingEDTransformer_Mesh(EncoderDecoderTransolver):
 class WingPDETransformer(PDEImpl):
 
     def __init__(self, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, 
-                 dropout=0, device = 'cuda:0'):
+                 type_cond: str = 'cat', dropout=0, device = 'cuda:0'):
         # n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3
         kwargs = {
-            'in_channels':      fun_dim + 2,
+            'in_channels':      fun_dim + (2 if type_cond in ['cat'] else 0),
             'out_channels':     out_dim,
             'window_size':      int(0.5 * (patch_size[0] + patch_size[1])),    # in PDE stage, the window
             'patch_size':       int(0.5 * (patch_size[0] + patch_size[1])),    # in patch embedding step, patch
@@ -521,20 +517,23 @@ class WingPDETransformer(PDEImpl):
             'depth':            [2, 5, 8, 5, 2] if n_layers == 5 else None,
             'num_heads':        n_head,
             'mlp_ratio':        mlp_ratio,
-            'num_classes':      0,              # classification (condition) embedding
+            'num_classes':      2,              # classification (condition) embedding
             'class_dropout_prob': 0,            # also for classification (condition) embedding
             'periodic':         False,
-            'carrier_token_active': False
+            'carrier_token_active': False,
+            'dit_active':       False,
+            'inj_active':       type_cond not in ['cat'],
         }
         
         super().__init__(**kwargs)
+        self.type_cond = type_cond
         self.device = device
 
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
-        B_, C_, H_, W_ = inputs.shape
-        cat_inputs = torch.concatenate((inputs, code[:, :2, None, None].repeat((1, 1, H_, W_))), axis=1)
-        return [super().forward(cat_inputs, None, None)]
-
+        if self.type_cond in ['cat']:
+            B_, C_, H_, W_ = inputs.shape
+            inputs = torch.concatenate((inputs, code[:, :2, None, None].repeat((1, 1, H_, W_))), axis=1)
+        return [super().forward(inputs, None, None, c = (None if self.type_cond in ['cat'] else code))]
 
 '''
 
