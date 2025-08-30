@@ -290,6 +290,19 @@ class Wing_api():
         
         return wg
     
+    def end2end_predict(self, data: dict) -> dict:
+        
+        inputs = data['conditions'] + data['planform'] + [data['t']] + data['cstu'] + data['cstl']
+        wg = self.predict(inputs)
+        wg.aero_force()
+        cl_array = wg.cl
+        surfaceField = wg.get_formatted_surface().transpose(2, 0, 1)
+        return {
+            "geom": surfaceField[:3].tolist(),
+            "value": surfaceField[3:].tolist(),
+            "cl_array": cl_array.tolist()
+        }
+    
     def _sim_2d(self, n_cfd: int, airsim: AirfoilSimulator) -> torch.Tensor:
         '''
         simulate the typical airfoils of a wing to get the 2D results
