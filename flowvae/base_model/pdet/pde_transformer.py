@@ -276,6 +276,8 @@ class TokenInitializer(nn.Module):
     """
     Carrier token Initializer based on: "Hatamizadeh et al.,
     FasterViT: Fast Vision Transformers with Hierarchical Attention
+
+    purpose: get the "global" tokens from each windows (from a Conv2d + avgPool)
     """
     def __init__(self,
                  dim,
@@ -453,7 +455,7 @@ class PDEStage(nn.Module):
 
         for n, block in enumerate(self.blocks):
 
-            shift_size = 0 if n % 2 == 0 else self.window_size // 2
+            shift_size = 0 if n % 2 == 0 else self.window_size // 2 # SW-MSA or W-MSA
 
             # channels last
             hidden_states = torch.permute(hidden_states, (0, 2, 3, 1))
@@ -470,7 +472,7 @@ class PDEStage(nn.Module):
             _, height_pad, width_pad, _ = shifted_hidden_states.shape
 
             if self.carrier_token_active:
-                ct = self.global_tokenizer(hidden_states)
+                ct = self.global_tokenizer(hidden_states)   # global carrier only calculated on un-shifted maps
             else:
                 ct = None
 
@@ -576,7 +578,7 @@ class CarrierTokenAttention2DTimestep(nn.Module):
             print(f'Kwargs: {kwargs}')
 
         self.dim = dim
-        self.heads = num_heads
+        self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         self.to_qkv = nn.Linear(dim, dim * 3, bias=bias)
@@ -596,32 +598,32 @@ class CarrierTokenAttention2DTimestep(nn.Module):
         if self.posemb_type == 'rope2d':
             self.freqs_cis = None
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        b, n, c = x.size()
+        B, N, C = x.size()
         x = torch.unsqueeze(x, 1)
 
         qkv = self.to_qkv(x).chunk(3, dim=-1)
 
         if self.posemb_type == 'rope2d':
 
-            if self.freqs_cis is None or self.freqs_cis.shape[0] != n:
+            if self.freqs_cis is None or self.freqs_cis.shape[0] != N:
 
-                self.freqs_cis = precompute_freqs_cis_2d(self.dim // self.heads, n).to(x.device)
+                self.freqs_cis = precompute_freqs_cis_2d(self.dim // self.num_heads, N).to(x.device)
 
             # q, k input shape: B N H Hc
-            q, k = map(lambda t: rearrange(t, 'b p n (h d) -> (b p) n h d', h=self.heads), qkv[:-1])
+            q, k = map(lambda t: rearrange(t, 'b p n (h d) -> (b p) n h d', h=self.num_heads), qkv[:-1])
 
-            v = rearrange(qkv[2], 'b p n (h d) -> b p h n d', h=self.heads)
+            v = rearrange(qkv[2], 'b p n (h d) -> b p h n d', h=self.num_heads)
 
             q, k = apply_rotary_emb(q, k, freqs_cis=self.freqs_cis)
 
-            q = rearrange(q, '(b p) n h d -> b p h n d', b=b)
-            k = rearrange(k, '(b p) n h d -> b p h n d', b=b)
+            q = rearrange(q, '(b p) n h d -> b p h n d', b=B)
+            k = rearrange(k, '(b p) n h d -> b p h n d', b=B)
 
         else:
 
-            q, k, v = map(lambda t: rearrange(t, 'b p n (h d) -> b p h n d', h=self.heads), qkv)
+            q, k, v = map(lambda t: rearrange(t, 'b p n (h d) -> b p h n d', h=self.num_heads), qkv)
 
         if self.attn_type is None:  # v1 attention
 
@@ -886,14 +888,14 @@ class PDEBlock(nn.Module):
 
         Bc = emb.shape[0]
 
-        if self.carrier_token_active:
+        # only use carrier for W-MSA (because of the concatenated tokens not fit the mask)
+        if self.carrier_token_active and attn_mask is None:
 
             Bc, Hc, Wc, Nc = ct.shape
 
             # positional bias for carrier tokens
             ct = self.hat_pos_embed(ct)
             ct = ct.reshape(Bc, Hc * Wc, Nc)
-
 
             ######## DiT block with MSA, MLP, and AdaIN ########
             msa_shift, msa_scale, msa_gate, mlp_shift, mlp_scale, mlp_gate = self.adain_1(emb=emb,
@@ -904,8 +906,7 @@ class PDEBlock(nn.Module):
             ct_msa = ct_msa * (1 + msa_scale[:, None]) + msa_shift[:, None]
 
             # attention plus mlp
-
-            ct_msa = self.hat_attn(ct_msa, attn_mask=attn_mask)
+            ct_msa = self.hat_attn(ct_msa)  # global attention doesn't need the mask
 
             ct_msa = ct_msa * (1 + msa_gate[:, None])
             ct = ct + self.hat_drop_path(ct_msa)
@@ -955,7 +956,7 @@ class PDEBlock(nn.Module):
 
         ##########################################################
 
-        if self.carrier_token_active:
+        if self.carrier_token_active and attn_mask is None:
 
             # for hierarchical attention we need to split carrier tokens and window tokens back
             ctr, x = x.split(

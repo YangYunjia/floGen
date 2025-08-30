@@ -506,7 +506,7 @@ class WingEDTransformer_Mesh(EncoderDecoderTransolver):
 class WingPDETransformer(PDEImpl):
 
     def __init__(self, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, 
-                 type_cond: str = 'cat', dropout=0, device = 'cuda:0'):
+                 type_cond: str = 'cat', ct_active: bool = False, dropout=0, device = 'cuda:0'):
         # n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3
         kwargs = {
             'in_channels':      fun_dim + (2 if type_cond in ['cat'] else 0),
@@ -520,7 +520,7 @@ class WingPDETransformer(PDEImpl):
             'num_classes':      2,              # classification (condition) embedding
             'class_dropout_prob': 0,            # also for classification (condition) embedding
             'periodic':         False,
-            'carrier_token_active': False,
+            'carrier_token_active': ct_active,
             'dit_active':       False,
             'inj_active':       type_cond not in ['cat'],
         }
