@@ -1158,6 +1158,7 @@ class PDEImpl(nn.Module):
             carrier_token_active: bool = False,
             dit_active: bool = False,
             inj_active: bool = False,
+            output_type: int = 1, # 0 for both, 1 for decoder, -1 for force
             **kwargs
     ):
         super().__init__()
@@ -1176,6 +1177,7 @@ class PDEImpl(nn.Module):
         self.use_carrier_tokens = carrier_token_active
         self.dit_active = dit_active
         self.inj_active = inj_active
+        self.output_type = output_type
 
         self.max_hidden_size = max_hidden_size
         self.hidden_size_layers = [min(hidden_size * 2 ** i, max_hidden_size) for i in range(self.num_encoder_layers + 1)]
@@ -1221,39 +1223,48 @@ class PDEImpl(nn.Module):
         self.latent = PDEStage(dim=hidden_size_latent, num_heads=num_heads,
                                             window_size=window_size, depth=depth[self.num_encoder_layers], **dit_stage_args)
 
-        hidden_size_layer0 = min(hidden_size * 2, max_hidden_size)
-        if hidden_size_layer0 >= max_hidden_size:
-            keep_dim = True
-        else:
-            keep_dim = False
+        if output_type >= 0:
 
-        # double hidden size for last decoder layer 0
-        self.__setattr__("up1_0", Upsample(hidden_size_layer0, keep_dim=keep_dim))
-        self.__setattr__("reduce_chan_level0", nn.Conv2d(2 * min(hidden_size, max_hidden_size), hidden_size_layer0, kernel_size=1, bias=True))
-        self.__setattr__("decoder_level_0", PDEStage(dim=hidden_size_layer0, num_heads=num_heads,
-                                        window_size=window_size, depth=depth[self.num_encoder_layers + 1], **dit_stage_args))
-
-        # decoder layers 1 - num_encoder_layers
-        for i in range(1, self.num_encoder_layers):
-
-            hidden_size_layer = min(hidden_size * 2 ** i, max_hidden_size)
-            if 2 * hidden_size_layer >= max_hidden_size:
+            hidden_size_layer0 = min(hidden_size * 2, max_hidden_size)
+            if hidden_size_layer0 >= max_hidden_size:
                 keep_dim = True
-                hidden_size_upsample = max_hidden_size
             else:
                 keep_dim = False
-                hidden_size_upsample = 2 * hidden_size_layer
 
-            self.__setattr__(f"up{i+1}_{i}", Upsample(hidden_size_upsample, keep_dim=keep_dim))
-            self.__setattr__(f"reduce_chan_level{i}", nn.Conv2d(hidden_size_layer * 2, hidden_size_layer, kernel_size=1, bias=True))
-            self.__setattr__(f"decoder_level_{i}", PDEStage(dim=hidden_size_layer, num_heads=num_heads,
-                                            window_size=window_size, depth=depth[self.num_encoder_layers + i + 1], **dit_stage_args))
+            # double hidden size for last decoder layer 0
+            self.__setattr__("up1_0", Upsample(hidden_size_layer0, keep_dim=keep_dim))
+            self.__setattr__("reduce_chan_level0", nn.Conv2d(2 * min(hidden_size, max_hidden_size), hidden_size_layer0, kernel_size=1, bias=True))
+            self.__setattr__("decoder_level_0", PDEStage(dim=hidden_size_layer0, num_heads=num_heads,
+                                            window_size=window_size, depth=depth[self.num_encoder_layers + 1], **dit_stage_args))
 
-        hidden_size_out = min(2 * hidden_size, max_hidden_size)
-        self.output = nn.Conv2d(hidden_size_out, hidden_size_out, kernel_size=3, stride=1, padding=1,
-                                bias=True)
+            # decoder layers 1 - num_encoder_layers
+            for i in range(1, self.num_encoder_layers):
 
-        self.final_layer = FinalLayer(hidden_size_out, self.out_channels * self.patch_size * self.patch_size)
+                hidden_size_layer = min(hidden_size * 2 ** i, max_hidden_size)
+                if 2 * hidden_size_layer >= max_hidden_size:
+                    keep_dim = True
+                    hidden_size_upsample = max_hidden_size
+                else:
+                    keep_dim = False
+                    hidden_size_upsample = 2 * hidden_size_layer
+
+                self.__setattr__(f"up{i+1}_{i}", Upsample(hidden_size_upsample, keep_dim=keep_dim))
+                self.__setattr__(f"reduce_chan_level{i}", nn.Conv2d(hidden_size_layer * 2, hidden_size_layer, kernel_size=1, bias=True))
+                self.__setattr__(f"decoder_level_{i}", PDEStage(dim=hidden_size_layer, num_heads=num_heads,
+                                                window_size=window_size, depth=depth[self.num_encoder_layers + i + 1], **dit_stage_args))
+
+            hidden_size_out = min(2 * hidden_size, max_hidden_size)
+            self.output = nn.Conv2d(hidden_size_out, hidden_size_out, kernel_size=3, stride=1, padding=1,
+                                    bias=True)
+
+            self.final_layer = FinalLayer(hidden_size_out, self.out_channels * self.patch_size * self.patch_size)
+        
+        if output_type <= 0:
+            self.head = nn.Sequential(
+                nn.LayerNorm(hidden_size_latent),
+                nn.Linear(hidden_size_latent, out_channels)
+            )
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -1289,7 +1300,7 @@ class PDEImpl(nn.Module):
 
         blocks = [self.__getattr__(f"encoder_level_{i}") for i in range(self.num_encoder_layers)]
         blocks += [self.latent]
-        blocks += [self.__getattr__(f"decoder_level_{i}") for i in range(self.num_encoder_layers)]
+        if self.output_type >= 0: blocks += [self.__getattr__(f"decoder_level_{i}") for i in range(self.num_encoder_layers)]
 
         for block in blocks:
 
@@ -1303,11 +1314,16 @@ class PDEImpl(nn.Module):
                     nn.init.constant_(blc.adain_1.linear.weight, 0)
                     nn.init.constant_(blc.adain_1.linear.bias, 0)
 
-        # Zero-out output layers:
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.final_layer.out_proj.weight, 0)
-        nn.init.constant_(self.final_layer.out_proj.bias, 0)
+        if self.output_type >= 0:
+            # Zero-out output layers:
+            nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+            nn.init.constant_(self.final_layer.out_proj.weight, 0)
+            nn.init.constant_(self.final_layer.out_proj.bias, 0)
+
+        if self.output_type <= 0:
+            nn.init.constant_(self.head.linear.weight, 0)
+            nn.init.constant_(self.head.linear.bias, 0)
 
     def forward(self, x, t, y, c: Optional[torch.Tensor]) -> torch.Tensor:
         """
@@ -1352,38 +1368,44 @@ class PDEImpl(nn.Module):
             x = self.__getattr__(f"down{i}_{i+1}")(out_enc_level)
 
         c = emb_list[-1]
-        x = self.latent(x, c)
+        x = self.latent(x, c)   # （PDEStage -> B C H W)
 
-        for i, (residual, emb) in enumerate(zip(residuals_list[1:][::-1], emb_list[1:-1][::-1])):
-            # decoder
-            x = self.__getattr__(f"up{self.num_encoder_layers - i}_{self.num_encoder_layers - i - 1}")(x)
-            x = torch.cat([x, residual], 1)
-            x = self.__getattr__(f"reduce_chan_level{self.num_encoder_layers - i - 1}")(x)
-            x = self.__getattr__(f"decoder_level_{self.num_encoder_layers - i - 1}")(x, emb)
+        if self.output_type >= 0:
 
-        x = self.__getattr__(f"up1_0")(x)
-        x = torch.cat([x, residuals_list[0]], 1)
-        x = self.__getattr__(f"reduce_chan_level0")(x)
-        x = self.__getattr__(f"decoder_level_0")(x, emb_list[1])
+            for i, (residual, emb) in enumerate(zip(residuals_list[1:][::-1], emb_list[1:-1][::-1])):
+                # decoder
+                x = self.__getattr__(f"up{self.num_encoder_layers - i}_{self.num_encoder_layers - i - 1}")(x)
+                x = torch.cat([x, residual], 1)
+                x = self.__getattr__(f"reduce_chan_level{self.num_encoder_layers - i - 1}")(x)
+                x = self.__getattr__(f"decoder_level_{self.num_encoder_layers - i - 1}")(x, emb)
 
-        # output
-        x = self.output(x)
-        x = self.final_layer(x, emb_list[1])  # (N, T, patch_size ** 2 * out_channels)
+            x = self.__getattr__(f"up1_0")(x)
+            x = torch.cat([x, residuals_list[0]], 1)
+            x = self.__getattr__(f"reduce_chan_level0")(x)
+            x = self.__getattr__(f"decoder_level_0")(x, emb_list[1])
 
-        # unpatchify
-        x = x.permute(0, 2, 3, 1)
+            # output
+            x = self.output(x)
+            x = self.final_layer(x, emb_list[1])  # (N, T, patch_size ** 2 * out_channels)
 
-        x = x.reshape(
-            shape=x.shape[:3] + (self.patch_size, self.patch_size, self.out_channels)
-        )
+            # unpatchify
+            x = x.permute(0, 2, 3, 1)
 
-        height = x.shape[1]
-        width = x.shape[2]
+            x = x.reshape(
+                shape=x.shape[:3] + (self.patch_size, self.patch_size, self.out_channels)
+            )
 
-        x = torch.einsum("nhwpqc->nchpwq", x)
-        x = x.reshape(
-            shape=(-1, self.out_channels, height * self.patch_size, width * self.patch_size)
-        )
+            height = x.shape[1]
+            width = x.shape[2]
+
+            x = torch.einsum("nhwpqc->nchpwq", x)
+            x = x.reshape(
+                shape=(-1, self.out_channels, height * self.patch_size, width * self.patch_size)
+            )
+
+        if self.output_type <= 0:
+            x = x.mean(dim=(2, 3))
+            x = self.head(x)
 
         return x
 
