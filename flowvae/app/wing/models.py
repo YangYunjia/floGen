@@ -505,13 +505,13 @@ class WingEDTransformer_Mesh(EncoderDecoderTransolver):
     
 class WingPDETransformer(PDEImpl):
 
-    def __init__(self, patch_size, fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, 
+    def __init__(self, patch_size, window_size=(8,8), fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, 
                  type_cond: str = 'cat', ct_active: bool = False, dropout=0, output_type=1, device = 'cuda:0'):
         # n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3
         kwargs = {
             'in_channels':      fun_dim + (2 if type_cond in ['cat'] else 0),
             'out_channels':     out_dim,
-            'window_size':      int(0.5 * (patch_size[0] + patch_size[1])),    # in PDE stage, the window
+            'window_size':      int(0.5 * (window_size[0] + window_size[1])),    # in PDE stage, the window
             'patch_size':       int(0.5 * (patch_size[0] + patch_size[1])),    # in patch embedding step, patch
             'hidden_size':      n_hidden,       # multiple by 2 for each block
             'depth':            [2, 5, 8, 5, 2] if n_layers == 5 else None,

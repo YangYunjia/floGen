@@ -476,7 +476,7 @@ class PDEStage(nn.Module):
             else:
                 ct = None
 
-            hidden_states = window_partition(shifted_hidden_states, self.window_size)
+            hidden_states = window_partition(shifted_hidden_states, self.window_size)   # B(Bc x Nwindow) x W x W x C
 
             hidden_states, ct = block(hidden_states, ct, 
                                     #   timestep=timestep, class_labels=class_labels, 
