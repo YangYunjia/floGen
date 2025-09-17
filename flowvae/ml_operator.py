@@ -9,11 +9,13 @@ from torch import nn
 from torch.nn.modules import Module
 from torch.utils.data import Subset, DataLoader, random_split
 import torch.optim as opt
-
-import sys, os, random, time
+from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_foreach_support#, _device_has_foreach_support
+def _device_has_foreach_support(device): return True
+import sys, os, random, time, copy
 import numpy as np
 from tqdm import tqdm
-from typing import List, Callable, NewType, Union, Any, NewType, Tuple
+from typing import List, Callable, NewType, Union, Any, NewType, Tuple, Iterable, Optional, Dict
+import threading
 
 from flowvae.vae import EncoderDecoder
 from flowvae.dataset import ConditionDataset, FlowDataset
@@ -191,6 +193,153 @@ def K_fold_evaluate(fldata, model, func_eval, folder, history, device):
 
     return history
 
+# ----- EMA Gradient Clipper -----
+def _clip_grad_norm(
+        parameters: Union[torch.Tensor, Iterable[torch.Tensor]], 
+        max_norm: float,
+        clip_norm: float, 
+        norm_type: float = 2.0,
+        error_if_nonfinite: bool = False, 
+        foreach: Optional[bool] = None) -> torch.Tensor:
+    r"""Clip the gradient norm of an iterable of parameters.
+
+    The norm is computed.ema_coef2 over all gradients together, as if they were
+    concatenated into a single vector. Gradients are modified in-place.
+
+    Args:
+        parameters (Iterable[Tensor] or Tensor): an iterable of Tensors or a
+            single Tensor that will have gradients normalized
+        max_norm (float): max norm of the gradients
+        norm_type (float): type of the used p-norm. Can be ``'inf'`` for
+            infinity norm.
+        error_if_nonfinite (bool): if True, an error is thrown if the total
+            norm of the gradients from :attr:`parameters` is ``nan``,
+            ``inf``, or ``-inf``. Default: False (will switch to True in the future)
+        foreach (bool): use the faster foreach-based implementation.
+            If ``None``, use the foreach implementation for CUDA and CPU native tensors and silently
+            falle total norm of order {norm_type} for gradients from '
+            '`parameters` is non-finite, so it cannot be clipped. To disable '
+            'this error and scale the gradients by the non-finite norm anyway, '
+            'set `error_if_nonfinite=False`')
+    clip_coef = max_norm / (total_norm + 1e-6)
+    # Note: multiplying by the clamped coef is redundant when the coef is clamped to 1, but doing so
+    # avoids a `if clip_coef < 1:` conditional which can require a CPU <=> device synchronization
+    # when the gradients do not reside in CPU memory.
+    clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+    for ((device, _), ([device_grads], _)) in grouped_grads.items():  # type: ignore[assignment]
+        if (
+            (foreach is None and _has_foreach_support(device_grads, device))
+            or (foreach and _device_has_foreach_support(device))
+        ):
+            torch._foreach_mul_(device_grads, clip_coef_clamped.to(device))
+        elif foreach:
+            raise RuntimeError(f'foreach=True was passed, but can\'t use the foreach API on {device.type} tensors')
+        else:
+            clip_coef_clamped_device = clip_coef_clamped.to(device)
+            for g in device_grads:
+                g.mul_(clip_coef_clamped_device) back to the slow implementation for other device types.
+            Default: ``None``
+
+    Returns:
+        Total norm of the parameter gradients (viewed as a single vector).
+    """
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    grads = [p.grad for p in parameters if p.grad is not None]
+    max_norm = float(max_norm)
+    clip_norm = float(clip_norm)
+    norm_type = float(norm_type)
+    if len(grads) == 0:
+        return torch.tensor(0.)
+    first_device = grads[0].device
+    grouped_grads: Dict[Tuple[torch.device, torch.dtype], Tuple[List[List[torch.Tensor]], List[int]]] \
+        = _group_tensors_by_device_and_dtype([grads])  # type: ignore[assignment]
+
+    norms: List[torch.Tensor] = []
+    for ((device, _), ([device_grads])) in grouped_grads.items():  # type: ignore[assignment]
+        if (
+            (foreach is None and _has_foreach_support(device_grads, device))
+            or (foreach and _device_has_foreach_support(device))
+        ):
+            norms.extend(torch._foreach_norm(device_grads, norm_type))
+        elif foreach:
+            raise RuntimeError(f'foreach=True was passed, but can\'t use the foreach API on {device.type} tensors')
+        else:
+            norms.extend([torch.linalg.vector_norm(g, norm_type) for g in device_grads])
+
+    total_norm = torch.linalg.vector_norm(torch.stack([norm.to(first_device) for norm in norms]), norm_type)
+
+    if error_if_nonfinite and torch.logical_or(total_norm.isnan(), total_norm.isinf()):
+        raise RuntimeError(
+            f'The total norm of order {norm_type} for gradients from '
+            '`parameters` is non-finite, so it cannot be clipped. To disable '
+            'this error and scale the gradients by the non-finite norm anyway, '
+            'set `error_if_nonfinite=False`')
+    clipped=total_norm>max_norm
+    if clipped:
+    # Note: multiplying by the clamped coef is redundant when the coef is clamped to 1, but doing so
+    # avoids a `if clip_coef < 1:` conditional which can require a CPU <=> device synchronization
+    # when the gradients do not reside in CPU memory.
+        clip_coef_clamped = torch.clamp(clip_norm / (total_norm + 1e-6), max=1.0)
+        for ((device, _), ([device_grads])) in grouped_grads.items():  # type: ignore[assignment]
+            if (
+                (foreach is None and _has_foreach_support(device_grads, device))
+                or (foreach and _device_has_foreach_support(device))
+            ):
+                torch._foreach_mul_(device_grads, clip_coef_clamped.to(device))
+            elif foreach:
+                raise RuntimeError(f'foreach=True was passed, but can\'t use the foreach API on {device.type} tensors')
+            else:
+                clip_coef_clamped_device = clip_coef_clamped.to(device)
+                for g in device_grads:
+                    g.mul_(clip_coef_clamped_device)
+    return total_norm, clipped
+
+class EmaGradClip():
+    
+    def __init__(self,
+                 ema_coef1: float = 0.9,
+                 ema_coef2: float = 0.99,
+                 max_norm_ratio: float = 2.0,
+                 clip_norm_ratio: float = 1.1,
+                 ):
+        super().__init__()
+        self.ema_coef1 = ema_coef1
+        self.ema_coef2 = ema_coef2
+        self.max_norm_ratio = max_norm_ratio
+        self.clip_norm_ratio = clip_norm_ratio
+        self._grad_norm_ema1=0.0
+        self._grad_norm_ema2=0.0
+        self.ema_index=0
+
+    def _record_norm(self,new_norm:float):
+        self.ema_index+=1
+        self._grad_norm_ema1=self.ema_coef1*self._grad_norm_ema1+(1-self.ema_coef1)*new_norm
+        self._grad_norm_ema2=self.ema_coef2*self._grad_norm_ema2+(1-self.ema_coef2)*new_norm
+
+    @property
+    def _current_ema1(self):
+        return self._grad_norm_ema1/(1-self.ema_coef1**self.ema_index)
+
+    @property
+    def _current_ema2(self):
+        return self._grad_norm_ema2/(1-self.ema_coef2**self.ema_index)
+    
+    def on_before_optimizer_step(self, pl_module: nn.Module):
+        if self._grad_norm_ema2==0.0:
+            total_norm, clipped = _clip_grad_norm(pl_module.parameters(), 
+                                                         max_norm=10000,
+                                                         clip_norm=1,)
+        else:
+            total_norm, clipped = _clip_grad_norm(
+                pl_module.parameters(),
+                max_norm=self.max_norm_ratio*self._current_ema2,
+                clip_norm=self.clip_norm_ratio*self._current_ema1
+            )
+        norm=self.clip_norm_ratio*self._current_ema1 if clipped and self.ema_index!=0 else total_norm
+        if clipped: print('!', end='')
+        self._record_norm(norm)
+
 class ModelOperator():
     '''
     simple operator class for universial models
@@ -221,6 +370,7 @@ class ModelOperator():
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle: bool = True,
+                       ema_optimizer: bool = False
                        ) -> None:
         
         self.output_folder = output_folder
@@ -234,7 +384,7 @@ class ModelOperator():
         self.paras['num_epochs'] = num_epochs
         self.paras['batch_size'] = batch_size
         self.paras['num_workers'] = 0
-        self.paras['init_lr'] = init_lr
+        # self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
         self.paras['loss_parameters'] = {}
         
@@ -255,7 +405,10 @@ class ModelOperator():
         # optimizer
         self._optimizer = None
         self._optimizer_name = 'Not set'
-        self._optimizer_setting = None
+        self._optimizer_setting = {
+            'lr': init_lr,
+            'ema_optimizer': ema_optimizer,
+        }
         self._scheduler = None
         self._scheduler_name = 'Not set'
         self._scheduler_setting = None
@@ -267,7 +420,7 @@ class ModelOperator():
 
         self.initial_oprtor()
 
-        self.set_optimizer('Adam', lr=self.paras['init_lr'])
+        self.set_optimizer('Adam', **self._optimizer_setting)
         # self.set_scheduler('ReduceLROnPlateau', mode='min', factor=0.1, patience=5)
         print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
 
@@ -311,7 +464,7 @@ class ModelOperator():
             self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
         self.best_loss = 1e4
 
-    def set_optimizer(self, optimizer_name, **kwargs):
+    def set_optimizer(self, optimizer_name, ema_optimizer, **kwargs):
         if optimizer_name not in dir(opt):
             raise AttributeError(optimizer_name + ' not a vaild optimizer name!')
         else:
@@ -319,8 +472,11 @@ class ModelOperator():
             opt_class = getattr(opt, optimizer_name)
             self._optimizer_name = optimizer_name
             self._optimizer_setting = kwargs
+            if ema_optimizer:
+                self.ema_clip = EmaGradClip(ema_coef1=0.99, ema_coef2=0.999)
             self._optimizer = opt_class(self._model.parameters(), **kwargs)
-        
+            self._optimizer_setting['ema_optimizer'] = ema_optimizer
+
         if self._scheduler is not None:
             self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
         
@@ -430,6 +586,8 @@ class ModelOperator():
                             #* model backward process (only in training phase)
                             if phase == 'train':
                                 loss.backward()
+                                if self._optimizer_setting['ema_optimizer']:
+                                    self.ema_clip.on_before_optimizer_step(self._model)
                                 self._optimizer.step()
                                 if update_lr_batch:
                                     self._scheduler.step()
@@ -598,14 +756,14 @@ class BasicAEOperator(ModelOperator):
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
                  output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
                  split_train_ratio: float = 0.9, recover_split: str = None, 
-                 batch_size: int = 8, shuffle: bool = True,
+                 batch_size: int = 8, shuffle: bool = True, ema_optimizer: bool = False,
                  ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
         
         self.ref = ref
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle, ema_optimizer)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -654,22 +812,14 @@ class AEOperator(ModelOperator):
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle=True,
+                       ema_optimizer: bool = False,
                        ref=False,
                        input_channels: Tuple[int, int] = (None, None), 
                        recon_channels: Tuple[int, int] =(1, None),
                        recon_type: str = 'field'
                        ):
         
-        super().__init__(opt_name=opt_name,
-                         model=model,
-                         dataset=dataset,
-                         output_folder=output_folder,
-                         init_lr=init_lr,
-                         num_epochs=num_epochs,
-                         split_train_ratio=split_train_ratio,
-                         recover_split=recover_split,
-                         batch_size=batch_size,
-                         shuffle=shuffle)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle, ema_optimizer)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels
