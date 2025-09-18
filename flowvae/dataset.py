@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 import numpy as np
 import os
 import random
+import copy
 from typing import List, Callable, NewType, Union, Tuple
 
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
@@ -271,6 +272,7 @@ class MCFlowDataset(FlowDataset):
         airfoil_idx = -1
         last_idx    = -1
         # if input igroup is not contiune, it will be replaced with a continue one in running
+        self.original_igroup = copy.deepcopy(self.all_index[:, 0])
         for i, idx in enumerate(self.all_index):
             if idx[0] != last_idx:
                 airfoil_idx += 1
@@ -424,6 +426,9 @@ class MCFlowDataset(FlowDataset):
     
     def get_index_info(self, i_f, i_c, i_idx):
         return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
+    
+    def get_origin_igroup(self, i_f, i_c):
+        return self.original_igroup[int(self.condis_st[i_f] + i_c)]
 
 class ConditionDataset(Dataset):
     '''
