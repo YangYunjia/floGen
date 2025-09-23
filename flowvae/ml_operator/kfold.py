@@ -12,28 +12,29 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
 
     ### paras
 
-    - `fldata`: (`dataset`):    the dataset to train the model. The index for each training and evaluating 
-    will be selected from this dataset
+    - `dataset_len`: (`int`):    the dataset length. The index for each training and evaluating 
+    will be selected from `range(dataset_len)`. Remind to use `airfoil_num` for shapewise = True.
+
     - `func_train`: (`Callable`):   the function for training the model. Its inputs and outputs must be 
     exactly the same as follows to run the function
         - **args** for function
             - `irun`:   (`int`)   number of run
-            - `train_dataset`: (`dataset`)    the dataset for this run
+            - `itrain`: (`List[int]`)    the indice for this run (use `dataset.subset(itrain)` to get subset)
         - **return** for function
             - `model`: (`nn.Module`)  the trained model
         - remarks
             - the dataset is well set by k-fold function, and in most cases there's no need for validation
             during each training. So, the argument `split_train_ratio` for `ModelOperator` in `func_train` 
             to train the model is Recommonded to set to `1.0`
+
     - `func_test`: (`Callable`, default = `None`): the function for evaluating the model. Its inputs and 
     outputs must be exactly the same as follows to run the function. If is `None`,  there will not be 
     evaluation
         - **args** for function
             - `irun`:   (`int`)   number of run
             - `model`: (`nn.Module`)  the trained model
-            - `fldata`: (`dataset`)    the whole dataset to test
-            - `training_indexs`: (`List[int]`) the index number of training samples in `fldata` for this run 
-            - `testing_indexs`: (`List[int]`) the index number of samples not involved in training for this run 
+            - `itrain`: (`List[int]`) the index number of training samples in `fldata` for this run 
+            - `itest`: (`List[int]`) the index number of samples not involved in training for this run 
         - **return** for function
             - `errors`: (`np.ndarray`) an array of error for each sample, the size should be (`Ni x Nc`) where Ni
             is number of samples, and Nc is number of error values for each sample (can be the used assigned 
@@ -56,8 +57,6 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
     - `errors`: (`List[np.ndarray]`) a list of all `errors` return by each run
     - `errstats`: (`List[np.ndarray]`) a list of all `errstats` return by each run
 
-    
-    
     '''
     
     avg = int(dataset_len / k)

@@ -8,12 +8,12 @@ adapted from the original module of pyTorch to simplify
 '''
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 import numpy as np
 import os
 import random
 import copy
-from typing import List, Callable, NewType, Union, Tuple
+from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence
 
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
@@ -25,7 +25,6 @@ def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
     print(info)
     return data
-
 
 class FlowDataset(Dataset):
     '''
@@ -192,6 +191,9 @@ class FlowDataset(Dataset):
             auxs = torch.from_numpy(self.auxs[d_index])
             return {'input': inputs, 'label': labels, 'aux': auxs}
     
+    def subset(self, indices: Sequence[int]) -> Subset:
+        return Subset(self, indices)
+
 class MCFlowDataset(FlowDataset):
     
     default_split_paras = {
@@ -374,7 +376,6 @@ class MCFlowDataset(FlowDataset):
             auxs = torch.from_numpy(self.auxs[d_index])
             return {'input': inputs, 'label': labels, 'aux': auxs}
 
-    
     def _get_normal_item(self, idx):
 
         # op_cod = idx % self.condis_num
@@ -429,6 +430,19 @@ class MCFlowDataset(FlowDataset):
     
     def get_origin_igroup(self, i_f, i_c):
         return self.original_igroup[int(self.condis_st[i_f] + i_c)]
+
+    def subset(self, indices: Sequence[int], shapewise: bool = True) -> Subset:
+
+        if not shapewise:
+            data_indices = indices
+        else:
+            data_indices = []
+            for shape_indice in indices:
+                if shape_indice > self.airfoil_num:
+                    raise RuntimeError('Indice number larger than shape amount, maybe using shapewise = False?')
+                data_indices += list(range(self.condis_st[shape_indice], self.condis_st[shape_indice] + self.condis_all_num[shape_indice]))
+
+        return Subset(self, data_indices)
 
 class ConditionDataset(Dataset):
     '''

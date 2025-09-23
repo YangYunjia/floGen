@@ -1,11 +1,19 @@
+'''
+EMA (exponential moving average) gradient clip
+
+copy from PDE-Transformer
+'''
+
 import torch
 from torch import nn
-from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_foreach_support#, _device_has_foreach_support
-def _device_has_foreach_support(device): return True
+from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_foreach_support
 
+try:
+    from torch.utils._foreach_utils import _device_has_foreach_support
+except AttributeError:
+    def _device_has_foreach_support(device): return True
 
 from typing import List, Callable, NewType, Union, Any, NewType, Tuple, Iterable, Optional, Dict
-import threading
 
 # ----- EMA Gradient Clipper -----
 def _clip_grad_norm(
