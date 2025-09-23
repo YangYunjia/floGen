@@ -1,5 +1,5 @@
 from flowvae.vae import EncoderDecoder
-from flowvae.ml_operator import AEOperator
+from flowvae.ml_operator.operator import AEOperator
 from flowvae.dataset import ConditionDataset
 from flowvae.base_model.conv import convEncoder, convDecoder
 from flowvae.utils import warmup_lr

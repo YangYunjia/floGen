@@ -7,7 +7,8 @@ Author: Yunjia Yang
 '''
 
 
-from flowvae.ml_operator import ModelOperator, BasicCondAEOperator, load_model_from_checkpoint, K_fold, K_fold_evaluate
+from flowvae.ml_operator.operator import ModelOperator, BasicCondAEOperator, load_model_from_checkpoint
+from flowvae.ml_operator.kfold import K_fold, K_fold_evaluate
 from flowvae.dataset import FlowDataset
 from flowvae.utils import warmup_lr, warmup_lr_4, load_encoder_decoder
 import matplotlib.pyplot as plt

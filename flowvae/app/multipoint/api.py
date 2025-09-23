@@ -11,10 +11,11 @@ some big uncertainty by itselt, quite amazing)
 '''
 
 from flowvae.vae import frameVAE, Unet
-from flowvae.ml_operator import AEOperator
+from flowvae.ml_operator.operator import AEOperator
 from flowvae.post import get_force_1d_t
 from flowvae.app.buffet import Buffet, Series, Ploter
-from flowvae.utils import warmup_lr, load_encoder_decoder
+from flowvae.utils import warmup_lr
+from flowvae.app.multipoint.models import load_encoder_decoder
 
 import matplotlib.pyplot as plt
 from cfdpost.cfdresult import cfl3d

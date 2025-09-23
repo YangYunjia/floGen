@@ -10,7 +10,7 @@ Currently use: SLD estimated with model (no need to call VLM codes)
 '''
 
 
-from flowvae.ml_operator import load_model_from_checkpoint
+from flowvae.ml_operator.operator import load_model_from_checkpoint
 from flowvae.app.wing import models
 from flowvae.sim.cfl3d import AirfoilSimulator
 import matplotlib.pyplot as plt
