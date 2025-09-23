@@ -373,3 +373,144 @@ def get_flux_1d_t(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rh
 
     return mass_flux, moment_flux
 
+#* functions to get force from 2-D surfaces
+
+def get_cellinfo_2d_t(geom: torch.Tensor) -> torch.Tensor:
+    
+    '''
+    params:
+    ===
+    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
+
+    returns:
+    ===
+    `normals`: shape: (I-1, J-1, 3)
+    `areas`  : shape: (I-1, J-1)
+    '''
+    
+    # get corner points（p0, p1, p2, p3）
+    p0 = geom[..., :-1, :-1, :] # SW
+    p1 = geom[..., :-1, 1:, :]  # SE
+    p2 = geom[..., 1:, 1:, :]   # NW
+    p3 = geom[..., 1:, :-1, :]  # NE
+
+    # calculate two groups of normal vector and average
+    normals = torch.cross(p2 - p0, p3 - p1, dim=-1)
+    areas   = 0.5 * (torch.linalg.norm(torch.cross(p1 - p0, p2 - p0, dim=-1), dim=-1) + torch.linalg.norm(torch.cross(p2 - p0, p3 - p0, dim=-1), dim=-1))
+
+    # normalization
+    normals /= (torch.linalg.norm(normals, dim=-1, keepdim=True) + 1e-20)
+    # print(np.sum(normals * areas[..., np.newaxis], axis=(0,1)))
+    return normals, areas    
+
+def get_dxyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+    '''
+        
+    return:
+    ===
+    torch.Tensor: (CX, CY, CZ), shape (I, J, 3)
+    
+    '''
+    # calculate normal vector
+    n, a = get_cellinfo_2d_t(geom)
+    dfp = cp[..., None] * n * a[..., None]
+    
+    if not (cf is None or len(cf) == 0):
+        dfp += (cf - torch.sum(cf * n, dim=-1, keepdim=True) * n) * a[..., None]
+    
+    return dfp
+
+def get_xyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+    '''
+    
+    return:
+    ===
+    torch.Tensor: (CX, CY, CZ)
+    '''
+    return torch.sum(get_dxyforce_2d_t(geom, cp, cf), dim=(-3,-2))
+
+def get_force_2d_t(geom: torch.Tensor, aoa: float, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+    '''
+    integrate lift and drag from 2D surface data
+    
+    params:
+    ===
+    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
+    `aoa`: in DEGREE
+    `cp`  :  shape: (I-1, J-1)
+         Cp = (p - p_inf) / 0.5 * rho * U^2
+    `cf`:    (Cfx, Cfy, Cfz), shape: (I-1, J-1, 3)
+         Cf = (tau @ n) / 0.5 * rho * U^2 
+         
+        
+    return:
+    ===
+    torch.Tensor: (CD, CL, CZ)
+    '''
+    dfp = get_xyforce_2d_t(geom, cp, cf)
+    dfp[..., :2] = _xy_2_cl_tc(dfp[..., :2], aoa)
+    return dfp
+
+def get_moment_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None, ref_point: torch.Tensor=np.array([0.25, 0, 0])) -> torch.Tensor:
+    '''
+    integrate moment from 2D surface data
+    
+    params:
+    ===
+    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
+    `cp`  :  shape: (I-1, J-1)
+         Cp = (p - p_inf) / 0.5 * rho * U^2
+    `cf`:    (Cfx, Cfy, Cfz), shape: (I-1, J-1, 3)
+         Cf = (tau @ n) / 0.5 * rho * U^2 
+    `ref_point`: torch.Tensor: shape: (3,)
+        
+    return:
+    ===
+    torch.Tensor: (CMx, CMy, CMz)
+    '''
+    
+    dxyforce = get_dxyforce_2d_t(geom, cp, cf)
+    r = 0.25 * (geom[..., :-1, :-1, :] + geom[..., :-1, 1:, :] + geom[..., 1:, 1:, :] + geom[..., 1:, :-1, :]) - ref_point
+    
+    return np.sum(np.cross(r, dxyforce, dim=-1), axis=(-3, -2))
+
+def get_cellinfo_1d_t(geom: torch.Tensor) -> torch.Tensor:
+    '''
+    params:
+    ===
+    `geom`:  The geometry (x, y), shape: (..., I, 2)
+
+    returns:
+    ===
+    `tangens`: shape: (..., I-1, 2)
+    `normals`: shape: (..., I-1, 2)
+    # `areas`  : shape: (I-1, J-1)
+    '''
+    
+    # grid centric
+    tangens = geom[..., 1:, :] - geom[..., :-1, :]
+    tangens /= (torch.linalg.norm(tangens, dim=-1, keepdim=True) + 1e-20)
+    normals = torch.concatenate((-tangens[..., [1]], tangens[..., [0]]), axis=-1)
+    
+    return tangens, normals
+
+def _get_xz_cf_t(geom: torch.Tensor, cf: torch.Tensor):
+    '''
+    params:
+    ===
+    `geom`:  The geometry (x, y), shape: (..., Z, I, 3)
+    `cf`:  The geometry (cft, cfz), shape: (..., Z, I, 2)
+
+    returns:
+    ===
+    `cfxyz`: shape: (..., I, J, 3)
+    '''
+
+    tangens, normals = get_cellinfo_1d_t(geom[..., [0,1]])
+    tangens = 0.5 * (tangens[..., 1:, :, :] + tangens[..., :-1, :, :])    # transfer to cell centre at spanwise direction
+    # normals = 0.5 * (normals[1:] + normals[:-1])
+    # cfn = np.zeros_like(cf[..., 0])
+    # print(cf[..., [0]].shape, tangens.shape)
+    cfxyz = torch.concatenate((cf[..., [0]] * tangens, cf[..., [1]]), axis=-1)
+
+    return cfxyz
