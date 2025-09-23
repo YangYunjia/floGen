@@ -20,6 +20,7 @@ from flowvae.dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .ema import EmaGradClip
 from ..utils import MDCounter
+from .lora import add_lora_to_model
 
 def _check_existance_checkpoint(epoch, folder):
 
@@ -408,9 +409,11 @@ class ModelOperator():
 
         return save_dict
 
-    def set_transfer_model(self, transfer_name, grad_require_layers=['fc_code', 'decoder_input'], reset_param=True):
+    def set_transfer_model(self, transfer_name, grad_require_layers=None, reset_param=True,
+                           is_lora:bool=False, lora_params={}):
         '''
         load base model and set part of the parameters with grad off
+        ['fc_code', 'decoder_input']
 
         '''
         self.global_start_epoch = self.epoch
@@ -430,6 +433,24 @@ class ModelOperator():
 
                 for param in self.model._modules[ly].parameters():
                     param.requires_grad = True
+        
+        elif is_lora:
+
+            print('------- Lora applied, layers below are set grad require ------')
+            default_lora_params = {
+                'target_modules': 'qkv',
+                'r': 4,
+                'alpha': 16, 
+                'dropout': 0.05,
+            }
+            for k in lora_params:
+                default_lora_params[k] = lora_params[k]
+
+            self._model = add_lora_to_model(self._model, **default_lora_params)
+
+            for n, p in self._model.named_parameters():
+                if p.requires_grad:
+                    print(n, p.shape)
             
         else:
 
