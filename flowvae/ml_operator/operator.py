@@ -440,11 +440,14 @@ class ModelOperator():
             default_lora_params = {
                 'target_modules': 'qkv',
                 'r': 4,
-                'alpha': 16, 
+                'alpha': 'r', 
                 'dropout': 0.05,
             }
             for k in lora_params:
                 default_lora_params[k] = lora_params[k]
+
+            if default_lora_params['alpha'] == 'r':
+                default_lora_params['alpha'] = default_lora_params['r']
 
             self._model = add_lora_to_model(self._model, **default_lora_params)
 
@@ -455,6 +458,9 @@ class ModelOperator():
         else:
 
             print('------- All layers are set grad require ------')
+
+        trainable_params = sum(p.numel() for p in self._model.parameters() if p.requires_grad)
+        print(f' > trainable parameters amount: {trainable_params}')
 
 class BasicAEOperator(ModelOperator):
     '''
