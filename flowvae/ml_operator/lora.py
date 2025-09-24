@@ -115,7 +115,7 @@ class LoRAQKV(nn.Module):
         lora_addition = torch.concat((self.lora_q(x), torch.zeros_like(x), self.lora_v(x)), dim=-1)
         return qkv + lora_addition
 
-def add_lora_to_model(model, target_modules=("qkv"), r=4, alpha=16, dropout=0.05):
+def add_lora_to_model(model, target_modules=["qkv"], r=4, alpha=16, dropout=0.05):
     """
     Recursively replace nn.Linear layers with LoRALinear in target modules.
     Args:
@@ -125,8 +125,6 @@ def add_lora_to_model(model, target_modules=("qkv"), r=4, alpha=16, dropout=0.05
     Returns:
         model with LoRA layers injected
     """
-    for p in model.parameters():
-            p.requires_grad = False
 
     for name, module in model.named_children():
         # match the qkv layers

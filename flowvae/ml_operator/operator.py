@@ -125,7 +125,7 @@ class ModelOperator():
                                                   pin_memory=True)
                                     for phase in self.phases}     
         # optimizer
-        self._optimizer = None
+        self._optimizer: torch.optim.Optimizer = None
         self._optimizer_name = 'Not set'
         self._optimizer_setting = {
             'lr': init_lr,
@@ -436,9 +436,12 @@ class ModelOperator():
         
         elif is_lora:
 
+            for p in self.model.parameters():
+                p.requires_grad = False
+
             print('------- Lora applied, layers below are set grad require ------')
             default_lora_params = {
-                'target_modules': 'qkv',
+                'target_modules': ['qkv'],
                 'r': 4,
                 'alpha': 'r', 
                 'dropout': 0.05,
@@ -450,6 +453,10 @@ class ModelOperator():
                 default_lora_params['alpha'] = default_lora_params['r']
 
             self._model = add_lora_to_model(self._model, **default_lora_params)
+
+            # set optimizer and scheduler again to register the lora parameters
+            self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
+            self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
 
             for n, p in self._model.named_parameters():
                 if p.requires_grad:
