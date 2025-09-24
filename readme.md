@@ -38,9 +38,9 @@ The flowfield datasets to train all of our models are available upon request. Pl
 
 ### Web-wing - Interactive Transonic Wing Design App
 
-The physics-embedded transfer learning for transonic wing is demonstrated with a simple interactive app. You can modify the airfoil geometry, wing planform geometry, and wing operating conditions to see what will happen on the wing surface flow field. Feel free to play with it, and your knowledge on wing aerodynamics will grow.
+The physics-embedded transfer learning for transonic wing is demonstrated with a simple interactive app at [TUM website](https://webwing.pbs.cit.tum.de/). You can modify the airfoil geometry, wing planform geometry, and wing operating conditions to see what will happen on the wing surface flow field. Feel free to play with it, and your knowledge on wing aerodynamics will grow.
 
-Unfortunately, the author can not afford a server now, so the only way access to web-wing is running locally. You can find how to do it [here](https://flogen.readthedocs.io/en/latest/wingapp.html).
+You can also locally deploy it, and you can find how to do it [here](https://github.com/YangYunjia/webwing).
 
 The next step of the app is a gradient optimization tool for wing performance, which will come soon.
 

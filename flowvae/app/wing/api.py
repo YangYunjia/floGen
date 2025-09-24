@@ -244,7 +244,7 @@ class Wing_api():
         # shape: nv, nz, nx
         
         # airfoil to wing
-        geoms = torch.from_numpy(wg.geometry.transpose((2, 0, 1))).unsqueeze(0).float().to(self.device)
+        geoms = torch.from_numpy(wg.geom.transpose((2, 0, 1))).unsqueeze(0).float().to(self.device)
         prior_field = torch.concatenate((geoms, output_2d_corr), dim=1)
         output_3d = self.model_3d(prior_field[:, : self.input_ref], code=wing_paras[:, :2])[0]
         output_3d[:, :2] += output_2d_corr
@@ -295,7 +295,7 @@ class Wing_api():
         inputs = data['conditions'] + data['planform'] + [data['t']] + data['cstu'] + data['cstl']
         wg = self.predict(inputs)
         wg.aero_force()
-        cl_array = wg.cl
+        cl_array = wg.coefficients
         surfaceField = wg.get_formatted_surface().transpose(2, 0, 1)
         return {
             "geom": surfaceField[:3].tolist(),
