@@ -13,7 +13,7 @@ import numpy as np
 import os
 import random
 import copy
-from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence
+from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence, Optional
 
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
@@ -240,13 +240,14 @@ class MCFlowDataset(FlowDataset):
         self.airfoil_num = 0
         
         super().__init__(file_name, split_paras, data_base, input_channel_take, output_channel_take, aux_channel_take, flatten, swap_axis, unsqueeze, marker_idx)
-                
+            
+        self.getindex_type = getindex_type
         if getindex_type in ['noref']:
             self.get_item = super().__getitem__
         elif getindex_type in ['normal']:
             self.get_item = self._get_normal_item   # with reference
         elif getindex_type in ['origeom']:
-            self.get_item = self._get_origeom_item
+            self.get_item = self._get_origeom_item  # only one geom for one shape
             
         self._output_force_flag = False
         self.n_extra_ref_channel = 0
@@ -413,7 +414,10 @@ class MCFlowDataset(FlowDataset):
                 ref_aoa     = self.cond_index[st + ref_idx]
             
         else:
-            ref      = self.all_input[st: ed]
+            if self.getindex_type in ['origeom']:
+                ref = self.all_input[[idx]].repeat(self.condis_all_num[idx], axis=0)
+            else:
+                ref      = self.all_input[st: ed]
             ref_aoa  = None
 
         samples = {'flowfields': flowfield, 'condis': condis, 'ref': ref, 'ref_aoa': ref_aoa}
