@@ -15,6 +15,72 @@ import random
 import copy
 from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence, Optional
 
+def get_aerodynamics(index_file: Optional[np.ndarray] = None, index_take: Optional[List[int]] = None,
+                      ):
+    r'''
+    get the force from:
+
+    A. index file
+    ---
+    `index_file` -> `np.ndarray` (N, M)
+    `index_take` -> indexs in index of the aerodynamics
+
+    
+    '''
+
+    if index_file is not None:
+        forces = np.take(index_file, index_take, axis=1)
+
+    else:
+        # calculation from field data
+
+
+
+    from cfdpost.utils import clustcos, get_force_1d
+    
+
+            
+        print('Dataset is changed to output force %s as flowfield...' % _repr)
+        # nondim
+        param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+        print('>    non-dimensional parameters for %s will be %.6f' % (_repr, param))
+        forces[:, 0] *= param
+    
+        print('Dataset is changed to output force as flowfield...')
+        self.all_force = forces
+        
+    else:
+        force_file_path = os.path.join(self.data_base, 'force.npy')
+        if os.path.exists(force_file_path):
+            self.all_force = np.load(force_file_path)
+
+        else:
+            forces = np.zeros((len(self.all_data), 2))
+
+            nn = 201
+            xx = [clustcos(i, nn) for i in range(nn)]
+            all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+
+            for i, sample in enumerate(self.all_data):
+                geom = np.stack((all_x, sample[0]), axis=0).transpose(1, 0)
+                aoa  = self.all_index[i, 3]
+                forces[i] = get_force_1d(geom, aoa, sample[1], sample[2] / 1000.)
+
+            if info == 'non-dim':
+                param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+                print('>    non-dimensional parameters for Cl/Cd will be %.6f' % param)
+                forces[:, 0] *= param
+
+            self.all_force = forces
+            np.save(force_file_path, self.all_force)
+
+    self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
+    self.get_item = self._get_force_item
+    self._output_force_flag = True
+    
+    return param
+
+
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
     data: np.ndarray = np.load(file)

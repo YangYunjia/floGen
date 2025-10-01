@@ -62,6 +62,8 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     if set_to_eval: model.eval()
     return last_error
 
+
+
 class ModelOperator():
     '''
     simple operator class for universial models
@@ -145,6 +147,42 @@ class ModelOperator():
         self.set_optimizer('Adam', **self._optimizer_setting)
         # self.set_scheduler('ReduceLROnPlateau', mode='min', factor=0.1, patience=5)
         print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
+
+        # parameters controling loss
+        self.paras['loss_parameters'] = {'aero_weight':     1e-5,
+                                         'aero_epoch':      299}    # default 0.1 before 2023.8.4
+
+    def set_lossparas(self, **kwargs):
+        '''
+
+        set the parameters for loss terms when training, the keys include:
+        
+        >>> key          default         info
+        
+        - `sm_mode`         'NS'    the mode to calculate smooth loss
+            - `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
+            - `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
+            - `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
+            - `1d`      one-dimensional data (adapted from Runze)\n
+        - `sm_epoch`        1       (int) the epoch to start counting the smooth loss 
+        - `sm_weight`       0.001   (float)the weight of the smooth loss 
+        - `sm_offset`       2       (int) (need for `offset`) the diag. direction move offset
+        - `moment_weight`   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
+        - `code_weight`     0.1     (float) the weight of code loss, better for 0.1         
+        - `indx_weight`     0.0001  (float) the weight of index KLD loss  
+        - `indx_epoch`      10      (int) the epoch to start counting the index KLD loss 
+        - `indx_pivot`      -1      (int) the method to get avg_latent value
+            - if is a positive number, use the latent value of that condition index\n
+            - if `-1`, use the averaged value of all condition index
+        - `aero_weight `    1e-5    (float) the weight of aerodynamic loss
+        - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
+
+        '''
+        for key in kwargs:
+            if key in self.paras.keys():
+                self.paras['loss_parameters'][key] = kwargs[key]
+            else:
+                raise NotImplementedError(f'\'{key}\' not implemented in the current operator' )
 
     @property
     def model(self):
@@ -317,8 +355,6 @@ class ModelOperator():
                         # loss.item() gives the value of the tensor, multiple in the later is for weighted average
                         running_loss += MDCounter(loss_dict) * batch_size
                         
-
-
                 epoch_loss = running_loss / self.dataset_size[phase]
                 
                 if phase == 'train':
@@ -595,35 +631,6 @@ class AEOperator(ModelOperator):
                                          'aero_epoch':      299,
                                          'ge_epoch':        1,
                                          'ge_weight':       0.0}    # default 0.1 before 2023.8.4
-
-    def set_lossparas(self, **kwargs):
-        '''
-
-        set the parameters for loss terms when training, the keys include:
-        
-        >>> key          default         info
-        
-        - `sm_mode`         'NS'    the mode to calculate smooth loss
-            - `NS`:     use navier-stokes equation's conservation of mass and moment to calculate smooth\n
-            - `NS_r`    use the residual between mass/moment flux of reconstructed and ground truth as loss\n
-            - `offset`  offset diag. the field for several distance and sum the difference between field before and after move\n
-            - `1d`      one-dimensional data (adapted from Runze)\n
-        - `sm_epoch`        1       (int) the epoch to start counting the smooth loss 
-        - `sm_weight`       0.001   (float)the weight of the smooth loss 
-        - `sm_offset`       2       (int) (need for `offset`) the diag. direction move offset
-        - `moment_weight`   0.0     (float) (need for `NS`, `NS_r`) the weight of momentum flux residual
-        - `code_weight`     0.1     (float) the weight of code loss, better for 0.1         
-        - `indx_weight`     0.0001  (float) the weight of index KLD loss  
-        - `indx_epoch`      10      (int) the epoch to start counting the index KLD loss 
-        - `indx_pivot`      -1      (int) the method to get avg_latent value
-            - if is a positive number, use the latent value of that condition index\n
-            - if `-1`, use the averaged value of all condition index
-        - `aero_weight `    1e-5    (float) the weight of aerodynamic loss
-        - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
-
-        '''
-        for key in kwargs:
-            self.paras['loss_parameters'][key] = kwargs[key]
 
     def _init_training(self):
         
