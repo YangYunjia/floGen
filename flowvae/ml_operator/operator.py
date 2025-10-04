@@ -460,16 +460,14 @@ class ModelOperator():
 
             for param in self.model.parameters():
                 param.requires_grad = False
+
+            enable_gradient(self.model, grad_require_layers, reset_param)
             
             print('------- The layers below are set grad require ------')
-            for ly in grad_require_layers:
-                print(ly, ' :   ', self.model._modules[ly])
-                if reset_param:
-                    self.model._modules[ly].apply(reset_paras)
+            for n, p in self._model.named_parameters():
+                if p.requires_grad:
+                    print(n, p.shape)
 
-                for param in self.model._modules[ly].parameters():
-                    param.requires_grad = True
-        
         elif is_lora:
 
             for p in self.model.parameters():
@@ -781,6 +779,21 @@ class AEOperator(ModelOperator):
         save_dict = super().load_checkpoint(epoch=epoch, load_opt=load_opt, load_data_split=load_data_split)
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
+
+def enable_gradient(model, grad_require_layers, reset_param):
+    for name, module in model.named_children():
+        if any(t in name.lower() for t in grad_require_layers):
+
+        # for ly in grad_require_layers:
+        #     print(ly, ' :   ', self.model._modules[ly])
+            if reset_param:
+                module.apply(reset_paras)
+
+            for param in module.parameters():
+                param.requires_grad = True
+
+        else:
+            enable_gradient(module, grad_require_layers, reset_param)
 
 def reset_paras(layer):
     if 'reset_parameters' in dir(layer):
