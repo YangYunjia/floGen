@@ -15,72 +15,6 @@ import random
 import copy
 from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence, Optional
 
-def get_aerodynamics(index_file: Optional[np.ndarray] = None, index_take: Optional[List[int]] = None,
-                      ):
-    r'''
-    get the force from:
-
-    A. index file
-    ---
-    `index_file` -> `np.ndarray` (N, M)
-    `index_take` -> indexs in index of the aerodynamics
-
-    
-    '''
-
-    if index_file is not None:
-        forces = np.take(index_file, index_take, axis=1)
-
-    else:
-        # calculation from field data
-
-
-
-    from cfdpost.utils import clustcos, get_force_1d
-    
-
-            
-        print('Dataset is changed to output force %s as flowfield...' % _repr)
-        # nondim
-        param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
-        print('>    non-dimensional parameters for %s will be %.6f' % (_repr, param))
-        forces[:, 0] *= param
-    
-        print('Dataset is changed to output force as flowfield...')
-        self.all_force = forces
-        
-    else:
-        force_file_path = os.path.join(self.data_base, 'force.npy')
-        if os.path.exists(force_file_path):
-            self.all_force = np.load(force_file_path)
-
-        else:
-            forces = np.zeros((len(self.all_data), 2))
-
-            nn = 201
-            xx = [clustcos(i, nn) for i in range(nn)]
-            all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
-
-            for i, sample in enumerate(self.all_data):
-                geom = np.stack((all_x, sample[0]), axis=0).transpose(1, 0)
-                aoa  = self.all_index[i, 3]
-                forces[i] = get_force_1d(geom, aoa, sample[1], sample[2] / 1000.)
-
-            if info == 'non-dim':
-                param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
-                print('>    non-dimensional parameters for Cl/Cd will be %.6f' % param)
-                forces[:, 0] *= param
-
-            self.all_force = forces
-            np.save(force_file_path, self.all_force)
-
-    self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
-    self.get_item = self._get_force_item
-    self._output_force_flag = True
-    
-    return param
-
-
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
     data: np.ndarray = np.load(file)
@@ -132,13 +66,16 @@ class FlowDataset(Dataset):
         self.flatten = flatten
         
         if isinstance(file_name, str):
-            self.all_output = load_with_float_check(os.path.join(data_base, file_name + 'data.npy'))
-            self.all_input  = load_with_float_check(os.path.join(data_base, file_name + 'index.npy'))
+            self.output_path = os.path.join(data_base, file_name + 'data.npy')
+            self.input_path  = os.path.join(data_base, file_name + 'index.npy')
             self.fname = file_name
         elif isinstance(file_name, List):
-            self.all_output = load_with_float_check(os.path.join(data_base, file_name[0] + '.npy'))
-            self.all_input = load_with_float_check(os.path.join(data_base, file_name[1] + '.npy'))
+            self.output_path = os.path.join(data_base, file_name[0] + '.npy')
+            self.input_path = os.path.join(data_base, file_name[1] + '.npy')
             self.fname = file_name[0] + file_name[1]
+
+        self.all_output = load_with_float_check(self.output_path)
+        self.all_input  = load_with_float_check(self.input_path)
 
         if swap_axis is not None:
             self.all_input = np.swapaxes(self.all_input, *swap_axis)
@@ -259,6 +196,121 @@ class FlowDataset(Dataset):
     
     def subset(self, indices: Sequence[int]) -> Subset:
         return Subset(self, indices)
+
+    def change_to_force(self, take_index: Optional[List[int]] = None, is_nondim: bool = True,
+                        original_geom: Optional[np.ndarray] = None, use_save: bool = True, info=''):
+        '''
+
+        params:
+        ===
+        - `info` old version arguments
+            - `cltarg` ->> take index [10, 3] (cd , aoa)
+            - `aoatarg` ->> take index [10, 9] (cd, cl)
+
+
+        
+        '''
+
+        force_file_path = os.path.join(self.output_path[:-4] + '_force.npy')
+        
+        if info in ['cltarg', 'aoatarg']:
+            if info == 'cltarg':
+                take_index = [10, 3] # cd, aoa (for ma model)
+                _repr = 'AoA / Cd'
+            elif info == 'aoatarg':   
+                take_index = [10, 9] # cd, cl (for aoa model)
+                _repr = 'Cd / Cl'
+            
+            is_nondim = True
+                
+        if take_index is not None:
+            forces = np.take(self.all_index, take_index, axis=1)    
+
+        else:
+            _repr = 'Cd / Cl'
+            
+            if os.path.exists(force_file_path) and use_save:
+                load_data = torch.load(force_file_path)
+                self.aux_geom = load_data['aux']
+                forces = load_data['force']
+
+            else:
+                if self.all_output.ndim == 3:
+                    from cfdpost.utils import clustcos, get_force_1d
+                    forces = np.zeros((len(self.all_index), 2))
+
+                    nn = 201
+                    xx = [clustcos(i, nn) for i in range(nn)]
+                    all_x = np.concatenate((xx[::-1], xx[1:]), axis=0)
+
+                    for i, sample in enumerate(self.all_output):
+                        geom = np.stack((all_x, sample[0]), axis=0).transpose(1, 0)
+                        aoa  = self.all_index[i, 3]
+                        forces[i] = get_force_1d(geom, aoa, sample[1], sample[2] / 1000.)
+                elif self.all_output.ndim == 4:
+                    from cfdpost.utils import get_cellinfo_1d, get_cellinfo_2d, get_xyforce_2d
+
+                    normals, areas = get_cellinfo_2d(original_geom.transpose(0, 2, 3, 1))
+
+                    cp = self.all_output[:, 0]
+                    tangens, normals2d = get_cellinfo_1d(original_geom[:, :2].transpose((0, 2, 3, 1)), iscentric=True)                    
+                    tangens = 0.5 * (tangens[:, 1:] + tangens[:, :-1])    # transfer to cell centre at spanwise direction
+
+                    cf = np.concatenate((self.all_output[:, [1]].transpose(0, 2, 3, 1) * self.expand_(tangens) / 150, self.all_output[:, [2]].transpose(0, 2, 3, 1) / 300), axis=-1)
+                    forces = get_xyforce_2d([self.expand_(normals), self.expand_(areas)], cp=cp, cf=cf)[:, :2]
+                    
+                    self.aux_geom = {
+                        'n3d': normals,
+                        't2d': tangens,
+                        'a': areas,
+                    }
+                
+                torch.save({'force': forces, 'aux': self.aux_geom}, force_file_path)
+                # np.save(force_file_path, self.all_force)
+
+        if is_nondim:
+            param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
+            print('>    non-dimensional parameters for Cl/Cd will be %.6f' % param)
+            forces[:, 0] *= param
+        else:
+            param = 1.
+
+        self.all_force = forces
+
+        print(f'Dataset is changed to output force {_repr} as flowfield... ({forces.shape})')
+        
+        return param
+
+    def expand_(self, data):
+
+        ref_ori_indxs = []
+        i_ori = -1
+        for idx in range(self.all_index.shape[0]):
+            if self.all_index[idx, 0] != self.all_index[idx - 1, 0]:
+                i_ori += 1
+
+            ref_ori_indxs.append(i_ori)
+
+        compress_data = np.take(data, ref_ori_indxs, axis=0)
+
+        print(f'{data.shape} -> {compress_data.shape}')
+        return compress_data
+
+    def compress_(self, data):
+
+        ref_indxs = []
+
+        i_ori = -1
+        for idx in range(self.all_index.shape[0]):
+            if self.all_index[idx, 0] != self.all_index[idx - 1, 0]:
+                i_ori += 1
+                ref_indxs.append(idx)
+        # origin_geom = np.take(all_geom_n, ref_indxs, axis=0)
+        compress_data = np.take(data, ref_indxs, axis=0)
+
+        print(f'{data.shape} -> {compress_data.shape}')
+        return compress_data
+
 
 class MCFlowDataset(FlowDataset):
     
@@ -461,6 +513,24 @@ class MCFlowDataset(FlowDataset):
                   'ref': refence, 'ref_aoa': ref_cond}  # all the reference of the flowfield is transfered, the airfoil geometry (y) is also.
 
         return sample
+    
+    def _add_force_item(self, _ori_item: Callable):
+
+        def _get_force_item(idx):
+            sample = _ori_item(idx)
+
+            op_idx =  int(self.all_index[self.data_idx[idx], 0])
+            sample['force'] = torch.from_numpy(self.all_force[self.data_idx[idx]]).float()
+
+            sample['geom_a']  = torch.from_numpy(self.aux_geom['a'][op_idx]).float()
+            sample['geom_t2d']  = torch.from_numpy(self.aux_geom['t2d'][op_idx]).float()
+            sample['geom_n3d']  = torch.from_numpy(self.aux_geom['n3d'][op_idx]).float()
+
+            if self.is_ref:
+                sample['ref_force'] = torch.from_numpy(self.ref_force[op_idx]).float()
+            return sample
+        
+        return _get_force_item
 
     def get_series(self, idx, ref_idx=None):
 
@@ -513,6 +583,16 @@ class MCFlowDataset(FlowDataset):
                 data_indices += list(range(self.condis_st[shape_indice], self.condis_st[shape_indice] + self.condis_all_num[shape_indice]))
 
         return Subset(self, data_indices)
+
+    def change_to_force(self, take_index = None, is_nondim = True, original_geom = None, use_save: bool = True, info=''):
+
+        param = super().change_to_force(take_index, is_nondim, original_geom, info)
+
+        if self.is_ref:
+            self.ref_force = np.take(self.all_force, self.ref_index, axis=0)
+        self.get_item = self._add_force_item(self.get_item)
+        # self._output_force_flag = True # determine get_series
+        return param
 
 class ConditionDataset(Dataset):
     '''

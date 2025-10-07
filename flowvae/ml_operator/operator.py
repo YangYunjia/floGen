@@ -21,6 +21,7 @@ from flowvae.dataset import ConditionDataset, FlowDataset
 from .ema import EmaGradClip
 from ..utils import MDCounter
 from .lora import add_lora_to_model
+from flowvae.post import get_xyforce_2d_t
 
 def _check_existance_checkpoint(epoch, folder):
 
@@ -149,8 +150,8 @@ class ModelOperator():
         print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
 
         # parameters controling loss
-        self.paras['loss_parameters'] = {'aero_weight':     1e-5,
-                                         'aero_epoch':      299}    # default 0.1 before 2023.8.4
+        self.paras['loss_parameters'] = {'aero_weight':     0.,
+                                         'aero_epoch':      0.2}    # default 0.1 before 2023.8.4
 
     def set_lossparas(self, **kwargs):
         '''
@@ -179,7 +180,7 @@ class ModelOperator():
 
         '''
         for key in kwargs:
-            if key in self.paras.keys():
+            if key in self.paras['loss_parameters'].keys():
                 self.paras['loss_parameters'][key] = kwargs[key]
             else:
                 raise NotImplementedError(f'\'{key}\' not implemented in the current operator' )
@@ -403,8 +404,21 @@ class ModelOperator():
     def _forward_model(self, data, kwargs):
         return [data['input']], {}
 
-    def _calculate_loss(self, data, output, kwargs):
-        return {'loss': torch.nn.functional.mse_loss(output, data['label'])}
+    def _calculate_loss(self, data, output: torch.Tensor, kwargs):
+        recons = torch.nn.functional.mse_loss(output, data['label'])
+        loss = {'loss': recons, 'recons': recons}
+        
+        if self.paras['loss_parameters']['aero_weight'] > 0. and self.epoch > self.paras['loss_parameters']['aero_epoch'] * self.paras['num_epochs']:
+
+            cp = output[:, 0]
+            cf = torch.concat((output[:, [1]].permute(0, 2, 3, 1) * data['geom_t2d'] / 150, output[:, [2]].permute(0, 2, 3, 1) / 300), axis=-1)
+
+            forces = get_xyforce_2d_t([data['geom_n3d'], data['geom_a']], cp, cf)[:, :2]
+            forces_loss = torch.nn.functional.mse_loss(forces, data['force']) * self.paras['loss_parameters']['aero_weight']
+            loss['loss'] += forces_loss 
+            loss['force'] = forces_loss
+
+        return loss
     
     def _end_of_epoch(self):
         pass
@@ -559,10 +573,10 @@ class BasicAEOperator(ModelOperator):
     
     def _calculate_loss(self, data, output, kwargs):
         # print(output[0].size(), data['label'].size())
-        labels = data['label']
-        if self.ref: labels[:, self.ref_channels[0]: self.ref_channels[1]] -= data['input'][:, self.recon_channels[0]: self.recon_channels[1]]
+        # labels = data['label']
+        if self.ref: data['label'][:, self.ref_channels[0]: self.ref_channels[1]] -= data['input'][:, self.recon_channels[0]: self.recon_channels[1]]
 
-        return {'loss': torch.nn.functional.mse_loss(output[0], labels)}
+        return super()._calculate_loss(data, output[0], kwargs)
 
 class BasicCondAEOperator(BasicAEOperator):
     '''

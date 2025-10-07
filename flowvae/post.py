@@ -21,7 +21,7 @@ graph of C-mesh
 import numpy as np
 import torch
 
-from typing import List, NewType, Tuple, Dict
+from typing import List, NewType, Tuple, Dict, Union
 Tensor = NewType('Tensor', torch.Tensor)
 
 WORKCOD = {'Tinf':460.0,'Minf':0.76,'Re':5e6,'AoA':0.0,'gamma':1.4, 'x_mc':0.25, 'y_mc':0.0}
@@ -375,7 +375,7 @@ def get_flux_1d_t(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rh
 
 #* functions to get force from 2-D surfaces
 
-def get_cellinfo_2d_t(geom: torch.Tensor) -> torch.Tensor:
+def get_cellinfo_2d_t(geom: Tensor) -> Tuple[Tensor]:
     
     '''
     params:
@@ -403,7 +403,7 @@ def get_cellinfo_2d_t(geom: torch.Tensor) -> torch.Tensor:
     # print(np.sum(normals * areas[..., np.newaxis], axis=(0,1)))
     return normals, areas    
 
-def get_dxyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+def get_dxyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
         
     return:
@@ -412,7 +412,10 @@ def get_dxyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=Non
     
     '''
     # calculate normal vector
-    n, a = get_cellinfo_2d_t(geom)
+    if isinstance(geom, list):
+        n, a = geom
+    else:
+        n, a = get_cellinfo_2d_t(geom)
     dfp = cp[..., None] * n * a[..., None]
     
     if not (cf is None or len(cf) == 0):
@@ -420,7 +423,7 @@ def get_dxyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=Non
     
     return dfp
 
-def get_xyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+def get_xyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
     
     return:
@@ -429,7 +432,7 @@ def get_xyforce_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None
     '''
     return torch.sum(get_dxyforce_2d_t(geom, cp, cf), dim=(-3,-2))
 
-def get_force_2d_t(geom: torch.Tensor, aoa: float, cp: torch.Tensor, cf: torch.Tensor=None) -> torch.Tensor:
+def get_force_2d_t(geom: Union[Tensor, List[Tensor]], aoa: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
     integrate lift and drag from 2D surface data
     
