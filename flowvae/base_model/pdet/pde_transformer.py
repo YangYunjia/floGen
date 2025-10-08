@@ -1,5 +1,5 @@
 # from dataclasses import dataclass
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Callable
 
 import torch.nn.functional as F
 import torch.nn as nn
@@ -15,7 +15,8 @@ import numpy as np
 # from timm.models.layers import DropPath
 import torch
 
-from .udit import FinalLayer, precompute_freqs_cis_2d, apply_rotary_emb
+from .final_layer import FinalLayer
+from .udit import precompute_freqs_cis_2d, apply_rotary_emb
 from flowvae.base_model.mlp import mlp
 
 ###############################
@@ -1158,7 +1159,8 @@ class PDEImpl(nn.Module):
             carrier_token_active: bool = False,
             dit_active: bool = False,
             inj_active: bool = False,
-            output_type: int = 1, # 0 for both, 1 for decoder, -1 for force
+            output_type: Optional[str] = None, # None for decoder, given module for force
+            is_final_adp: bool = False,
             **kwargs
     ):
         super().__init__()
@@ -1177,7 +1179,9 @@ class PDEImpl(nn.Module):
         self.use_carrier_tokens = carrier_token_active
         self.dit_active = dit_active
         self.inj_active = inj_active
-        self.output_type = output_type
+
+        self.is_decoder = (output_type is None)
+        print(self.is_decoder)
 
         self.max_hidden_size = max_hidden_size
         self.hidden_size_layers = [min(hidden_size * 2 ** i, max_hidden_size) for i in range(self.num_encoder_layers + 1)]
@@ -1223,7 +1227,7 @@ class PDEImpl(nn.Module):
         self.latent = PDEStage(dim=hidden_size_latent, num_heads=num_heads,
                                             window_size=window_size, depth=depth[self.num_encoder_layers], **dit_stage_args)
 
-        if output_type >= 0:
+        if self.is_decoder:
 
             hidden_size_layer0 = min(hidden_size * 2, max_hidden_size)
             if hidden_size_layer0 >= max_hidden_size:
@@ -1257,13 +1261,10 @@ class PDEImpl(nn.Module):
             self.output = nn.Conv2d(hidden_size_out, hidden_size_out, kernel_size=3, stride=1, padding=1,
                                     bias=True)
 
-            self.final_layer = FinalLayer(hidden_size_out, self.out_channels * self.patch_size * self.patch_size)
+            self.final_layer = FinalLayer(hidden_size_out, self.out_channels * self.patch_size * self.patch_size, is_adp=is_final_adp)
         
-        if output_type <= 0:
-            self.head = nn.Sequential(
-                nn.LayerNorm(hidden_size_latent),
-                nn.Linear(hidden_size_latent, out_channels)
-            )
+        else:
+            self.final_layer = FinalLayer(hidden_size_latent, out_channels, out_proj=output_type, is_adp=True)
 
         self.initialize_weights()
 
@@ -1300,7 +1301,8 @@ class PDEImpl(nn.Module):
 
         blocks = [self.__getattr__(f"encoder_level_{i}") for i in range(self.num_encoder_layers)]
         blocks += [self.latent]
-        if self.output_type >= 0: blocks += [self.__getattr__(f"decoder_level_{i}") for i in range(self.num_encoder_layers)]
+
+        if self.is_decoder: blocks += [self.__getattr__(f"decoder_level_{i}") for i in range(self.num_encoder_layers)]
 
         for block in blocks:
 
@@ -1314,16 +1316,11 @@ class PDEImpl(nn.Module):
                     nn.init.constant_(blc.adain_1.linear.weight, 0)
                     nn.init.constant_(blc.adain_1.linear.bias, 0)
 
-        if self.output_type >= 0:
-            # Zero-out output layers:
-            nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-            nn.init.constant_(self.final_layer.out_proj.weight, 0)
-            nn.init.constant_(self.final_layer.out_proj.bias, 0)
-
-        if self.output_type <= 0:
-            nn.init.constant_(self.head.linear.weight, 0)
-            nn.init.constant_(self.head.linear.bias, 0)
+        # Zero-out output layers:
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_layer.out_proj.weight, 0)
+        nn.init.constant_(self.final_layer.out_proj.bias, 0)
 
     def forward(self, x, t, y, c: Optional[torch.Tensor]) -> torch.Tensor:
         """
@@ -1370,7 +1367,7 @@ class PDEImpl(nn.Module):
         c = emb_list[-1]
         x = self.latent(x, c)   # （PDEStage -> B C H W)
 
-        if self.output_type >= 0:
+        if self.is_decoder:
 
             for i, (residual, emb) in enumerate(zip(residuals_list[1:][::-1], emb_list[1:-1][::-1])):
                 # decoder
@@ -1403,9 +1400,8 @@ class PDEImpl(nn.Module):
                 shape=(-1, self.out_channels, height * self.patch_size, width * self.patch_size)
             )
 
-        if self.output_type <= 0:
-            x = x.mean(dim=(2, 3))
-            x = self.head(x)
+        else:
+            x = self.final_layer(x, emb_list[-1])
 
         return x
 
