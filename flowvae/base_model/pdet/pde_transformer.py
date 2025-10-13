@@ -1160,7 +1160,7 @@ class PDEImpl(nn.Module):
             dit_active: bool = False,
             inj_active: bool = False,
             output_type: Optional[str] = None, # None for decoder, given module for force
-            is_final_adp: bool = False,
+            is_final_adp: bool = False, # not works for force output (they are default True)
             **kwargs
     ):
         super().__init__()

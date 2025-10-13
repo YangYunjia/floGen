@@ -13,13 +13,11 @@ Currently use: SLD estimated with model (no need to call VLM codes)
 from flowvae.ml_operator.operator import load_model_from_checkpoint
 from flowvae.app.wing import models
 from flowvae.sim.cfl3d import AirfoilSimulator
-import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
 import torch
 
 import numpy as np
 import os, copy
-from cfdpost.wing.basic import Wing, KinkWing, plot_compare_2d_wing, plot_frame
+from cfdpost.wing.single_section_wing import Wing, plot_frame
 from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
 from typing import Optional
 
