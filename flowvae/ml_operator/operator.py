@@ -20,7 +20,7 @@ from flowvae.dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .ema import EmaGradClip
 from ..utils import MDCounter
-from .lora import add_lora_to_model
+from .lora import add_lora_to_model, enable_gradient
 from flowvae.post import get_xyforce_2d_t
 
 def _check_existance_checkpoint(epoch, folder):
@@ -459,7 +459,8 @@ class ModelOperator():
 
         return save_dict
 
-    def set_transfer_model(self, transfer_name, grad_require_layers=None, reset_param=True,
+    def set_transfer_model(self, transfer_name, grad_require_layers=None, grad_require_parents=None,
+                           reset_param=True,
                            is_lora:bool=False, lora_params={}):
         '''
         load base model and set part of the parameters with grad off
@@ -471,44 +472,45 @@ class ModelOperator():
         self.set_optname(self.optname + '_' + transfer_name)
 
         if grad_require_layers is not None:
-
-            for param in self.model.parameters():
-                param.requires_grad = False
-
-            enable_gradient(self.model, grad_require_layers, reset_param)
             
-            print('------- The layers below are set grad require ------')
-            for n, p in self._model.named_parameters():
-                if p.requires_grad:
-                    print(n, p.shape)
+            if not is_lora:
 
-        elif is_lora:
+                for param in self.model.parameters():
+                    param.requires_grad = False
 
-            for p in self.model.parameters():
-                p.requires_grad = False
+                enable_gradient(self.model, grad_require_layers, grad_require_parents, reset_param)
 
-            print('------- Lora applied, layers below are set grad require ------')
-            default_lora_params = {
-                'target_modules': ['qkv'],
-                'r': 4,
-                'alpha': 'r', 
-                'dropout': 0.05,
-            }
-            for k in lora_params:
-                default_lora_params[k] = lora_params[k]
+                print('------- The layers below are set grad require ------')
+                for n, p in self._model.named_parameters():
+                    if p.requires_grad:
+                        print(n, p.shape)
 
-            if default_lora_params['alpha'] == 'r':
-                default_lora_params['alpha'] = default_lora_params['r']
+            else:
 
-            self._model = add_lora_to_model(self._model, **default_lora_params)
+                for p in self.model.parameters():
+                    p.requires_grad = False
 
-            # set optimizer and scheduler again to register the lora parameters
-            self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
-            self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
+                print('------- Lora applied, layers below are set grad require ------')
+                default_lora_params = {
+                    'r': 4,
+                    'alpha': 'r', 
+                    'dropout': 0.05,
+                }
+                for k in lora_params:
+                    default_lora_params[k] = lora_params[k]
 
-            for n, p in self._model.named_parameters():
-                if p.requires_grad:
-                    print(n, p.shape)
+                if default_lora_params['alpha'] == 'r':
+                    default_lora_params['alpha'] = default_lora_params['r']
+
+                add_lora_to_model(self._model, grad_require_layers, grad_require_parents, **default_lora_params)
+
+                # set optimizer and scheduler again to register the lora parameters
+                self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
+                self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
+
+                for n, p in self._model.named_parameters():
+                    if p.requires_grad:
+                        print(n, p.shape)
             
         else:
 
@@ -793,21 +795,6 @@ class AEOperator(ModelOperator):
         save_dict = super().load_checkpoint(epoch=epoch, load_opt=load_opt, load_data_split=load_data_split)
         self._model.series_data = save_dict['series_data']
         self._model.geom_data = save_dict['geom_data']
-
-def enable_gradient(model, grad_require_layers, reset_param):
-    for name, module in model.named_children():
-        if any(t in name.lower() for t in grad_require_layers):
-
-        # for ly in grad_require_layers:
-        #     print(ly, ' :   ', self.model._modules[ly])
-            if reset_param:
-                module.apply(reset_paras)
-
-            for param in module.parameters():
-                param.requires_grad = True
-
-        else:
-            enable_gradient(module, grad_require_layers, reset_param)
 
 def reset_paras(layer):
     if 'reset_parameters' in dir(layer):
