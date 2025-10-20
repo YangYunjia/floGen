@@ -61,6 +61,8 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
     
     avg = int(dataset_len / k)
     fold_data_number = [avg+(1, 0)[i > dataset_len - avg * k] for i in range(k)]
+    
+    print(f'make {dataset_len} indexs random ')
     all_dataset_indexs = random.sample(range(dataset_len), dataset_len)
 
     if krun <= 0:   krun = k
@@ -88,6 +90,7 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
         training_indexs = all_dataset_indexs[:idx1] + all_dataset_indexs[idx2:]
 
         if num_train > 0 and num_train < len(training_indexs):
+            # for training dataset is not the whole
             training_indexs = random.sample(training_indexs, num_train)
 
         history['train_index'].append(training_indexs)
