@@ -592,6 +592,9 @@ class MCFlowDataset(FlowDataset):
 
     def subset(self, indices: Sequence[int], shapewise: bool = True) -> Subset:
 
+        if not self._split_paras['method'] == 'base':
+            raise NotImplementedError('subset for MC flow dataset only can be used for non-selected (`base`)')
+
         if not shapewise:
             data_indices = indices
         else:

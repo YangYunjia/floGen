@@ -13,7 +13,7 @@ import torch.optim as opt
 import sys, os
 import numpy as np
 from tqdm import tqdm
-from typing import List, Union, Any, NewType, Tuple
+from typing import List, Union, Any, NewType, Tuple, Optional, Dict
 
 from flowvae.vae import EncoderDecoder
 from flowvae.dataset import ConditionDataset, FlowDataset
@@ -92,6 +92,7 @@ class ModelOperator():
                        init_lr: float = 0.01, 
                        num_epochs: int = 50,
                        split_train_ratio: float = 0.9,
+                       split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle: bool = True,
@@ -116,10 +117,21 @@ class ModelOperator():
         self.dataset = {}
         if dataset is not None:
             self.all_dataset = dataset
-            # split training data
-            if split_train_ratio >= 1.0:    self.phases = ['train']
-            else:   self.phases = ['train', 'val']
-            self.split_dataset(recover=recover_split, train_r=split_train_ratio)
+            if split_dataset is not None:
+                # use the given split dataset
+                assert isinstance(split_dataset, dict) and set(split_dataset.keys()) == set(['train', 'val']), \
+                    'Wrong input with `split`, it should be a dict with keys = `train`, `val'
+                self.dataset = split_dataset
+                self.phases = ['train', 'val']
+                print("Dataset split based on input: (Train: %d, Val: %d)" % (len(self.dataset['train']), len(self.dataset['val'])))
+                
+            else:
+                # split training data
+                self.phases = self.split_train_valid_dataset(recover=recover_split, train_r=split_train_ratio)
+            
+            self.dataset_size = {phase: len(self.dataset[phase]) for phase in self.phases}
+                
+            
             self.dataloaders = {phase: DataLoader(self.dataset[phase], 
                                                   batch_size=self.paras['batch_size'], 
                                                   shuffle=self.paras['shuffle'], 
@@ -251,49 +263,45 @@ class ModelOperator():
             self._scheduler_setting = kwargs
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
-    def split_dataset(self, recover, train_r=0.9, test_r=0.0):
+    def split_train_valid_dataset(self, recover: Optional[str] = None, train_r: float = 0.9):
         '''
-        Do not use test_r here! 
+        Split the validation set from the training one; the testing dataset should 
+        be split before training use functions in `FlowDataset` classes
         
         '''
-        self.dataset_size = {}
-
-        if train_r >= 1.0:
-            self.dataset['train'] = self.all_dataset
-            self.dataset_size['train'] = len(self.all_dataset)
-            return
 
         if recover is not None:
             path = os.path.join(self.output_folder, recover, 'dataset_indice')
             if not os.path.exists(path):
                 raise IOError("checkpoint not exist in {}".format(self.output_folder))
             dataset_dict = torch.load(path, map_location=self.device)
-            for phase in ['train', 'val', 'test']:
+            for phase in dataset_dict.keys():
                 self.dataset[phase] = Subset(self.all_dataset, dataset_dict[phase])
-                self.dataset_size[phase] = len(dataset_dict[phase])
 
             # path = self.output_path + '//'  + 'dataset_indice'
             # if os.path.exists(path):
             #     print("Press any key to recover exist dataset division:")
             # torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
             
-            print("Load Split Dataset length: (Train: %d, Val: %d, Test: %d)" % (self.dataset_size['train'], self.dataset_size['val'], self.dataset_size['test']))
+            print("Load Split Dataset length: (Train: %d, Val: %d)" % (len(self.dataset['train']), len(self.dataset['val'])))
 
         else:
-            train_val_size = int((1.0 - test_r) * len(self.all_dataset))
-            self.dataset_size['test'] = len(self.all_dataset) - train_val_size
-            train_val_dataset, self.dataset['test'] = random_split(self.all_dataset, [train_val_size, self.dataset_size['test']])
-
             
-            self.dataset_size['train'] = int(train_r * train_val_size)
-            self.dataset_size['val'] = train_val_size - self.dataset_size['train']
-            self.dataset['train'], self.dataset['val'] = random_split(train_val_dataset, [self.dataset_size['train'], self.dataset_size['val']])
+            if train_r >= 1.0:
+                self.dataset['train'] = self.all_dataset
+                print("All dataset is used for training: (Train: %d, Val: %d)" % (len(self.all_dataset), 0))
+            
+            else:
+            
+                train_size = int(train_r * len(self.all_dataset))
+                val_size =   len(self.all_dataset) - train_size
+                self.dataset['train'], self.dataset['val'] = random_split(self.all_dataset, [train_size, val_size])
+                print("Random Split Dataset length: (Train: %d, Val: %d)" % (train_size, val_size))
 
             path = os.path.join(self.output_folder, self.optname, 'dataset_indice')
-
-            torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val', 'test']}, path)
+            torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
-            print("Random Split Dataset length: (Train: %d, Val: %d, Test: %d)" % (self.dataset_size['train'], self.dataset_size['val'], self.dataset_size['test']))
+            return self.dataset.keys()
 
     def train_model(self, save_check, save_best=True, v_tqdm=True, update_lr_batch=False):
 
@@ -453,7 +461,7 @@ class ModelOperator():
         self.history = save_dict['history']
 
         if load_data_split and len(self.dataset) > 0:
-            self.split_dataset(recover=self.optname)
+            self.split_train_valid_dataset(recover=self.optname)
 
         print('checkpoint at epoch %d loaded from %s' % (save_dict['epoch'], path))
 
@@ -560,7 +568,7 @@ class BasicAEOperator(ModelOperator):
 
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
                  output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
-                 split_train_ratio: float = 0.9, recover_split: str = None, 
+                 split_train_ratio: float = 0.9, split_dataset: Optional[Dict[str, Subset]] = None, recover_split: str = None, 
                  batch_size: int = 8, shuffle: bool = True, ema_optimizer: bool = False,
                  ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
         
@@ -568,7 +576,7 @@ class BasicAEOperator(ModelOperator):
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -614,6 +622,7 @@ class AEOperator(ModelOperator):
                        init_lr=0.01, 
                        num_epochs: int = 50,
                        split_train_ratio = 0.9,
+                       split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle=True,
@@ -624,7 +633,7 @@ class AEOperator(ModelOperator):
                        recon_type: str = 'field'
                        ):
         
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels

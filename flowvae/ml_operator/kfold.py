@@ -1,5 +1,5 @@
 import random, time, os
-from .operator import load_model_from_checkpoint
+from .operator import load_model_from_checkpoint, _check_existance_checkpoint
 
 from typing import Callable
 
@@ -102,7 +102,7 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
         # training_dataset = Subset(fldata, training_indexs)
         # testing_dataset = Subset(fldata, testing_indexs)
 
-        trained_model = func_train(irun, training_indexs)
+        trained_model = func_train(irun, training_indexs, testing_indexs)
 
         t1 = time.time()
 
