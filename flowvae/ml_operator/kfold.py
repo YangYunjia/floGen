@@ -121,7 +121,7 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
     #     errstats = np.array(errstats)
     return history
 
-def K_fold_evaluate(fldata, model, func_eval, folder, history, device):
+def K_fold_evaluate(model, func_eval, folder, history, epoch, device):
 
     k = len(history['train_index'])
 
@@ -130,8 +130,8 @@ def K_fold_evaluate(fldata, model, func_eval, folder, history, device):
 
     for irun in range(k):
 
-        load_model_from_checkpoint(model, epoch=299, folder=os.path.join('save', folder + str(irun)), device=device)
-        error, errstat = func_eval(irun, model, fldata, history['train_index'][irun], history['test_index'][irun])
+        load_model_from_checkpoint(model, epoch=epoch, folder=os.path.join(folder + str(irun)), device=device)
+        error, errstat = func_eval(irun, model, history['train_index'][irun], history['test_index'][irun])
         history['errors'].append(error)
         history['errstats'].append(errstat)
 

@@ -53,7 +53,8 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     path = _check_existance_checkpoint(epoch=epoch, folder=folder)
     save_dict = torch.load(path, map_location=device, weights_only=False)
     
-    if epoch == -1:
+    if 'history' not in save_dict.keys():
+    # if epoch == -1:
         model.load_state_dict(save_dict, strict=True)
         last_error = None
     else:
@@ -61,6 +62,9 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
         last_error = save_dict['history']['loss']
 #     print('loss of last iter.:  train, vali = %.4e  %.4e' % (last_error['train']['loss'][-1], last_error['val']['loss'][-1]))
     if set_to_eval: model.eval()
+
+    print(f'load checkpoint from {path}')
+
     return last_error
 
 
@@ -191,9 +195,12 @@ class ModelOperator():
         - `aero_epoch`      299     (int) the epoch to start counting the aero loss 
 
         '''
+        print('------------------------------------')
+        print('the following parameters are updated:')
         for key in kwargs:
             if key in self.paras['loss_parameters'].keys():
                 self.paras['loss_parameters'][key] = kwargs[key]
+                print(f'> ---  {key} = {kwargs[key]}')
             else:
                 raise NotImplementedError(f'\'{key}\' not implemented in the current operator' )
 
@@ -384,11 +391,11 @@ class ModelOperator():
                 if phase == 'val' and epoch_loss['loss'] < self.best_loss:
                     self.best_loss = epoch_loss['loss']
                     if save_best:
-                        self.save_model()
+                        self.save_checkpoint(epoch=self.epoch, name='best_model')
 
             self._end_of_epoch()
             if (self.epoch + 1) % save_check == 0:
-                self.save_checkpoint(epoch=self.epoch)
+                self.save_checkpoint(epoch=self.epoch, name='checkpoint_epoch_' + str(self.epoch))
             self.epoch += 1
 
         print('Best val Loss: {:4f}'.format(self.best_loss))
@@ -431,18 +438,15 @@ class ModelOperator():
     def _end_of_epoch(self):
         pass
 
-    def save_model(self, name='best_model'):
-        path = self.output_path + '/' + name
-        torch.save(self._model.state_dict(), path)
-    
-    def save_checkpoint(self, epoch, name='checkpoint', save_dict={}):
-        path = self.output_path + '/' + name + '_epoch_' + str(epoch)
-        save_dict['epoch'] = epoch
-        save_dict['model_state_dict'] = self._model.state_dict()
-        save_dict['optimizer_state_dict'] = self._optimizer.state_dict()
-        save_dict['scheduler_state_dict'] = self._scheduler.state_dict()
-        save_dict['history'] = self.history
-        
+    def save_checkpoint(self, epoch, name='best_model', save_dict: dict = {}):
+        path = os.path.join(self.output_path, name)
+        save_dict.update({
+            'epoch': epoch,
+            'model_state_dict': self._model.state_dict(),
+            'optimizer_state_dict': self._optimizer.state_dict(),
+            'scheduler_state_dict': self._scheduler.state_dict(),
+            'history': self.history
+        })
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
     
@@ -777,7 +781,7 @@ class AEOperator(ModelOperator):
         if self.paras['code_mode'] in ['ex', 'semi', 'im', 'ae']:
             self._model.cal_avg_latent(pivot=self.paras['loss_parameters']['indx_pivot'])
 
-    def save_checkpoint(self, epoch, name='checkpoint'):
+    def save_checkpoint(self, epoch, name='best_model', save_dict: dict = {}):
         save_dict = {'series_data': self._model.series_data,
                     'geom_data': self._model.geom_data}
         super().save_checkpoint(epoch=epoch, name=name, save_dict=save_dict)
