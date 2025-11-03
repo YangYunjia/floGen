@@ -390,9 +390,10 @@ class ModelOperator():
 
                                 if self.paras['loss_parameters']['conFIG']:# and len(loss_values) > 1:
                                     grads=[]
-                                    for loss_i in loss_values:
+                                    n_loss = len(loss_values)
+                                    for i, loss_i in enumerate(loss_values):
                                         self._optimizer.zero_grad()
-                                        loss_i.backward(retain_graph=True)
+                                        loss_i.backward(retain_graph = (i < n_loss - 1))
                                         grads.append(get_gradient_vector(self._model)) # get loss-specfic gradient
                                     g_config = ConFIG_update(grads) # calculate the conflict-free direction
                                     apply_gradient_vector(self._model, g_config) # set the conflict-free direction to the network
