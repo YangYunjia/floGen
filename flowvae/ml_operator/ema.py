@@ -78,7 +78,11 @@ def _clip_grad_norm(
         = _group_tensors_by_device_and_dtype([grads])  # type: ignore[assignment]
 
     norms: List[torch.Tensor] = []
-    for ((device, _), ([device_grads])) in grouped_grads.items():  # type: ignore[assignment]
+    for ((device, _), wrapped_device_grads) in grouped_grads.items():  # type: ignore[assignment]
+        if isinstance(wrapped_device_grads, tuple):
+            device_grads = wrapped_device_grads[0][0]
+        else:
+            device_grads = wrapped_device_grads[0]
         if (
             (foreach is None and _has_foreach_support(device_grads, device))
             or (foreach and _device_has_foreach_support(device))
@@ -103,7 +107,11 @@ def _clip_grad_norm(
     # avoids a `if clip_coef < 1:` conditional which can require a CPU <=> device synchronization
     # when the gradients do not reside in CPU memory.
         clip_coef_clamped = torch.clamp(clip_norm / (total_norm + 1e-6), max=1.0)
-        for ((device, _), ([device_grads])) in grouped_grads.items():  # type: ignore[assignment]
+        for ((device, _), wrapped_device_grads) in grouped_grads.items():  # type: ignore[assignment]
+            if isinstance(wrapped_device_grads, tuple):
+                device_grads = wrapped_device_grads[0][0]
+            else:
+                device_grads = wrapped_device_grads[0]
             if (
                 (foreach is None and _has_foreach_support(device_grads, device))
                 or (foreach and _device_has_foreach_support(device))
