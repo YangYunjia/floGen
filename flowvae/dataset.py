@@ -213,7 +213,7 @@ class FlowDataset(Dataset):
         
         '''
 
-        force_file_path = os.path.join(self.output_path[:-4] + '_force.npy')
+        force_file_path = os.path.join(self.output_path[:-4] + '_force')
         
         if info in ['cltarg', 'aoatarg']:
             if info == 'cltarg':
@@ -231,10 +231,15 @@ class FlowDataset(Dataset):
         else:
             _repr = 'Cd / Cl'
             
-            if os.path.exists(force_file_path) and use_save:
-                load_data = torch.load(force_file_path)
-                self.aux_geom = load_data['aux']
-                forces = load_data['force']
+            if os.path.exists(os.path.join(force_file_path, 'forces.npy')) and use_save:
+                # load_data = torch.load(force_file_path)
+                self.aux_geom =  {
+                        'n3d': np.load(os.path.join(force_file_path, 'normals.npy')),
+                        't2d': np.load(os.path.join(force_file_path, 'tangens.npy')),
+                        'a': np.load(os.path.join(force_file_path, 'areas.npy')),
+                    }
+                forces = np.load(os.path.join(force_file_path, 'forces.npy'))
+                print(f'> force data loaded from {force_file_path}')
 
             else:
                 if self.all_output.ndim == 3:
@@ -267,8 +272,12 @@ class FlowDataset(Dataset):
                         'a': areas,
                     }
                 
-                torch.save({'force': forces, 'aux': self.aux_geom}, force_file_path)
-                # np.save(force_file_path, self.all_force)
+                # torch.save({'force': forces, 'aux': self.aux_geom}, force_file_path)
+                os.makedirs(force_file_path, exist_ok=True)
+                np.save(os.path.join(force_file_path, 'normals.npy'), normals)
+                np.save(os.path.join(force_file_path, 'tangens.npy'), tangens)
+                np.save(os.path.join(force_file_path, 'areas.npy'),   areas)
+                np.save(os.path.join(force_file_path, 'forces.npy'),  forces)
 
         if is_nondim:
             param = (max(forces[:, 1]) - min(forces[:, 1])) / (max(forces[:, 0]) - min(forces[:, 0]))
@@ -608,7 +617,7 @@ class MCFlowDataset(FlowDataset):
 
     def change_to_force(self, take_index = None, is_nondim = True, original_geom = None, use_save: bool = True, info=''):
 
-        param = super().change_to_force(take_index, is_nondim, original_geom, info)
+        param = super().change_to_force(take_index, is_nondim, original_geom, use_save, info)
 
         if self.is_ref:
             self.ref_force = np.take(self.all_force, self.ref_index, axis=0)

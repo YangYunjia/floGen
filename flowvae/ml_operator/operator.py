@@ -23,6 +23,13 @@ from ..utils import MDCounter
 from .lora import add_lora_to_model, enable_gradient
 from flowvae.post import get_xyforce_2d_t
 
+is_conflictfree_import = True
+try:
+    from conflictfree.grad_operator import ConFIG_update
+    from conflictfree.utils import get_gradient_vector,apply_gradient_vector
+except ImportError:
+    is_conflictfree_import = False
+
 def _check_existance_checkpoint(epoch, folder):
 
     if epoch == -1:
@@ -166,7 +173,8 @@ class ModelOperator():
         print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
 
         # parameters controling loss
-        self.paras['loss_parameters'] = {'aero_weight':     0.,
+        self.paras['loss_parameters'] = {'conFIG': False,
+                                         'aero_weight':     0.,
                                          'aero_epoch':      0.2}    # default 0.1 before 2023.8.4
 
     def set_lossparas(self, **kwargs):
@@ -200,9 +208,22 @@ class ModelOperator():
         for key in kwargs:
             if key in self.paras['loss_parameters'].keys():
                 self.paras['loss_parameters'][key] = kwargs[key]
-                print(f'> ---  {key} = {kwargs[key]}')
             else:
                 raise NotImplementedError(f'\'{key}\' not implemented in the current operator' )
+
+        if self.paras['loss_parameters']['conFIG']:
+            if not is_conflictfree_import:
+                raise ImportError('conFIG not installed!')
+            else:
+                print(f'> ConFig is actived, all actived weights are set with 1.0 and epoch 0.0')
+                for key in self.paras['loss_parameters'].keys():
+                    if 'weight' in key and self.paras['loss_parameters'][key] > 0.0:
+                        self.paras['loss_parameters'][key] = 1.0
+                    if 'epoch' in key:
+                        self.paras['loss_parameters'][key] = 0
+
+        for key in self.paras['loss_parameters'].keys():
+            print(f'> ---  {key} = {self.paras["loss_parameters"][key]}')
 
     @property
     def model(self):
@@ -338,10 +359,8 @@ class ModelOperator():
                     for batch_data in tbar:
 
                         data, batch_size = self._load_batch_data(batch_data, load_kwargs)
-                        # 零参数梯度
-                        self._optimizer.zero_grad()
 
-                        # 前向, track history if only in train
+                        # forward, track history if only in train
                         with torch.set_grad_enabled(phase == 'train'):
 
                             input_args, input_kwargs = self._forward_model(data, forward_kwargs)
@@ -349,19 +368,39 @@ class ModelOperator():
                             
                             # print(output.size(), data['label'].size())
                             loss_dict = self._calculate_loss(data, output, loss_kwargs)
-                            loss = loss_dict['loss']
 
-                            if not torch.isnan(loss).sum() == 0:
+                            if 'loss' not in loss_dict.keys():
+                                loss_values = list(loss_dict.values())
+                                total_loss = sum(loss_values)
+                            else:
+                                total_loss = loss_dict['loss']
+                            
+                            loss_dict['loss'] = total_loss.item()
+
+                            if not torch.isnan(total_loss).sum() == 0:
                                 print("NAN")
                                 raise Exception()
                             
                             if v_tqdm:
-                                tbar.set_postfix(loss=loss.item())
+                                tbar.set_postfix(loss=loss_dict['loss'])
                             
                             # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
                             #* model backward process (only in training phase)
                             if phase == 'train':
-                                loss.backward()
+
+                                if self.paras['loss_parameters']['conFIG']:# and len(loss_values) > 1:
+                                    grads=[]
+                                    n_loss = len(loss_values)
+                                    for i, loss_i in enumerate(loss_values):
+                                        self._optimizer.zero_grad()
+                                        loss_i.backward(retain_graph = (i < n_loss - 1))
+                                        grads.append(get_gradient_vector(self._model)) # get loss-specfic gradient
+                                    g_config = ConFIG_update(grads) # calculate the conflict-free direction
+                                    apply_gradient_vector(self._model, g_config) # set the conflict-free direction to the network
+                                else:
+                                    self._optimizer.zero_grad()
+                                    total_loss.backward()
+
                                 if self._optimizer_setting['ema_optimizer']:
                                     self.ema_clip.on_before_optimizer_step(self._model)
                                 self._optimizer.step()
@@ -421,16 +460,15 @@ class ModelOperator():
 
     def _calculate_loss(self, data, output: torch.Tensor, kwargs):
         recons = torch.nn.functional.mse_loss(output, data['label'])
-        loss = {'loss': recons, 'recons': recons}
+        loss = {'recons': recons}
         
-        if self.paras['loss_parameters']['aero_weight'] > 0. and self.epoch > self.paras['loss_parameters']['aero_epoch'] * self.paras['num_epochs']:
+        if self.paras['loss_parameters']['aero_weight'] > 0. and self.epoch >= self.paras['loss_parameters']['aero_epoch'] * self.paras['num_epochs']:
 
             cp = output[:, 0]
             cf = torch.concat((output[:, [1]].permute(0, 2, 3, 1) * data['geom_t2d'] / 150, output[:, [2]].permute(0, 2, 3, 1) / 300), axis=-1)
 
             forces = get_xyforce_2d_t([data['geom_n3d'], data['geom_a']], cp, cf)[:, :2]
             forces_loss = torch.nn.functional.mse_loss(forces, data['force']) * self.paras['loss_parameters']['aero_weight']
-            loss['loss'] += forces_loss 
             loss['force'] = forces_loss
 
         return loss
@@ -747,7 +785,6 @@ class AEOperator(ModelOperator):
         
         real_field = data['real_field']
         refs_field = data['refs_field']
-
 
         if kwargs['is_force']:
             # B. reconstruct aerodynamic coefficients
