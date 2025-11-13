@@ -115,7 +115,8 @@ class ModelOperator():
         self.device = model.device
         
         self._model = model
-        self._model.to(self.device)   
+        self._model.to(self.device)
+        self._transfer_output_bias = None
 
         self.paras = {}
         self.paras['num_epochs'] = num_epochs
@@ -342,7 +343,6 @@ class ModelOperator():
             print('Epoch %d/%d   lr = %.4e' % (self.epoch, self.paras['num_epochs'] - 1, self._optimizer.param_groups[0]['lr']))
             load_kwargs, forward_kwargs, loss_kwargs = self._start_of_epoch(load_kwargs, forward_kwargs, loss_kwargs)
             # torch.autograd.set_detect_anomaly(True)
-            # 每个epoch都有一个训练和验证阶段
             for phase in self.phases:
                 if phase == 'train':
                     self._model.train()  # Set model to training mode
@@ -350,7 +350,7 @@ class ModelOperator():
                     self._model.eval()   # Set model to evaluate mode
 
                 running_loss = MDCounter()
-                # 迭代数据.
+                # Iteration of dataset
                 sys.stdout.flush()
                 with tqdm(self.dataloaders[phase], ncols = 100) as tbar:
                     if not v_tqdm:
@@ -365,6 +365,7 @@ class ModelOperator():
 
                             input_args, input_kwargs = self._forward_model(data, forward_kwargs)
                             output = self._model(*input_args, **input_kwargs)
+                            output = self._apply_transfer_output_bias(output)
                             
                             # print(output.size(), data['label'].size())
                             loss_dict = self._calculate_loss(data, output, loss_kwargs)
@@ -478,12 +479,16 @@ class ModelOperator():
 
     def save_checkpoint(self, epoch, name='best_model', save_dict: dict = {}):
         path = os.path.join(self.output_path, name)
+        bias_to_save = None
+        if self._transfer_output_bias is not None:
+            bias_to_save = self._transfer_output_bias.detach().to('cpu')
         save_dict.update({
             'epoch': epoch,
             'model_state_dict': self._model.state_dict(),
             'optimizer_state_dict': self._optimizer.state_dict(),
             'scheduler_state_dict': self._scheduler.state_dict(),
-            'history': self.history
+            'history': self.history,
+            'transfer_output_bias': bias_to_save
         })
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
@@ -501,6 +506,12 @@ class ModelOperator():
             self._optimizer.load_state_dict(save_dict['optimizer_state_dict'])
             self._scheduler.load_state_dict(save_dict['scheduler_state_dict'])
         self.history = save_dict['history']
+
+        load_bias = save_dict.get('transfer_output_bias', None)
+        if load_bias is None:
+            self._transfer_output_bias = None
+        else:
+            self._transfer_output_bias = load_bias.detach().clone().to(self.device)
 
         if load_data_split and len(self.dataset) > 0:
             self.split_train_valid_dataset(recover=self.optname)
@@ -572,6 +583,38 @@ class ModelOperator():
         trainable_params = sum(p.numel() for p in self._model.parameters() if p.requires_grad)
         print(f' > trainable parameters amount: {trainable_params}')
 
+    def set_transfer_output_bias(self, bias: Union[np.ndarray, torch.Tensor]):
+        '''
+        Assign a constant bias to model outputs after loading a transfer model.
+        The bias will be added to every prediction during fine-tuning.
+
+        Args:
+            bias: None, scalar, numpy array, or torch.Tensor representing the offset.
+        '''
+        formatted_bias = self._format_transfer_output_bias(bias)
+        self._transfer_output_bias = formatted_bias
+        if formatted_bias is None:
+            print('transfer output bias cleared')
+        else:
+            print(f'set transfer output bias with shape {tuple(formatted_bias.shape)}')
+
+    def _format_transfer_output_bias(self, bias):
+        if bias is None:
+            return None
+        if torch.is_tensor(bias):
+            tensor_bias = bias.detach().clone()
+        elif isinstance(bias, np.ndarray):
+            tensor_bias = torch.from_numpy(bias)
+        else:
+            tensor_bias = torch.tensor(bias, dtype=torch.float32)
+        return tensor_bias.to(self.device)
+
+    def _apply_transfer_output_bias(self, output):
+        if self._transfer_output_bias is None:
+            return output
+
+        return output + self._transfer_output_bias
+
 class BasicAEOperator(ModelOperator):
     '''
     Auto-encoder operator, the shape for input and output should be same
@@ -632,6 +675,13 @@ class BasicAEOperator(ModelOperator):
         if self.ref: data['label'][:, self.ref_channels[0]: self.ref_channels[1]] -= data['input'][:, self.recon_channels[0]: self.recon_channels[1]]
 
         return super()._calculate_loss(data, output[0], kwargs)
+    
+    def _apply_transfer_output_bias(self, output):
+        if self._transfer_output_bias is None:
+            return output
+        # print(output[0].shape, self._transfer_output_bias.shape)
+        output[0] = output[0] + self._transfer_output_bias
+        return output 
 
 class BasicCondAEOperator(BasicAEOperator):
     '''
