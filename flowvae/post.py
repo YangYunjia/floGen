@@ -399,7 +399,7 @@ def get_cellinfo_2d_t(geom: Tensor) -> Tuple[Tensor]:
     areas   = 0.5 * (torch.linalg.norm(torch.cross(p1 - p0, p2 - p0, dim=-1), dim=-1) + torch.linalg.norm(torch.cross(p2 - p0, p3 - p0, dim=-1), dim=-1))
 
     # normalization
-    normals /= (torch.linalg.norm(normals, dim=-1, keepdim=True) + 1e-20)
+    normals = normals / (torch.linalg.norm(normals, dim=-1, keepdim=True) + 1e-20)
     # print(np.sum(normals * areas[..., np.newaxis], axis=(0,1)))
     return normals, areas    
 
@@ -419,7 +419,8 @@ def get_dxyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=
     dfp = cp[..., None] * n * a[..., None]
     
     if not (cf is None or len(cf) == 0):
-        dfp += (cf - torch.sum(cf * n, dim=-1, keepdim=True) * n) * a[..., None]
+        shear = (cf - torch.sum(cf * n, dim=-1, keepdim=True) * n) * a[..., None]
+        dfp = dfp + shear
     
     return dfp
 
@@ -451,7 +452,8 @@ def get_force_2d_t(geom: Union[Tensor, List[Tensor]], aoa: Tensor, cp: Tensor, c
     torch.Tensor: (CD, CL, CZ)
     '''
     dfp = get_xyforce_2d_t(geom, cp, cf)
-    dfp[..., :2] = _xy_2_cl_tc(dfp[..., :2], aoa)
+    dfp_xy = _xy_2_cl_tc(dfp[..., :2], aoa)
+    dfp = torch.concatenate((dfp_xy, dfp[..., 2:]), axis=-1)
     return dfp
 
 def get_moment_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None, ref_point: torch.Tensor=np.array([0.25, 0, 0])) -> torch.Tensor:
@@ -492,7 +494,7 @@ def get_cellinfo_1d_t(geom: torch.Tensor) -> torch.Tensor:
     
     # grid centric
     tangens = geom[..., 1:, :] - geom[..., :-1, :]
-    tangens /= (torch.linalg.norm(tangens, dim=-1, keepdim=True) + 1e-20)
+    tangens = tangens / (torch.linalg.norm(tangens, dim=-1, keepdim=True) + 1e-20)
     normals = torch.concatenate((-tangens[..., [1]], tangens[..., [0]]), axis=-1)
     
     return tangens, normals
