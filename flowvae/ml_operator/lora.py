@@ -33,7 +33,7 @@ class LoRALinear(nn.Module):
         if self.r > 0:
             return (self.dropout(x) @ self.A.T) @ self.B.T * self.scaling
         else:
-            return torch.zeros(x.shape[0], self.B.shape[0], device=x.device, dtype=x.dtype)
+            return torch.zeros_like(x, device=x.device, dtype=x.dtype)
 
 class LoRAConv2dDP(nn.Module):
     """
@@ -99,7 +99,7 @@ class LoRAQKV(nn.Module):
     """
     replace qkv layers with one add lora
     """
-    def __init__(self, qkv_layer: nn.Linear, r=4, alpha=16, dropout=0.05):
+    def __init__(self, qkv_layer: nn.Linear, r=4, alpha=16, dropout=0.05, is_lora_k=False):
         super().__init__()
         self.qkv_base = qkv_layer
         self.qkv_base.weight.requires_grad = False
@@ -110,12 +110,13 @@ class LoRAQKV(nn.Module):
 
         # add lora for q and v
         self.lora_q = LoRALinear(dim, dim, r=r, alpha=alpha, dropout=dropout)
+        self.lora_k = LoRALinear(dim, dim, r=r if is_lora_k else 0, alpha=alpha, dropout=dropout)
         self.lora_v = LoRALinear(dim, dim, r=r, alpha=alpha, dropout=dropout)
 
     def forward(self, x):
 
         qkv = self.qkv_base(x)
-        lora_addition = torch.concat((self.lora_q(x), torch.zeros_like(x), self.lora_v(x)), dim=-1)
+        lora_addition = torch.concat((self.lora_q(x), self.lora_k(x), self.lora_v(x)), dim=-1)
         return qkv + lora_addition
 
 def recusive_search(model: nn.Module, modify_fn: Callable, target_modules: List[str] = ["qkv"], target_parents: Optional[List[str]] = None, prefix: str = ''):
@@ -152,11 +153,11 @@ def _enable_gradient(model, module, name,
             param.requires_grad = True
 
 def _add_lora(model, module, name, 
-                r: int = 4, alpha: int = 16, dropout: float = 0.05):
+                r: int = 4, alpha: int = 16, dropout: float = 0.05, is_lora_k: bool = False):
     
     if isinstance(module, nn.Linear):
         # establish lora QKV (original qkv is saved and set to not require gradients)
-        lora_layer = LoRAQKV(module, r=r, alpha=alpha, dropout=dropout).to(module.weight.device, dtype=module.weight.dtype)
+        lora_layer = LoRAQKV(module, r=r, alpha=alpha, dropout=dropout, is_lora_k=is_lora_k).to(module.weight.device, dtype=module.weight.dtype)
         # replace
         setattr(model, name, lora_layer)
 
@@ -176,7 +177,7 @@ def enable_gradient(model, grad_require_layers, grad_require_parents, reset_para
     )
 
 def add_lora_to_model(model: nn.Module, target_modules: List[str] = ["qkv"], target_parents: Optional[List[str]] = None, 
-                      r: int = 4, alpha: int = 16, dropout: float = 0.05,
+                      r: int = 4, alpha: int = 16, dropout: float = 0.05, is_lora_k: bool = False,
                       prefix: str = ''):    # prefix is for recursive
     """
     Recursively replace nn.Linear layers with LoRALinear in target modules.
@@ -190,7 +191,7 @@ def add_lora_to_model(model: nn.Module, target_modules: List[str] = ["qkv"], tar
 
     recusive_search(
         model,
-        modify_fn=partial(_add_lora, r=r, alpha=alpha, dropout=dropout),
+        modify_fn=partial(_add_lora, r=r, alpha=alpha, dropout=dropout, is_lora_k=is_lora_k),
         target_modules=target_modules,
         target_parents=target_parents
     )

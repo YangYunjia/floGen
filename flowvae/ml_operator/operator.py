@@ -545,12 +545,15 @@ class ModelOperator():
                     'r': 4,
                     'alpha': 'r', 
                     'dropout': 0.05,
+                    'is_lora_k': False,
                 }
                 for k in lora_params:
                     default_lora_params[k] = lora_params[k]
 
                 if default_lora_params['alpha'] == 'r':
                     default_lora_params['alpha'] = default_lora_params['r']
+                elif default_lora_params['alpha'] == '2r':
+                    default_lora_params['alpha'] = 2 * default_lora_params['r']
 
                 add_lora_to_model(self._model, grad_require_layers, grad_require_parents, **default_lora_params)
 
