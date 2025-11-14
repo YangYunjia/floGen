@@ -117,9 +117,13 @@ class MLSolver(AeroSolver):
         load model from standard floGen savings
         
         '''
-        if self.comm.rank == 0:
+
+        if self.comm is None or self.comm.rank == 0:
             self.model = model
             self.model.loading()
+
+        if self.comm is not None:
+            self.comm.barrier()
 
     def setAeroProblem(self, aeroProblem):
         '''
@@ -396,8 +400,9 @@ class MLSolver(AeroSolver):
             # local_grad = self._extract_local_surface_gradient(key)
             local_grad = self._last_surface_grad_global.get(key)
             if local_grad is not None and self.DVGeo is not None:
+                # for ML solver, we don't want sumup all gradients, so comm=None
                 geom_sens = self.DVGeo.totalSensitivity(
-                    local_grad[None, :, :],  "ml_%s_coords" % aeroProblem.name, comm=self.comm, config=aeroProblem.name
+                    local_grad[None, :, :],  "ml_%s_coords" % aeroProblem.name, comm=None, config=aeroProblem.name
                 )
                 sens_dict.update(geom_sens)
 
