@@ -14,7 +14,7 @@ from flowvae.base_model.utils import Decoder, Encoder
 from flowvae.base_model.conv import convEncoder, convDecoder, convEncoder_Unet, convDecoder_Unet
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.resnet import Resnet18Decoder, Resnet18Encoder, ResnetDecoder_Unet, ResnetEncoder_Unet
-from flowvae.base_model.trans import Transolver, EncoderDecoderTransolver, ViT
+from flowvae.base_model.trans import Transolver, UTransolver, EncoderDecoderTransolver, ViT
 from flowvae.base_model.pdet.pde_transformer import PDEImpl
 from flowvae.utils import device_select
 
@@ -424,9 +424,9 @@ class WingViT(ViT):
 
 class WingTransformer(Transolver):
     
-    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False) -> None:
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
-        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape)
+        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)])
         
         self.is_flatten = is_flatten
         
@@ -436,6 +436,25 @@ class WingTransformer(Transolver):
         x  = inputs.permute(0, 2, 3, 1)
         fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
         return super()._process(x, fx)
+    
+    def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        B_, C_, H_, W_ = inputs.shape
+        return [super().forward(inputs, code).permute(0, 3, 1, 2)]
+    
+class WingUTransolver(UTransolver):
+    
+    def __init__(self, depths=[2, 5, 8, 5, 2], n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False) -> None:
+        
+        super().__init__(3, h_in-1, h_out, depths, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape=1)
+        
+        self.is_flatten = is_flatten
+        
+    def _process(self, inputs, code: torch.Tensor) -> torch.Tensor:
+        
+        _, C_, H_, W_ = inputs.shape
+        x  = inputs.permute(0, 2, 3, 1)
+        fx = code[:, None, None, :2].repeat((1, H_, W_, 1))
+        return super()._process(x, fx).permute(0, 3, 1, 2)
     
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         B_, C_, H_, W_ = inputs.shape

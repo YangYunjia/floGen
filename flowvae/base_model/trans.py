@@ -17,6 +17,7 @@ from functools import reduce
 
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.utils import IntpConv
+from flowvae.base_model.pdet.pde_transformer import Downsample, Upsample
 
 class Attention(nn.Module):
     
@@ -303,8 +304,6 @@ class Transolver_block(nn.Module):
             slice_num=32,
             mesh_type='2d',
             is_add_mesh=0,
-            downsampling: nn.Module = nn.Identity(),
-            upsampling: nn.Module = nn.Identity()
     ) -> None:
         
         super().__init__()
@@ -320,9 +319,6 @@ class Transolver_block(nn.Module):
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False,
                        basic_layers={'actv': act_layer})   # , res=False, act=act
-        
-        self.upsampling = upsampling
-        self.dnsampling = downsampling
 
     def fetch_attention_layer(self, num_heads, hidden_dim, dropout, slice_num, mesh_type, is_add_mesh) -> Attention:
         dim_head = hidden_dim // num_heads
@@ -336,14 +332,10 @@ class Transolver_block(nn.Module):
             return Attention(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout)
 
     def forward(self, fx: torch.Tensor) -> torch.Tensor:
-        # upsampling
-        fx = self.upsampling(fx)
         # attention
         fx = self.ln_1(fx)
         fx = self.Attn(fx, None) + fx[..., self.is_add_mesh:]
         fx = self.mlp(self.ln_2(fx)) + fx
-        # downsampling
-        fx = self.dnsampling(fx)
         return fx
     
     def get_slice_weight(self, fx: torch.Tensor) -> torch.Tensor:
@@ -355,6 +347,46 @@ class Transolver_block(nn.Module):
         
         '''
         return self.Attn.get_slice_weight(self.ln_1(fx))
+
+class Transolver_stage(nn.Module):
+
+    def __init__(
+            self,
+            num_heads: int,
+            depth: int,
+            hidden_dim: int,
+            dropout: float = 0.,
+            act='gelu',
+            mlp_ratio=4,
+            slice_num=32,
+            mesh_type='2d',
+            is_add_mesh=0,
+    ) -> None:
+        
+        super().__init__()
+        self.dim = hidden_dim
+        blocks = []
+        for i in range(depth):
+
+            block = Transolver_block(
+                num_heads = num_heads,
+                hidden_dim = hidden_dim,
+                dropout = dropout,
+                act=act,
+                mlp_ratio=mlp_ratio,
+                slice_num=slice_num,
+                mesh_type=mesh_type,
+                is_add_mesh=is_add_mesh,
+            )
+            blocks.append(block)
+
+        self.blocks = nn.ModuleList(blocks)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 2, 3, 1)
+        for n, block in enumerate(self.blocks):
+            x = block(x)
+        return x.permute(0, 3, 1, 2)
 
 class Transolver_block_cross(Transolver_block):
     
@@ -413,7 +445,6 @@ class Transolver(nn.Module):
                  slice_num: int = 32,
                  mlp_ratio: int = 4,
                  mesh_type: str = '2d',
-                 u_shape: int = False,
                  add_mesh: int = 0,
                  dropout=0.0,
                  placeholder: dict = {'type': 'random'},
@@ -451,33 +482,15 @@ class Transolver(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.mesh_type = mesh_type
         self.add_mesh = add_mesh
+        self.dropout = dropout
+        self.act = act
+
+        n_hidden_out = self._fetch_blocks()
 
         if Time_Input:
             self.time_fc = nn.Sequential(nn.Linear(n_hidden, n_hidden), nn.SiLU(), nn.Linear(n_hidden, n_hidden))
-            
-        
-        if u_shape == 0:
-            self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
-                                                        dropout=dropout,
-                                                        act=act,
-                                                        mlp_ratio=mlp_ratio,
-                                                        slice_num=slice_num,
-                                                        mesh_type=mesh_type,
-                                                        is_add_mesh=add_mesh)
-                                        for _ in range(n_layers)])
-        elif u_shape == 1:
-            self.is_compiled = False
-            # build the downsampling part of the model
-            self.blocks = nn.ModuleList([Transolver_block(num_heads=n_head, hidden_dim=n_hidden,
-                                                        dropout=dropout,
-                                                        act=act,
-                                                        mlp_ratio=mlp_ratio,
-                                                        slice_num=slice_num,
-                                                        mesh_type=mesh_type,
-                                                        downsampling=Downsampling())
-                                        for _ in range(int(n_layers / 2))])
-                    
-        self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden), nn.Linear(n_hidden, out_dim))
+
+        self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden_out), nn.Linear(n_hidden_out, out_dim))
         
         self.initialize_weights()
         
@@ -487,6 +500,17 @@ class Transolver(nn.Module):
             self.placeholder = posemb_sincos_2d(h = placeholder['nh'], w = placeholder['nw'], dim = n_hidden)
         else:
             raise KeyError()
+    
+    def _fetch_blocks(self):
+        self.blocks = nn.ModuleList([Transolver_block(num_heads=self.n_head, hidden_dim=self.n_hidden,
+                                                    dropout=self.dropout,
+                                                    act=self.act,
+                                                    mlp_ratio=self.mlp_ratio,
+                                                    slice_num=self.slice_num,
+                                                    mesh_type=self.mesh_type,
+                                                    is_add_mesh=self.add_mesh)
+                                    for _ in range(self.n_layers)])
+        return self.n_hidden
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -550,42 +574,6 @@ class Transolver(nn.Module):
         
         return fx
     
-    def compile(self, *args, **kwargs) -> None:
-        '''
-        Calculate the feature map size after downsampling, for initialize the upsampling path
-        
-        '''
-        
-        print('--------------------')
-        print('Compiling the model with a batch of training data')
-        sizes = []
-        fx = self._process(*args, **kwargs)
-        
-        for ib in range(int(self.n_layers / 2)):
-            sizes.append(fx.shape[1:-1])
-            print(f'    Encoder Layer {ib:d}: {fx.shape} ->')
-            fx = self.blocks[ib](fx)
-            
-        block_list_n = []
-        if self.n_layers % 2 > 0:
-            # middle block
-            print(f'    Middle Layer:')
-            block_list_n.append(Transolver_block(num_heads=self.n_head, hidden_dim=self.n_hidden,
-                                                        mlp_ratio=self.mlp_ratio,
-                                                        slice_num=self.slice_num,
-                                                        mesh_type=self.mesh_type))
-        for ib in range(int(self.n_layers / 2)):
-            print(f'    Decoder Layer {ib:d}: -> {sizes[-ib-1]}')
-            block_list_n.append(Transolver_block(num_heads=self.n_head, hidden_dim=self.n_hidden,
-                                                        mlp_ratio=self.mlp_ratio,
-                                                        slice_num=self.slice_num,
-                                                        mesh_type=self.mesh_type,
-                                                        upsampling=Upsampling(size=sizes[-ib-1])))
-            
-        self.blocks.extend(nn.ModuleList(block_list_n))
-        self.is_compiled = True
-        print('--------------------')
-    
     def get_slice_weight(self, *args, **kwargs) -> torch.Tensor:
         '''
         return:
@@ -602,8 +590,121 @@ class Transolver(nn.Module):
             fx = block(fx)
 
         return slice_weights
-    
+
+class UTransolver(Transolver):
+
+    def __init__(self, space_dim = 1, fun_dim = 1, out_dim = 1, depths=[2, 5, 8, 5, 2], n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, mesh_type = '2d', u_shape = 1, add_mesh = 0, dropout=0, placeholder = { 'type': 'random' }, Time_Input=False, act='gelu', ref=8, unified_pos=False, device = 'cuda:0'):
+        self.u_shape = u_shape
+        self.depths = depths
+        super().__init__(space_dim, fun_dim, out_dim, sum(depths), n_hidden, n_head, slice_num, mlp_ratio, mesh_type, add_mesh, dropout, placeholder, Time_Input, act, ref, unified_pos, device)
+
+    def _fetch_blocks(self):
+        self.num_encoder_layers = len(self.depths) // 2
+        hidden_size = self.n_hidden
+        max_hidden_size = 256
+
+        # encoder
+        for i in range(self.num_encoder_layers):
+            hidden_size_layer = min(hidden_size * 2 ** i, max_hidden_size)
+            self.__setattr__(f"encoder_level_{i}", Transolver_stage(num_heads=self.n_head, depth=self.depths[i], hidden_dim=hidden_size_layer,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type))
+            if hidden_size_layer == max_hidden_size:
+                keep_dim = True
+            else:
+                keep_dim = False
+            self.__setattr__(f"down{i}_{i+1}", Downsample(hidden_size_layer, keep_dim=keep_dim))
+
+        # latent
+        hidden_size_latent = min(hidden_size * 2 ** self.num_encoder_layers, max_hidden_size)
+        self.latent = Transolver_stage(num_heads=self.n_head, depth=self.depths[self.num_encoder_layers], hidden_dim=hidden_size_latent,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type)
+        self.is_decoder = True
+        if self.is_decoder:
+
+            hidden_size_layer0 = min(hidden_size * 2, max_hidden_size)
+            if hidden_size_layer0 >= max_hidden_size:
+                keep_dim = True
+            else:
+                keep_dim = False
+
+            # double hidden size for last decoder layer 0
+            self.__setattr__("up1_0", Upsample(hidden_size_layer0, keep_dim=keep_dim))
+            self.__setattr__("reduce_chan_level0", nn.Conv2d(2 * min(hidden_size, max_hidden_size), hidden_size_layer0, kernel_size=1, bias=True))
+            self.__setattr__("decoder_level_0", Transolver_stage(num_heads=self.n_head, depth=self.depths[self.num_encoder_layers + 1], hidden_dim=hidden_size_layer0,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type))
+
+            # decoder layers 1 - num_encoder_layers
+            for i in range(1, self.num_encoder_layers):
+
+                hidden_size_layer = min(hidden_size * 2 ** i, max_hidden_size)
+                if 2 * hidden_size_layer >= max_hidden_size:
+                    keep_dim = True
+                    hidden_size_upsample = max_hidden_size
+                else:
+                    keep_dim = False
+                    hidden_size_upsample = 2 * hidden_size_layer
+
+                self.__setattr__(f"up{i+1}_{i}", Upsample(hidden_size_upsample, keep_dim=keep_dim))
+                self.__setattr__(f"reduce_chan_level{i}", nn.Conv2d(hidden_size_layer * 2, hidden_size_layer, kernel_size=1, bias=True))
+                self.__setattr__(f"decoder_level_{i}", Transolver_stage(num_heads=self.n_head, depth=self.depths[self.num_encoder_layers + i + 1], hidden_dim=hidden_size_layer,
+                                                        mlp_ratio=self.mlp_ratio,
+                                                        slice_num=self.slice_num,
+                                                        mesh_type=self.mesh_type))
+
+            hidden_size_out = min(2 * hidden_size, max_hidden_size)
+
+        return hidden_size_out
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        '''
+        B N C -> B N C
+        '''
+
+        x = self._process(*args, **kwargs)
+
+        residuals_list = []
+        for i in range(self.num_encoder_layers):
+            # encoder
+            out_enc_level = self.__getattr__(f"encoder_level_{i}")(x)
+            residuals_list.append(out_enc_level)
+            x = self.__getattr__(f"down{i}_{i+1}")(out_enc_level)
+        x = self.latent(x)   # （PDEStage -> B C H W)
+
+        if self.is_decoder:
+
+            for i, residual in enumerate(residuals_list[1:][::-1]):
+                # decoder
+                x = self.__getattr__(f"up{self.num_encoder_layers - i}_{self.num_encoder_layers - i - 1}")(x)
+                x = torch.cat([x, residual], 1)
+                x = self.__getattr__(f"reduce_chan_level{self.num_encoder_layers - i - 1}")(x)
+                x = self.__getattr__(f"decoder_level_{self.num_encoder_layers - i - 1}")(x)
+
+            x = self.__getattr__(f"up1_0")(x)
+            x = torch.cat([x, residuals_list[0]], 1)
+            x = self.__getattr__(f"reduce_chan_level0")(x)
+            x = self.__getattr__(f"decoder_level_0")(x)
+
+            # output
+            x = self.last_layer(x.permute(0, 2, 3, 1))
+
+        else:
+            raise NotImplementedError()
+            x = self.final_layer(x)
+
+        return x
+
+
 class EncoderDecoderTransolver(Transolver):
+    '''
+    to extract information from the reference flow fields
+    
+    '''
     
     def __init__(self, space_dim = 1, fun_dim = 1, ref_dim = 1, out_dim = 1, n_layers_enc = 3, n_layers_dec = 3, n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, mesh_type = '2d', add_mesh = 0, dropout=0, Time_Input=False, act='gelu', ref=8, unified_pos=False, device = 'cuda:0'):
         super().__init__(space_dim, fun_dim, out_dim, 0, n_hidden, n_head, slice_num, mlp_ratio, mesh_type, -1, add_mesh, dropout, Time_Input, act, ref, unified_pos, device)

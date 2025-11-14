@@ -1,10 +1,11 @@
 import random, time, os
 from .operator import load_model_from_checkpoint, _check_existance_checkpoint
+import torch
 
 from typing import Callable
 
 
-def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1):
+def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1, history_file_name=None):
     '''
     K-fold validation training pipline for models. The training and evaluation process is assigned with to
     Callable function, `func_train` and `func_eval`. The current function's major task is to split dataset
@@ -116,6 +117,8 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
             history['errors'].append(error)
             history['errstats'].append(errstat)
 
+        if history_file_name is not None:
+            torch.save(history, history_file_name)
     # if func_eval is not None:
     #     errors   = np.array(errors)
     #     errstats = np.array(errstats)
