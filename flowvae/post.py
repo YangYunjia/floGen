@@ -475,9 +475,9 @@ def get_moment_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None,
     '''
     
     dxyforce = get_dxyforce_2d_t(geom, cp, cf)
-    r = 0.25 * (geom[..., :-1, :-1, :] + geom[..., :-1, 1:, :] + geom[..., 1:, 1:, :] + geom[..., 1:, :-1, :]) - ref_point
+    r = 0.25 * (geom[..., :-1, :-1, :] + geom[..., :-1, 1:, :] + geom[..., 1:, 1:, :] + geom[..., 1:, :-1, :]) - ref_point.to(geom.device)
     
-    return np.sum(np.cross(r, dxyforce, dim=-1), axis=(-3, -2))
+    return torch.sum(torch.cross(r, dxyforce, dim=-1), dim=(-3, -2))
 
 def get_cellinfo_1d_t(geom: torch.Tensor) -> torch.Tensor:
     '''
