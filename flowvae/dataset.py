@@ -14,6 +14,7 @@ import os
 import random
 import copy
 from typing import List, Callable, NewType, Union, Tuple, Iterable, Sequence, Optional
+import itertools
 
 def load_with_float_check(file: str, target_type = np.float32) -> np.ndarray:
 
@@ -322,7 +323,6 @@ class FlowDataset(Dataset):
         print(f'{data.shape} -> {compress_data.shape}')
         return compress_data
 
-
 class MCFlowDataset(FlowDataset):
     
     default_split_paras = {
@@ -430,13 +430,36 @@ class MCFlowDataset(FlowDataset):
         print(f'> min & max number of flow fields for one geometry:  {min(self.condis_all_num):d}  {max(self.condis_all_num):d}')
         print(f'---------------------------------------')
 
+    def _get_shape_idx_from_samples(self, sample_idx: list):
+
+        shape_idxs = []
+        for iidx in sample_idx:
+            if self.all_index[iidx][0] not in shape_idxs:
+                # load the shape index
+                shape_idxs.append(self.all_index[iidx][0])
+
+        return shape_idxs
+    
+    def _select_shape_index(self) -> List[int]:
+        '''
+        select airfoil testing part
+        '''
+        self.shape_idxs = []
+
+        usable_shape = self.n_shape - self._split_paras['nTest']
+        if usable_shape <= 0:
+            raise ValueError('nTest removes all shapes; decrease nTest to build pairs')
+
+        if self._split_paras['isLastTest']:
+            return list(range(usable_shape))
+        return random.sample(range(self.n_shape), usable_shape)
+
     def _select_index(self):
         
         '''
         select among the conditions of each airfoil for training
         '''
         self.data_idxs = []     # data sample indexs for training
-        self.shape_idxs = []    # shape indexs for training
         self._check_index()
 
         print(f'selecting data from data.npy')
@@ -445,11 +468,7 @@ class MCFlowDataset(FlowDataset):
         if self._split_paras['method'] == 'load':
             
             self._load_index_file()
-
-            for iidx in self.data_idxs:
-                if self.all_index[iidx][0] not in self.shape_idxs:
-                    # load the geometry index
-                    self.shape_idxs.append(self.all_index[iidx][0])
+            self.shape_idxs = self._get_shape_idx_from_samples(self.data_idxs)
 
         elif self._split_paras['method'] == 'base':
             # being a base dataset for k-fold cross validation: the split is in the k-fold code, here the dataset
@@ -460,12 +479,8 @@ class MCFlowDataset(FlowDataset):
         else:
 
             if self._split_paras['method'] in ['fix', 'random', 'all', 'exrf']:
-                
-                # select airfoil testing part
-                if self._split_paras['isLastTest']:
-                    self.shape_idxs = list(range(self.n_shape - self._split_paras['nTest']))
-                else:
-                    self.shape_idxs = random.sample(range(self.n_shape), self.n_shape - self._split_paras['nTest'])
+
+                self.shape_idxs = self._select_shape_index()
 
                 for i in self.shape_idxs:
                     if self._split_paras['method'] == 'random':
@@ -624,6 +639,146 @@ class MCFlowDataset(FlowDataset):
         self.get_item = self._add_force_item(self.get_item)
         # self._output_force_flag = True # determine get_series
         return param
+
+class MCFlowPairDataset(MCFlowDataset):
+
+    """
+    Dataset variant that returns paired flowfields for each shape.
+
+    Each sample contains two conditions of the same geometry, and the selected
+    condition pairs are saved to `indexFileName` on initialisation so the exact
+    pairing can be reproduced later with `split_paras['method'] = 'load'`.
+    """
+    default_split_paras = {
+        'method': 'load',   # overall + condition selection methods (load, random, all)
+        'nTest':  0,        # overall test amounts
+        'nCond': None,
+        'mapCond': None,
+        'isLastTest': True,
+        'indexFileNum': -1, # Number of the index file
+        'indexFileName': None,
+        'allow_same': False,
+        'n_pairs': 8,
+    }
+    
+    def __init__(self,
+                 file_name,
+                d_c: int = None,
+                is_ref: bool = True,
+                split_paras: dict = {},
+                data_base='data',
+                input_channel_take=None,
+                output_channel_take=None,
+                aux_channel_take=None,
+                flatten=False,
+                swap_axis=None,
+                unsqueeze=None,
+                marker_idx: int = 1,
+                channel_cond: list = None):
+       
+        self.data_idxs: List[Tuple[int, int]] = []
+
+        super().__init__(file_name=file_name,
+                        d_c=d_c,
+                        is_ref=is_ref,
+                        split_paras=split_paras,
+                        data_base=data_base,
+                        input_channel_take=input_channel_take,
+                        output_channel_take=output_channel_take,
+                        aux_channel_take=aux_channel_take,
+                        flatten=flatten,
+                        swap_axis=swap_axis,
+                        unsqueeze=unsqueeze,
+                        marker_idx=marker_idx,
+                        getindex_type='noref',  # place holder
+                        channel_cond=channel_cond)
+
+    def _select_index(self):
+
+        self.data_idxs = []
+        self._check_index()
+
+        method = self._split_paras['method']
+        if method == 'load':
+            self._load_pair_indices()
+            self.shape_idxs = self._get_shape_idx_from_samples([p[0] for p in self.data_idxs])
+        else:
+
+            self.shape_idxs = self._select_shape_index()
+
+            not_sufficient_shape = []
+            for i in self.shape_idxs:
+                shape_pairs, fail = self._build_pairs([i_sample + self.condis_st[i] for i_sample in range(self.condis_all_num[i])], i)
+                self.data_idxs.extend(shape_pairs)
+                if not fail: not_sufficient_shape.append(i)
+            
+            if len(not_sufficient_shape) > 0:
+                print(f' *** Warning: {len(not_sufficient_shape)} shapes does not have enough pairs for given n_pair = {self._split_paras["n_pairs"]}')
+
+            self._save_pair_indices()
+
+        self.dataset_size = len(self.data_idxs)
+
+        if self.dataset_size == 0:
+            raise RuntimeError('No valid condition pairs generated for training')
+
+        print(f'> total paired samples: {self.dataset_size}')
+        print('---------------------------------------')
+
+    def _build_pairs(self,
+                     condition_indices: Sequence[int],
+                     shape_idx: int) -> Tuple[List[Tuple[int, int]], bool]:
+
+        if len(condition_indices) < 2 and not self._split_paras['allow_same']:
+            return [], False
+
+        pool = list(itertools.permutations(condition_indices, 2))
+        # pool = list(itertools.combinations(condition_indices, 2))
+
+        if self._split_paras['allow_same']:
+            pool.extend((idx, idx) for idx in condition_indices)
+
+        if not pool:
+            raise ValueError(f'No valid flowfield pairs for shape {shape_idx}')
+        
+        if self._split_paras['n_pairs'] is not None:
+            if len(pool) < self._split_paras['n_pairs']:
+                return pool, False
+            else:
+                return random.sample(pool, self._split_paras['n_pairs']), True
+        else:
+            return pool, True
+
+    def _save_pair_indices(self):
+
+        assert not os.path.exists(self._split_paras['indexFileName']), \
+            ' *** ERROR *** Data index file \'%s\' exist' % self._split_paras['indexFileName']
+
+        np.savetxt(self._split_paras['indexFileName'], np.asarray(self.data_idxs, dtype=np.int32), fmt='%d')
+
+    def _load_pair_indices(self):
+
+        fname = self._split_paras['indexFileName']
+        assert os.path.exists(fname), f'*** ERROR *** Data index file {fname} not exist, use random instead!'
+        raw = np.loadtxt(fname, dtype=np.int64)
+
+        if raw.ndim != 2 or raw.shape[1] != 2:
+            raise RuntimeError(f'Pair index file {fname} must have two columns')
+
+        self.data_idxs = [tuple(map(int, row)) for row in raw.tolist()]
+        print(f'> load flowfield-pair index from {fname}')
+
+    def __getitem__(self, idx: Tuple[int]) -> dict:
+        first, second = self.data_idxs[idx]
+
+        inputs  = torch.cat([
+            torch.from_numpy(self.inputs[first]).float(),
+            torch.from_numpy(self.output[first]).float()
+        ], dim=0)
+        labels  = torch.from_numpy(self.output[second] - self.output[first])
+        auxs = torch.from_numpy(self.auxs[second] - self.auxs[first])
+
+        return {'input': inputs, 'label': labels, 'aux': auxs}
 
 class ConditionDataset(Dataset):
     '''

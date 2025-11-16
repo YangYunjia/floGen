@@ -460,6 +460,7 @@ class ModelOperator():
         return [data['input']], {}
 
     def _calculate_loss(self, data, output: torch.Tensor, kwargs):
+        # print(output.shape, data['label'].shape)
         recons = torch.nn.functional.mse_loss(output, data['label'])
         loss = {'recons': recons}
         
