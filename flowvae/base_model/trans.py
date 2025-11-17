@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from functools import reduce
+import math
 
 from flowvae.base_model.mlp import mlp
 from flowvae.base_model.utils import IntpConv
@@ -434,6 +435,105 @@ class Upsampling(nn.Module):
         return result.permute(0, 2, 3, 1)
 
 
+class LearnableSamplingMatrix(nn.Module):
+    """
+    Learnable dense-to-coarse sampler that records the sampling matrix for reuse
+    during upsampling.
+    """
+
+    def __init__(self, reduction: int = 2):
+        super().__init__()
+        self.reduction = reduction
+        self.register_parameter('sampling_matrix', None)
+        self.dense_shape = None
+        self.coarse_shape = None
+
+    def _initialize_if_needed(self, h: int, w: int, device: torch.device, dtype: torch.dtype) -> None:
+        if self.sampling_matrix is not None:
+            if (h, w) != self.dense_shape:
+                raise ValueError(
+                    f"LearnableSamplingMatrix expected spatial shape {self.dense_shape} but received {(h, w)}"
+                )
+            return
+
+        if h % self.reduction != 0 or w % self.reduction != 0:
+            raise ValueError(
+                f"Input spatial shape ({h}, {w}) must be divisible by reduction factor {self.reduction}"
+            )
+
+        coarse_h = h // self.reduction
+        coarse_w = w // self.reduction
+        init = torch.randn(coarse_h * coarse_w, h * w, device=device, dtype=dtype) * (1.0 / math.sqrt(h * w))
+        self.sampling_matrix = nn.Parameter(init)
+        self.dense_shape = (h, w)
+        self.coarse_shape = (coarse_h, coarse_w)
+
+    def _normalized_weights(self) -> torch.Tensor:
+        return torch.softmax(self.sampling_matrix, dim=-1)
+
+    def downsample(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        self._initialize_if_needed(h, w, x.device, x.dtype)
+        weights = self._normalized_weights()  # Nc x Nd
+        flat = x.reshape(b, c, -1)
+        coarse = torch.einsum('bcn,kn->bck', flat, weights)
+        return coarse.reshape(b, c, *self.coarse_shape)
+
+    def upsample(self, x: torch.Tensor) -> torch.Tensor:
+        if self.sampling_matrix is None:
+            raise RuntimeError("Sampling matrix has not been initialized. Call downsample before upsample.")
+        b, c, h, w = x.shape
+        if (h, w) != self.coarse_shape:
+            raise ValueError(
+                f"LearnableSamplingMatrix expected coarse shape {self.coarse_shape} but received {(h, w)}"
+            )
+        weights = self._normalized_weights()  # Nc x Nd
+        dense = torch.einsum('bck,nk->bcn', x.reshape(b, c, -1), weights.transpose(0, 1))
+        return dense.reshape(b, c, *self.dense_shape)
+
+
+class LearnablePointDownsample(nn.Module):
+    """
+    Channel aware downsampling that first projects channels and then applies a
+    learnable dense-to-coarse sampler.
+    """
+
+    def __init__(self, in_channels: int, keep_dim: bool = False, sampler: LearnableSamplingMatrix = None, reduction: int = 2):
+        super().__init__()
+        out_channels = in_channels if keep_dim else in_channels * 2
+        self.channel_proj = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.GELU()
+        )
+        self.sampler = sampler if sampler is not None else LearnableSamplingMatrix(reduction=reduction)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.channel_proj(x)
+        return self.sampler.downsample(x)
+
+
+class LearnablePointUpsample(nn.Module):
+    """
+    Upsampling counterpart that reuses the sampling matrix learned during the
+    downsampling stage.
+    """
+
+    def __init__(self, in_channels: int, keep_dim: bool = False, sampler: LearnableSamplingMatrix = None, reduction: int = 2):
+        super().__init__()
+        if not keep_dim and in_channels % 2 != 0:
+            raise ValueError("in_channels must be divisible by 2 when keep_dim is False.")
+        out_channels = in_channels if keep_dim else in_channels // 2
+        self.sampler = sampler if sampler is not None else LearnableSamplingMatrix(reduction=reduction)
+        self.channel_proj = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.GELU()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.sampler.upsample(x)
+        return self.channel_proj(x)
+
+
 class Transolver(nn.Module):
     def __init__(self,
                  space_dim: int = 1,
@@ -594,6 +694,13 @@ class Transolver(nn.Module):
 class UTransolver(Transolver):
 
     def __init__(self, space_dim = 1, fun_dim = 1, out_dim = 1, depths=[2, 5, 8, 5, 2], n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, mesh_type = '2d', u_shape = 1, add_mesh = 0, dropout=0, placeholder = { 'type': 'random' }, Time_Input=False, act='gelu', ref=8, unified_pos=False, device = 'cuda:0'):
+        '''
+        `u_shape`
+        = 1
+        = 2 learnable
+        
+        '''
+        
         self.u_shape = u_shape
         self.depths = depths
         super().__init__(space_dim, fun_dim, out_dim, sum(depths), n_hidden, n_head, slice_num, mlp_ratio, mesh_type, add_mesh, dropout, placeholder, Time_Input, act, ref, unified_pos, device)
@@ -602,6 +709,11 @@ class UTransolver(Transolver):
         self.num_encoder_layers = len(self.depths) // 2
         hidden_size = self.n_hidden
         max_hidden_size = 256
+
+        if self.u_shape == 2:
+            self.learnable_samplers = nn.ModuleDict()
+        else:
+            self.learnable_samplers = None
 
         # encoder
         for i in range(self.num_encoder_layers):
@@ -614,7 +726,18 @@ class UTransolver(Transolver):
                 keep_dim = True
             else:
                 keep_dim = False
-            self.__setattr__(f"down{i}_{i+1}", Downsample(hidden_size_layer, keep_dim=keep_dim))
+
+            if self.u_shape == 2:
+                sampler_key = f"{i}_{i+1}"
+                sampler = LearnableSamplingMatrix()
+                self.learnable_samplers[sampler_key] = sampler
+                down_module = LearnablePointDownsample(hidden_size_layer, keep_dim=keep_dim, sampler=sampler)
+            elif self.u_shape == 1:
+                down_module = Downsample(hidden_size_layer, keep_dim=keep_dim)
+            else:
+                raise NotImplementedError()
+
+            self.__setattr__(f"down{i}_{i+1}", down_module)
 
         # latent
         hidden_size_latent = min(hidden_size * 2 ** self.num_encoder_layers, max_hidden_size)
@@ -632,7 +755,18 @@ class UTransolver(Transolver):
                 keep_dim = False
 
             # double hidden size for last decoder layer 0
-            self.__setattr__("up1_0", Upsample(hidden_size_layer0, keep_dim=keep_dim))
+            if self.u_shape == 2:
+                sampler_key = "0_1"
+                if sampler_key not in self.learnable_samplers:
+                    raise ValueError("Learnable sampler for level 0_1 was not initialized.")
+                sampler = self.learnable_samplers[sampler_key]
+                up_module = LearnablePointUpsample(hidden_size_layer0, keep_dim=keep_dim, sampler=sampler)
+            elif self.u_shape == 1:
+                up_module = Upsample(hidden_size_layer0, keep_dim=keep_dim)
+            else:
+                raise NotImplementedError()
+
+            self.__setattr__("up1_0", up_module)
             self.__setattr__("reduce_chan_level0", nn.Conv2d(2 * min(hidden_size, max_hidden_size), hidden_size_layer0, kernel_size=1, bias=True))
             self.__setattr__("decoder_level_0", Transolver_stage(num_heads=self.n_head, depth=self.depths[self.num_encoder_layers + 1], hidden_dim=hidden_size_layer0,
                                                         mlp_ratio=self.mlp_ratio,
@@ -650,7 +784,18 @@ class UTransolver(Transolver):
                     keep_dim = False
                     hidden_size_upsample = 2 * hidden_size_layer
 
-                self.__setattr__(f"up{i+1}_{i}", Upsample(hidden_size_upsample, keep_dim=keep_dim))
+                if self.u_shape == 2:
+                    sampler_key = f"{i}_{i+1}"
+                    if sampler_key not in self.learnable_samplers:
+                        raise ValueError(f"Learnable sampler for level {sampler_key} was not initialized.")
+                    sampler = self.learnable_samplers[sampler_key]
+                    up_module = LearnablePointUpsample(hidden_size_upsample, keep_dim=keep_dim, sampler=sampler)
+                elif self.u_shape == 1:
+                    up_module = Upsample(hidden_size_upsample, keep_dim=keep_dim)
+                else:
+                    raise NotImplementedError()
+                
+                self.__setattr__(f"up{i+1}_{i}", up_module)
                 self.__setattr__(f"reduce_chan_level{i}", nn.Conv2d(hidden_size_layer * 2, hidden_size_layer, kernel_size=1, bias=True))
                 self.__setattr__(f"decoder_level_{i}", Transolver_stage(num_heads=self.n_head, depth=self.depths[self.num_encoder_layers + i + 1], hidden_dim=hidden_size_layer,
                                                         mlp_ratio=self.mlp_ratio,
@@ -844,4 +989,3 @@ class ViT(nn.Module):
         results = fx.reshape(-1, self.nh, self.nw, self.ph, self.pw, self.out_dim).permute(0, 5, 1, 3, 2, 4).reshape(-1, self.out_dim, self.nh * self.ph, self.nw * self.pw)
         
         return results
-    

@@ -443,9 +443,9 @@ class WingTransformer(Transolver):
     
 class WingUTransolver(UTransolver):
     
-    def __init__(self, depths=[2, 5, 8, 5, 2], n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=False) -> None:
+    def __init__(self, depths=[2, 5, 8, 5, 2], n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=1) -> None:
         
-        super().__init__(3, h_in-1, h_out, depths, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape=1)
+        super().__init__(3, h_in-1, h_out, depths, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape=u_shape)
         
         self.is_flatten = is_flatten
         
