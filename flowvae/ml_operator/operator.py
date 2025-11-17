@@ -107,6 +107,7 @@ class ModelOperator():
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle: bool = True,
+                       num_workers: int = 4,
                        ema_optimizer: bool = False
                        ) -> None:
         
@@ -121,7 +122,7 @@ class ModelOperator():
         self.paras = {}
         self.paras['num_epochs'] = num_epochs
         self.paras['batch_size'] = batch_size
-        self.paras['num_workers'] = 0
+        self.paras['num_workers'] = num_workers
         # self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
         self.paras['loss_parameters'] = {}
@@ -658,14 +659,14 @@ class BasicAEOperator(ModelOperator):
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
                  output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
                  split_train_ratio: float = 0.9, split_dataset: Optional[Dict[str, Subset]] = None, recover_split: str = None, 
-                 batch_size: int = 8, shuffle: bool = True, ema_optimizer: bool = False,
+                 batch_size: int = 8, shuffle: bool = True, num_workers: int = 4, ema_optimizer: bool = False,
                  ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
         
         self.ref = ref
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -722,6 +723,7 @@ class AEOperator(ModelOperator):
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle=True,
+                       num_workers: int = 4,
                        ema_optimizer: bool = False,
                        ref=False,
                        input_channels: Tuple[int, int] = (None, None), 
@@ -729,7 +731,7 @@ class AEOperator(ModelOperator):
                        recon_type: str = 'field'
                        ):
         
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels
