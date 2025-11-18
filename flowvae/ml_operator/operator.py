@@ -275,8 +275,15 @@ class ModelOperator():
             opt_class = getattr(opt, optimizer_name)
             self._optimizer_name = optimizer_name
             self._optimizer_setting = kwargs
-            if ema_optimizer:
+            self.clip_active = False
+            if isinstance(ema_optimizer, bool) and ema_optimizer:
+                self.clip_active = 1
                 self.ema_clip = EmaGradClip(ema_coef1=0.99, ema_coef2=0.999)
+            elif isinstance(ema_optimizer, float):
+                self.clip_active = 0
+                self.clip_max_norm = ema_optimizer
+            else:
+                raise AttributeError()
             self._optimizer = opt_class(self._model.parameters(), **kwargs)
             self._optimizer_setting['ema_optimizer'] = ema_optimizer
 
@@ -403,8 +410,10 @@ class ModelOperator():
                                     self._optimizer.zero_grad()
                                     total_loss.backward()
 
-                                if self._optimizer_setting['ema_optimizer']:
+                                if self.clip_active == 1:
                                     self.ema_clip.on_before_optimizer_step(self._model)
+                                elif self.clip_active == 0:
+                                    torch.nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=self.clip_max_norm)
                                 self._optimizer.step()
                                 if update_lr_batch:
                                     self._scheduler.step()
