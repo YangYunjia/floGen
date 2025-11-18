@@ -333,6 +333,8 @@ class MCFlowDataset(FlowDataset):
         'isLastTest': True,
         'indexFileNum': -1, # Number of the index file
         'indexFileName': None,
+        'saveShapeFile': None,
+        'useShapeFile': None
     }
     
     def __init__(self, file_name, 
@@ -454,6 +456,16 @@ class MCFlowDataset(FlowDataset):
             return list(range(usable_shape))
         return random.sample(range(self.n_shape), usable_shape)
 
+    def _load_shape_index(self) -> List[int]:
+
+        fname = self._split_paras['useShapeFile']
+    
+        assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist for using existing shape split!' % fname
+        index = np.loadtxt(fname, dtype=np.int32)
+        assert all(index < self.n_shape), ' *** ERROR *** Loaded shape indexs larger then size!'
+        print(f'> Load shape split index from {self._split_paras["useShapeFile"]}')
+        return index
+
     def _select_index(self):
         
         '''
@@ -479,8 +491,10 @@ class MCFlowDataset(FlowDataset):
         else:
 
             if self._split_paras['method'] in ['fix', 'random', 'all', 'exrf']:
-
-                self.shape_idxs = self._select_shape_index()
+                if self._split_paras['useShapeFile'] is not None:
+                    self.shape_idxs = self._load_shape_index()
+                else:
+                    self.shape_idxs = self._select_shape_index()
 
                 for i in self.shape_idxs:
                     if self._split_paras['method'] == 'random':
@@ -507,6 +521,12 @@ class MCFlowDataset(FlowDataset):
         self.dataset_size = len(self.data_idxs)
 
         print(f'---------------------------------------')
+
+    def _save_shape_idx(self):
+        assert self._split_paras['saveShapeFile'] is not None, ' *** ERROR *** Shape index file name (saveShapeFile) not assigned but needs to be saved'
+        assert not os.path.exists(self._split_paras['saveShapeFile']), ' *** ERROR *** Data index file \'%s\' exist' % self._split_paras['saveShapeFile']
+        np.savetxt(self._split_paras['saveShapeFile'], self.shape_idxs, fmt='%d')
+        print(f'> Saving shape split index to {self._split_paras["saveShapeFile"]}')
 
     @property
     def airfoil_idx(self):
@@ -650,13 +670,7 @@ class MCFlowPairDataset(MCFlowDataset):
     pairing can be reproduced later with `split_paras['method'] = 'load'`.
     """
     default_split_paras = {
-        'method': 'load',   # overall + condition selection methods (load, random, all)
-        'nTest':  0,        # overall test amounts
-        'nCond': None,
-        'mapCond': None,
-        'isLastTest': True,
-        'indexFileNum': -1, # Number of the index file
-        'indexFileName': None,
+        **MCFlowDataset.default_split_paras,
         'allow_same': False,
         'n_pairs': 8,
     }
@@ -702,9 +716,13 @@ class MCFlowPairDataset(MCFlowDataset):
         if method == 'load':
             self._load_pair_indices()
             self.shape_idxs = self._get_shape_idx_from_samples([p[0] for p in self.data_idxs])
+            if self._split_paras['saveShapeFile'] is not None:
+                self._save_shape_idx()
         else:
-
-            self.shape_idxs = self._select_shape_index()
+            if self._split_paras['useShapeFile'] is not None:
+                self.shape_idxs = self._load_shape_index()
+            else:
+                self.shape_idxs = self._select_shape_index()
 
             not_sufficient_shape = []
             for i in self.shape_idxs:
