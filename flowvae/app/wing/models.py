@@ -118,7 +118,6 @@ class multiinput_resnet2dsmodel(nn.Module):
         self.wing_encoder = mlp(in_features=8,  out_features=h_e2[-1], hidden_dims=h_e2[:-1])
 
         self.decoder = resnet2dsmodel(h_d1, h_d2, h_in=h_e1[-1]+h_e2[-1], h_out=h_out, nt=nt, device=device, last_size=last_size)
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 8:])
@@ -136,7 +135,6 @@ class triinput_resnet2dsmodel(nn.Module):
         self.cond_encoder = mlp(in_features=2,  out_features=h_e3[-1], hidden_dims=h_e3[:-1], basic_layers={'dropout': dropout})
 
         self.decoder = resnet2dsmodel(h_d1, h_d2, h_in=h_e1[-1]+h_e2[-1]+h_e3[-1], h_out=h_out, nt=nt, device=device, last_size=last_size)
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 8:])
@@ -156,7 +154,6 @@ class onet_resnet2dsmodel(nn.Module):
         if h_e1[-1] != h_e2[-1]: raise AttributeError('h_e1[-1] (%d) != h_e2[-1] (%d)' % (h_e1[-1], h_e2[-1]))
 
         self.decoder = resnet2dsmodel(h_d1, h_d2, h_in=h_e1[-1], h_out=h_out, nt=nt, device=device, last_size=last_size)
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 8:])
@@ -567,7 +564,6 @@ class WingPDETransformer(PDEImpl):
         
         super().__init__(**kwargs)
         self.type_cond = type_cond
-        self.device = device
 
     def forward(self, inputs, code: torch.Tensor) -> torch.Tensor:
         if self.type_cond in ['cat']:
@@ -604,7 +600,6 @@ class multiinput_resnet2dsmodel(nn.Module):
                                     sizes=sizes, last_conv='bottleneck')
 
             self.decoder = DecoderModel(input_channels=h_e1[-1]+h_e2[-1], decoder=decoder, device=device, decoder_input_layer=h_d1)    
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 3:])
@@ -694,7 +689,6 @@ class triinput_simplemodel(nn.Module):
             self.last_size = [-1, int(h_d1[-1] / nt), nt]
         else:
             self.last_size = [-1, h_d1[-1]]
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 8:])
@@ -718,7 +712,6 @@ class triinput_simplemodel1(nn.Module):
             self.last_size = [-1, int(h_d1[-1] / nt), nt]
         else:
             self.last_size = [-1, h_d1[-1]]
-        self.device = device
         
     def forward(self, inputs):
         foil_encoded = self.foil_encoder(inputs[:, 8:])

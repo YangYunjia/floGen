@@ -15,6 +15,7 @@ import torch.nn as nn
 import numpy as np
 from functools import reduce
 import math
+from typing import Union, Callable
 
 from flowvae.base_model.mlp import mlp
 
@@ -163,7 +164,6 @@ class Transolver(nn.Module):
                  act='gelu',
                  ref=8,
                  unified_pos=False,
-                 device: str = 'cuda:0'
                  ):
         '''
         `u_shape`:
@@ -175,7 +175,6 @@ class Transolver(nn.Module):
         self.__name__ = 'Transolver_2D'
         # self.ref = ref
         self.unified_pos = unified_pos
-        self.device = device
 
         if self.unified_pos:
             raise NotImplementedError
@@ -276,7 +275,7 @@ class Transolver(nn.Module):
             fx = self.preprocess(torch.cat((x, fx), -1))
         else:
             fx = self.preprocess(x)
-            fx = fx + self.placeholder.to(self.device, dtype=fx.dtype)
+            fx = fx + self.placeholder.to(fx.device, dtype=fx.dtype)
 
         # if T is not None:
         #     Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
@@ -304,10 +303,12 @@ class Transolver(nn.Module):
 
 class UTransolver(Transolver):
 
-    def __init__(self, space_dim = 1, fun_dim = 1, out_dim = 1, depths=[2, 5, 8, 5, 2], n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, mesh_type = '2d', u_shape = 1, add_mesh = 0, dropout=0, placeholder = { 'type': 'random' }, Time_Input=False, act='gelu', ref=8, unified_pos=False, device = 'cuda:0'):
+    def __init__(self, space_dim = 1, fun_dim = 1, out_dim = 1, depths=[2, 5, 8, 5, 2], n_hidden = 256, n_head = 8, slice_num = 32, mlp_ratio = 4, 
+                 mesh_type = '2d', u_shape: Union[int, Callable[..., ReusableSamplingCore]] = 1, 
+                 add_mesh = 0, dropout=0, placeholder = { 'type': 'random' }, Time_Input=False, act='gelu', ref=8, unified_pos=False):
         '''
         `u_shape`
-        = 1
+        = 1 pixel / unpixel
         = 2 learnable
         = 3 attention-based local sampler
         = 4 global cross-attention sampler
@@ -315,14 +316,14 @@ class UTransolver(Transolver):
         '''
         self.u_shape = u_shape
         self.depths = depths
-        super().__init__(space_dim, fun_dim, out_dim, sum(depths), n_hidden, n_head, slice_num, mlp_ratio, mesh_type, add_mesh, dropout, placeholder, Time_Input, act, ref, unified_pos, device)
+        super().__init__(space_dim, fun_dim, out_dim, sum(depths), n_hidden, n_head, slice_num, mlp_ratio, mesh_type, add_mesh, dropout, placeholder, Time_Input, act, ref, unified_pos)
 
     def _fetch_blocks(self):
         self.num_encoder_layers = len(self.depths) // 2
         hidden_size = self.n_hidden
         max_hidden_size = 256
 
-        if self.u_shape in [2, 3, 4]:
+        if not isinstance(self.u_shape, int):
             self.learnable_samplers = nn.ModuleDict()
         else:
             self.learnable_samplers = None
@@ -339,25 +340,8 @@ class UTransolver(Transolver):
             else:
                 keep_dim = False
 
-            if self.u_shape in [2, 3, 4]:
-                if self.u_shape == 2:
-                    sampler = LearnableSamplingMatrix()
-                elif self.u_shape == 3:
-                    sampler_channels = hidden_size_layer if keep_dim else hidden_size_layer * 2
-                    sampler = AttentionPointSampler(
-                        channels=sampler_channels,
-                        reduction=2,
-                        heads=self.n_head,
-                        temperature=0.05
-                    )
-                elif self.u_shape == 4:
-                    sampler_channels = hidden_size_layer if keep_dim else hidden_size_layer * 2
-                    sampler = CrossAttentionSampler(
-                        channels=sampler_channels,
-                        reduction=2,
-                        heads=self.n_head,
-                        temperature=0.05
-                    )
+            if not isinstance(self.u_shape, int):
+                sampler = self.u_shape(in_channels=hidden_size_layer if keep_dim else hidden_size_layer * 2)
                 self.learnable_samplers[f"{i}_{i+1}"] = sampler
                 down_module = ReusableDownsample(sampler, hidden_size_layer, keep_dim=keep_dim)
 
@@ -384,7 +368,7 @@ class UTransolver(Transolver):
                 keep_dim = False
 
             # double hidden size for last decoder layer 0
-            if self.u_shape in [2, 3, 4]:
+            if not isinstance(self.u_shape, int):
                 up_module = ReusableUpsample(self.learnable_samplers["0_1"], hidden_size_layer0, keep_dim=keep_dim)
             elif self.u_shape == 1:
                 up_module = Upsample(hidden_size_layer0, keep_dim=keep_dim)
@@ -409,7 +393,7 @@ class UTransolver(Transolver):
                     keep_dim = False
                     hidden_size_upsample = 2 * hidden_size_layer
 
-                if self.u_shape in [2, 3, 4]:
+                if not isinstance(self.u_shape, int):
                     up_module = ReusableUpsample(self.learnable_samplers[f"{i}_{i+1}"], hidden_size_upsample, keep_dim=keep_dim)
                 elif self.u_shape == 1:
                     up_module = Upsample(hidden_size_upsample, keep_dim=keep_dim)

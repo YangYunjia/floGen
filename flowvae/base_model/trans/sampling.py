@@ -79,7 +79,7 @@ class UpsampleV2(nn.Module):
 
 class ReusableSamplingCore(nn.Module):
 
-    def __init__(self):
+    def __init__(self, in_channels: int):
         super().__init__()
     
     @abstractmethod
@@ -136,8 +136,8 @@ class LearnableSamplingMatrix(ReusableSamplingCore):
     during upsampling.
     """
 
-    def __init__(self, reduction: int = 2):
-        super().__init__()
+    def __init__(self, in_channels: int, reduction: int = 2):
+        super().__init__(in_channels)
         self.reduction = reduction
         self.register_parameter('sampling_matrix', None)
         self.dense_shape = None
@@ -192,21 +192,21 @@ class AttentionPointSampler(ReusableSamplingCore):
     through attention weights that depend on the current input.
     """
 
-    def __init__(self, channels: int, reduction: int = 2, heads: int = 4, temperature: float = 0.05):
-        super().__init__()
+    def __init__(self, in_channels: int, reduction: int = 2, heads: int = 4, temperature: float = 0.05):
+        super().__init__(in_channels)
         if reduction < 1:
             raise ValueError("Reduction factor must be >= 1.")
         self.reduction = reduction
         self.temperature = temperature
-        hidden_dim = max(channels // 2, 1)
+        hidden_dim = max(in_channels // 2, 1)
         self.selector = nn.Sequential(
-            nn.LayerNorm(channels),
-            nn.Linear(channels, hidden_dim),
+            nn.LayerNorm(in_channels),
+            nn.Linear(in_channels, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 1)
         )
         self.heads = heads
-        self.token_attn = Attention(dim=channels, heads=self.heads, dim_head=channels // self.heads, dropout=0.)
+        self.token_attn = Attention(dim=in_channels, heads=self.heads, dim_head=in_channels // self.heads, dropout=0.)
         self.cached_weights = None
         self.cached_shape = None
 
@@ -256,6 +256,93 @@ class AttentionPointSampler(ReusableSamplingCore):
         self.cached_shape = None
         return dense
 
+
+class LowRankSampler(ReusableSamplingCore):
+    """
+    Cross attention without explicit Nc x N matrices via rank-limited token
+    projections along dense and coarse dimensions.
+    """
+
+    def __init__(self, in_channels: int, reduction: int = 2, rank: int = 64, temperature: float = 0.05):
+        super().__init__(in_channels)
+        if reduction < 1:
+            raise ValueError("Reduction factor must be >= 1.")
+        self.channels = in_channels
+        self.reduction = reduction
+        self.temperature = temperature
+        self.rank = rank
+        hidden_dim = max(in_channels // 2, 1)
+        self.selector = nn.Sequential(
+            nn.LayerNorm(in_channels),
+            nn.Linear(in_channels, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.dense_mapper = nn.Linear(in_channels, rank)
+        self.coarse_mapper = nn.Linear(in_channels, rank)
+        self.cached_dense_weights = None
+        self.cached_coarse_weights = None
+        self.cached_shape = None
+        self.cached_coarse_shape = None
+
+    def _split_windows(self, x: torch.Tensor):
+        b, c, h, w = x.shape
+        if h % self.reduction != 0 or w % self.reduction != 0:
+            raise ValueError(
+                f"Input spatial shape ({h}, {w}) must be divisible by reduction factor {self.reduction}"
+            )
+        h_coarse = h // self.reduction
+        w_coarse = w // self.reduction
+        window_size = self.reduction * self.reduction
+        windows = x.reshape(b, c, h_coarse, self.reduction, w_coarse, self.reduction)
+        windows = windows.permute(0, 2, 4, 3, 5, 1).reshape(b, h_coarse, w_coarse, window_size, c)
+        return windows, h_coarse, w_coarse, window_size
+
+    def downsample(self, x: torch.Tensor) -> torch.Tensor:
+        windows, h_coarse, w_coarse, window_size = self._split_windows(x)
+        scores = self.selector(windows).squeeze(-1)
+        weights = torch.softmax(scores / self.temperature, dim=3).unsqueeze(-1)
+        coarse_seed = torch.sum(weights * windows, dim=3)  # B Hc Wc C
+        dense_tokens = x.permute(0, 2, 3, 1).reshape(x.shape[0], -1, self.channels)  # B N C
+        coarse_tokens = coarse_seed.reshape(x.shape[0], -1, self.channels)  # B Nc C
+
+        dense_logits = self.dense_mapper(dense_tokens)  # B N r
+        dense_weights = torch.softmax(dense_logits.transpose(1, 2), dim=2)  # B r N
+        basis = torch.bmm(dense_weights, dense_tokens)  # B r C
+
+        coarse_logits = self.coarse_mapper(coarse_tokens)  # B Nc r
+        coarse_weights = torch.softmax(coarse_logits.transpose(1, 2), dim=2)  # B r Nc
+        coarse_out = torch.bmm(coarse_weights.transpose(1, 2), basis)  # B Nc C
+        coarse = coarse_out.reshape(x.shape[0], h_coarse, w_coarse, self.channels).permute(0, 3, 1, 2)
+
+        self.cached_dense_weights = dense_weights
+        self.cached_coarse_weights = coarse_weights
+        self.cached_shape = (x.shape[2], x.shape[3])
+        self.cached_coarse_shape = (h_coarse, w_coarse)
+        return coarse
+
+    def upsample(self, x: torch.Tensor) -> torch.Tensor:
+        if self.cached_dense_weights is None or self.cached_coarse_weights is None \
+           or self.cached_shape is None or self.cached_coarse_shape is None:
+            raise RuntimeError("Sampler cache is empty. Call `downsample` before `upsample`.")
+
+        h, w = self.cached_shape
+        h_coarse, w_coarse = self.cached_coarse_shape
+        if x.shape[2] != h_coarse or x.shape[3] != w_coarse:
+            raise ValueError("Input coarse feature spatial shape does not match cached shape.")
+
+        coarse_tokens = x.permute(0, 2, 3, 1).reshape(x.shape[0], -1, self.channels)  # B Nc C
+        basis = torch.bmm(self.cached_coarse_weights, coarse_tokens)  # B r C
+        dense_tokens = torch.bmm(self.cached_dense_weights.transpose(1, 2), basis)  # B N C
+        dense = dense_tokens.reshape(x.shape[0], h, w, self.channels).permute(0, 3, 1, 2)
+
+        self.cached_dense_weights = None
+        self.cached_coarse_weights = None
+        self.cached_shape = None
+        self.cached_coarse_shape = None
+        return dense
+
+'''
 class CrossAttentionSampler(ReusableSamplingCore):
     """
     Build coarse tokens and perform cross attention between coarse queries and
@@ -355,3 +442,4 @@ class CrossAttentionSampler(ReusableSamplingCore):
         self.cached_shape = None
         self.cached_coarse_shape = None
         return dense
+'''

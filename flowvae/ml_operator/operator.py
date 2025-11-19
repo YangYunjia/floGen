@@ -108,15 +108,20 @@ class ModelOperator():
                        batch_size: int = 8, 
                        shuffle: bool = True,
                        num_workers: int = 4,
-                       ema_optimizer: bool = False
+                       ema_optimizer: bool = False,
+                       device: str = 'cuda:0'
                        ) -> None:
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
-        self.device = model.device
-        
+
+        if hasattr(model, device):
+            assert device == model.device, 'model and operator should be on same device'
+        else:
+            self.device = device
+            model.to(device)
+
         self._model = model
-        # self._model.to(self.device)
         self._transfer_output_bias = None
 
         self.paras = {}
@@ -669,13 +674,13 @@ class BasicAEOperator(ModelOperator):
                  output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
                  split_train_ratio: float = 0.9, split_dataset: Optional[Dict[str, Subset]] = None, recover_split: str = None, 
                  batch_size: int = 8, shuffle: bool = True, num_workers: int = 4, ema_optimizer: bool = False,
-                 ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
+                 ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None), device: str = 'cuda:0'):
         
         self.ref = ref
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -737,10 +742,11 @@ class AEOperator(ModelOperator):
                        ref=False,
                        input_channels: Tuple[int, int] = (None, None), 
                        recon_channels: Tuple[int, int] =(1, None),
-                       recon_type: str = 'field'
+                       recon_type: str = 'field',
+                       device: str = 'cuda:0'
                        ):
         
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels
