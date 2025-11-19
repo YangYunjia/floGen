@@ -309,6 +309,8 @@ class UTransolver(Transolver):
         `u_shape`
         = 1
         = 2 learnable
+        = 3 attention-based local sampler
+        = 4 global cross-attention sampler
         
         '''
         self.u_shape = u_shape
@@ -320,7 +322,7 @@ class UTransolver(Transolver):
         hidden_size = self.n_hidden
         max_hidden_size = 256
 
-        if self.u_shape == 2:
+        if self.u_shape in [2, 3, 4]:
             self.learnable_samplers = nn.ModuleDict()
         else:
             self.learnable_samplers = None
@@ -337,11 +339,28 @@ class UTransolver(Transolver):
             else:
                 keep_dim = False
 
-            if self.u_shape == 2:
-                sampler_key = f"{i}_{i+1}"
-                sampler = LearnableSamplingMatrix()
-                self.learnable_samplers[sampler_key] = sampler
-                down_module = LearnablePointDownsample(hidden_size_layer, keep_dim=keep_dim, sampler=sampler)
+            if self.u_shape in [2, 3, 4]:
+                if self.u_shape == 2:
+                    sampler = LearnableSamplingMatrix()
+                elif self.u_shape == 3:
+                    sampler_channels = hidden_size_layer if keep_dim else hidden_size_layer * 2
+                    sampler = AttentionPointSampler(
+                        channels=sampler_channels,
+                        reduction=2,
+                        heads=self.n_head,
+                        temperature=0.05
+                    )
+                elif self.u_shape == 4:
+                    sampler_channels = hidden_size_layer if keep_dim else hidden_size_layer * 2
+                    sampler = CrossAttentionSampler(
+                        channels=sampler_channels,
+                        reduction=2,
+                        heads=self.n_head,
+                        temperature=0.05
+                    )
+                self.learnable_samplers[f"{i}_{i+1}"] = sampler
+                down_module = ReusableDownsample(sampler, hidden_size_layer, keep_dim=keep_dim)
+
             elif self.u_shape == 1:
                 down_module = Downsample(hidden_size_layer, keep_dim=keep_dim)
             else:
@@ -365,12 +384,8 @@ class UTransolver(Transolver):
                 keep_dim = False
 
             # double hidden size for last decoder layer 0
-            if self.u_shape == 2:
-                sampler_key = "0_1"
-                if sampler_key not in self.learnable_samplers:
-                    raise ValueError("Learnable sampler for level 0_1 was not initialized.")
-                sampler = self.learnable_samplers[sampler_key]
-                up_module = LearnablePointUpsample(hidden_size_layer0, keep_dim=keep_dim, sampler=sampler)
+            if self.u_shape in [2, 3, 4]:
+                up_module = ReusableUpsample(self.learnable_samplers["0_1"], hidden_size_layer0, keep_dim=keep_dim)
             elif self.u_shape == 1:
                 up_module = Upsample(hidden_size_layer0, keep_dim=keep_dim)
             else:
@@ -394,12 +409,8 @@ class UTransolver(Transolver):
                     keep_dim = False
                     hidden_size_upsample = 2 * hidden_size_layer
 
-                if self.u_shape == 2:
-                    sampler_key = f"{i}_{i+1}"
-                    if sampler_key not in self.learnable_samplers:
-                        raise ValueError(f"Learnable sampler for level {sampler_key} was not initialized.")
-                    sampler = self.learnable_samplers[sampler_key]
-                    up_module = LearnablePointUpsample(hidden_size_upsample, keep_dim=keep_dim, sampler=sampler)
+                if self.u_shape in [2, 3, 4]:
+                    up_module = ReusableUpsample(self.learnable_samplers[f"{i}_{i+1}"], hidden_size_upsample, keep_dim=keep_dim)
                 elif self.u_shape == 1:
                     up_module = Upsample(hidden_size_upsample, keep_dim=keep_dim)
                 else:

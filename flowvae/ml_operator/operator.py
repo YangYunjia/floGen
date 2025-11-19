@@ -116,7 +116,7 @@ class ModelOperator():
         self.device = model.device
         
         self._model = model
-        self._model.to(self.device)
+        # self._model.to(self.device)
         self._transfer_output_bias = None
 
         self.paras = {}
