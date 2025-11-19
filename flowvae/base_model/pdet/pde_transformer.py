@@ -18,6 +18,7 @@ import torch
 from .final_layer import FinalLayer
 from .udit import precompute_freqs_cis_2d, apply_rotary_emb
 from flowvae.base_model.mlp import mlp
+from flowvae.base_model.trans.sampling import Downsample, DownsampleV2, Upsample, UpsampleV2
 
 ###############################
 # We need to create subclass of Swinv2PreTrainedModel because it sets use_mask_token=True
@@ -221,57 +222,6 @@ class OverlapPatchEmbed(nn.Module):
             x = x[:, :, 1:-1, :]
 
         return x
-
-
-class Downsample(nn.Module):
-    def __init__(self, n_feat, keep_dim=False):
-        super(Downsample, self).__init__()
-
-        if keep_dim:
-            n_feat_out = n_feat // 4
-        else:
-            n_feat_out = n_feat // 2
-
-        self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat_out, kernel_size=3, stride=1, padding=1, bias=False),
-                                  nn.PixelUnshuffle(2))
-
-    def forward(self, x):
-        return self.body(x)
-
-class DownsampleV2(nn.Module):
-    def __init__(self, n_feat):
-        super(DownsampleV2, self).__init__()
-
-        self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat // 4, kernel_size=3, stride=1, padding=1, bias=False),
-                                  nn.PixelUnshuffle(2))
-
-    def forward(self, x):
-        return self.body(x)
-
-
-class Upsample(nn.Module):
-    def __init__(self, n_feat, keep_dim=False):
-        super(Upsample, self).__init__()
-
-        if keep_dim:
-            n_feat_out = n_feat * 4
-        else:
-            n_feat_out = n_feat * 2
-
-        self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat_out, kernel_size=3, stride=1, padding=1, bias=False),
-                                  nn.PixelShuffle(2))
-
-    def forward(self, x):
-        return self.body(x)
-
-class UpsampleV2(nn.Module):
-    def __init__(self, n_feat):
-        super(UpsampleV2, self).__init__()
-
-        self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat * 4, kernel_size=3, stride=1, padding=1, bias=False),
-                                  nn.PixelShuffle(2))
-    def forward(self, x):
-        return self.body(x)
 
 class TokenInitializer(nn.Module):
     """
