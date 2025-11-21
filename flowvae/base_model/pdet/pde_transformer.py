@@ -1,5 +1,5 @@
 # from dataclasses import dataclass
-from typing import Tuple, Optional, Dict, Any, Callable
+from typing import Tuple, Optional, Dict, Any, Callable, Union
 
 import torch.nn.functional as F
 import torch.nn as nn
@@ -18,7 +18,14 @@ import torch
 from .final_layer import FinalLayer
 from .udit import precompute_freqs_cis_2d, apply_rotary_emb
 from flowvae.base_model.mlp import mlp
-from flowvae.base_model.trans.sampling import Downsample, DownsampleV2, Upsample, UpsampleV2
+from flowvae.base_model.trans.sampling import (
+    Downsample,
+    DownsampleV2,
+    Upsample,
+    UpsampleV2,
+    ReusableDownsample,
+    ReusableUpsample,
+)
 
 ###############################
 # We need to create subclass of Swinv2PreTrainedModel because it sets use_mask_token=True
@@ -1111,6 +1118,7 @@ class PDEImpl(nn.Module):
             inj_active: bool = False,
             output_type: Optional[str] = None, # None for decoder, given module for force
             is_final_adp: bool = False, # not works for force output (they are default True)
+            sampler: Union[int, Callable[..., nn.Module]] = 1,
             **kwargs
     ):
         super().__init__()
@@ -1132,6 +1140,12 @@ class PDEImpl(nn.Module):
 
         self.is_decoder = (output_type is None)
         print(self.is_decoder)
+
+        self.sampler = sampler
+        if not isinstance(self.sampler, int):
+            self.learnable_samplers = nn.ModuleDict()
+        else:
+            self.learnable_samplers = None
 
         self.max_hidden_size = max_hidden_size
         self.hidden_size_layers = [min(hidden_size * 2 ** i, max_hidden_size) for i in range(self.num_encoder_layers + 1)]
@@ -1170,7 +1184,17 @@ class PDEImpl(nn.Module):
                 keep_dim = True
             else:
                 keep_dim = False
-            self.__setattr__(f"down{i}_{i+1}", Downsample(hidden_size_layer, keep_dim=keep_dim))
+
+            if not isinstance(self.sampler, int):
+                sampler_inst = self.sampler(in_channels=hidden_size_layer if keep_dim else hidden_size_layer * 2)
+                self.learnable_samplers[f"{i}_{i+1}"] = sampler_inst
+                down_module = ReusableDownsample(sampler_inst, hidden_size_layer, keep_dim=keep_dim)
+            elif self.sampler == 1:
+                down_module = Downsample(hidden_size_layer, keep_dim=keep_dim)
+            else:
+                raise NotImplementedError()
+
+            self.__setattr__(f"down{i}_{i+1}", down_module)
 
         # latent
         hidden_size_latent = min(hidden_size * 2 ** self.num_encoder_layers, max_hidden_size)
@@ -1186,7 +1210,13 @@ class PDEImpl(nn.Module):
                 keep_dim = False
 
             # double hidden size for last decoder layer 0
-            self.__setattr__("up1_0", Upsample(hidden_size_layer0, keep_dim=keep_dim))
+            if not isinstance(self.sampler, int):
+                up_module = ReusableUpsample(self.learnable_samplers["0_1"], hidden_size_layer0, keep_dim=keep_dim)
+            elif self.sampler == 1:
+                up_module = Upsample(hidden_size_layer0, keep_dim=keep_dim)
+            else:
+                raise NotImplementedError()
+            self.__setattr__("up1_0", up_module)
             self.__setattr__("reduce_chan_level0", nn.Conv2d(2 * min(hidden_size, max_hidden_size), hidden_size_layer0, kernel_size=1, bias=True))
             self.__setattr__("decoder_level_0", PDEStage(dim=hidden_size_layer0, num_heads=num_heads,
                                             window_size=window_size, depth=depth[self.num_encoder_layers + 1], **dit_stage_args))
@@ -1202,7 +1232,14 @@ class PDEImpl(nn.Module):
                     keep_dim = False
                     hidden_size_upsample = 2 * hidden_size_layer
 
-                self.__setattr__(f"up{i+1}_{i}", Upsample(hidden_size_upsample, keep_dim=keep_dim))
+                if not isinstance(self.sampler, int):
+                    up_module = ReusableUpsample(self.learnable_samplers[f"{i}_{i+1}"], hidden_size_upsample, keep_dim=keep_dim)
+                elif self.sampler == 1:
+                    up_module = Upsample(hidden_size_upsample, keep_dim=keep_dim)
+                else:
+                    raise NotImplementedError()
+
+                self.__setattr__(f"up{i+1}_{i}", up_module)
                 self.__setattr__(f"reduce_chan_level{i}", nn.Conv2d(hidden_size_layer * 2, hidden_size_layer, kernel_size=1, bias=True))
                 self.__setattr__(f"decoder_level_{i}", PDEStage(dim=hidden_size_layer, num_heads=num_heads,
                                                 window_size=window_size, depth=depth[self.num_encoder_layers + i + 1], **dit_stage_args))

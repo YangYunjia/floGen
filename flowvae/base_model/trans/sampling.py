@@ -263,13 +263,16 @@ class LowRankSampler(ReusableSamplingCore):
     projections along dense and coarse dimensions.
     """
 
-    def __init__(self, in_channels: int, reduction: int = 2, rank: int = 64, temperature: float = 0.05):
+    def __init__(self, in_channels: int, reduction: int = 2, rank: int = 64, temperature: float = 0.05, learnable_temperature: bool = False):
         super().__init__(in_channels)
         if reduction < 1:
             raise ValueError("Reduction factor must be >= 1.")
         self.channels = in_channels
         self.reduction = reduction
-        self.temperature = temperature
+        if learnable_temperature:
+            self.temperature = nn.Parameter(torch.tensor(float(temperature)))
+        else:
+            self.register_buffer("temperature", torch.tensor(float(temperature)), persistent=False)
         self.rank = rank
         hidden_dim = max(in_channels // 2, 1)
         self.selector = nn.Sequential(
