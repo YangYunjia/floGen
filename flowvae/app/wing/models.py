@@ -421,9 +421,9 @@ class WingViT(ViT):
 
 class WingTransformer(Transolver):
     
-    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
+    def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, dual_slices=False) -> None:
         
-        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)])
+        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num=slice_num, mlp_ratio=mlp_ratio, mesh_type=['2d', 'point'][int(is_flatten)], dual_slices=dual_slices)
         
         self.is_flatten = is_flatten
         
@@ -442,7 +442,7 @@ class WingTokenTransformer(TokenSpaceTransolver):
     
     def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
-        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)])
+        super().__init__(3, h_in-1, h_out, n_layers, n_hidden, n_head, slice_num=slice_num, mlp_ratio=mlp_ratio, mesh_type=['2d', 'point'][int(is_flatten)])
         
         self.is_flatten = is_flatten
         
@@ -459,9 +459,9 @@ class WingTokenTransformer(TokenSpaceTransolver):
     
 class WingUTransolver(UTransolver):
     
-    def __init__(self, depths=[2, 5, 8, 5, 2], n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, u_shape=1) -> None:
+    def __init__(self, depths=[2, 5, 8, 5, 2], n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, dual_slices=False, u_shape=1) -> None:
         
-        super().__init__(3, h_in-1, h_out, depths, n_hidden, n_head, slice_num, mlp_ratio, ['2d', 'point'][int(is_flatten)], u_shape=u_shape)
+        super().__init__(3, h_in-1, h_out, depths, n_hidden, n_head, slice_num=slice_num, mlp_ratio=mlp_ratio, mesh_type=['2d', 'point'][int(is_flatten)], dual_slices=dual_slices, u_shape=u_shape)
         
         self.is_flatten = is_flatten
         

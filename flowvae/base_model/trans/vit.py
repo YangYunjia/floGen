@@ -45,16 +45,17 @@ class ViT_block(nn.Module):
             act_layer = nn.LeakyReLU
         
         self.ln_1 = nn.LayerNorm(hidden_dim + is_add_mesh)
-        self.Attn = self.fetch_attention_layer(num_heads, hidden_dim, dropout)
+        self.Attn = self.fetch_attention_layer(num_heads, hidden_dim)
         self.is_add_mesh = is_add_mesh
+        self.dropout = dropout
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False,
                        basic_layers={'actv': act_layer})   # , res=False, act=act
 
-    def fetch_attention_layer(self, num_heads, hidden_dim, dropout) -> Attention:
+    def fetch_attention_layer(self, num_heads, hidden_dim) -> Attention:
         dim_head = hidden_dim // num_heads
-        return Attention(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=dropout)
+        return Attention(hidden_dim, heads=num_heads, dim_head=dim_head, dropout=self.dropout)
 
     def forward(self, fx: torch.Tensor) -> torch.Tensor:
         # attention
@@ -108,8 +109,6 @@ class ViT(nn.Module):
                                                     dropout=dropout,
                                                     act=act,
                                                     mlp_ratio=mlp_ratio,
-                                                    slice_num=None,
-                                                    mesh_type='ViT',
                                                     is_add_mesh=add_mesh)
                                     for _ in range(n_layers)])
         

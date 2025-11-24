@@ -62,9 +62,9 @@ class Attention(nn.Module):
 
 class Physics_Attention(Attention):
     
-    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0., is_add_mesh=0):
+    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, dropout=0., add_mesh=0, dual_slices=False):
         '''
-        `is_add_mesh`
+        `add_mesh`
             - `0` -> original
             - `1 ~ 3` -> add mesh (1 ~ 3 D)
         
@@ -78,12 +78,15 @@ class Physics_Attention(Attention):
         # mapping bet. physical data to slices
         self.in_project_x = nn.Identity()
         self.in_project_fx = nn.Identity()
-        self.is_add_mesh = is_add_mesh  # whether to add 3D mesh as the only `x` to calculate weights
+        self.add_mesh = add_mesh  # whether to add 3D mesh as the only `x` to calculate weights
+        self.use_dual_slice_projection = dual_slices
         self._prepare_projection(dim, inner_dim)
 
         self.in_project_slice = nn.Linear(dim_head, slice_num)  # Ch -> M
-        for l in [self.in_project_slice]:
-            torch.nn.init.orthogonal_(l.weight)  # use a principled initialization
+        torch.nn.init.orthogonal_(self.in_project_slice.weight)  # use a principled initialization
+        if self.use_dual_slice_projection:
+            self.in_project_slice_deslice = nn.Linear(dim_head, slice_num)
+            torch.nn.init.orthogonal_(self.in_project_slice_deslice.weight)
         
         # the heads are difference in getting projection weights and values to be projected
         self.to_q = nn.Linear(dim_head, dim_head, bias=False)
@@ -91,9 +94,9 @@ class Physics_Attention(Attention):
         self.to_v = nn.Linear(dim_head, dim_head, bias=False)
     
     def _prepare_projection(self, dim, inner_dim):
-        if self.is_add_mesh > 0:
-            self.in_project_x  = nn.Linear(dim + self.is_add_mesh, inner_dim)
-            self.in_project_fx = nn.Linear(dim + self.is_add_mesh, inner_dim)
+        if self.add_mesh > 0:
+            self.in_project_x  = nn.Linear(dim + self.add_mesh, inner_dim)
+            self.in_project_fx = nn.Linear(dim + self.add_mesh, inner_dim)
         else:
             self.in_project_x = nn.Linear(dim, inner_dim)
             self.in_project_fx = nn.Linear(dim, inner_dim)
@@ -102,12 +105,12 @@ class Physics_Attention(Attention):
 
         # calculate slices `x`, `fx` for self attention
         x_mid, fx_mid, N_, N0_ = self._forward_slice(x) 
-        slice_token, slice_weights = self._project_token(x_mid, fx_mid, N_)  # B Nh M Ch,   B Nh N M
+        slice_token, slice_weights, slice_weights_deslice = self._project_token(x_mid, fx_mid, N_)  # B Nh M Ch,   B Nh N M
         
         # calculate `x` for cross attention, the `fx` (value) remains the same for cross attention
         if x_cross is not None:
             x_mid_cross, fx_mid_cross, _, _ = self._forward_slice(x_cross)
-            slice_token_cross, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
+            slice_token_cross, _, _ = self._project_token(x_mid_cross, fx_mid_cross, N_)   # B Nh M Ch
         else:
             slice_token_cross = slice_token
 
@@ -118,7 +121,7 @@ class Physics_Attention(Attention):
         out_slice_token = self._calculate_attention(q, k, v)  # B Nh M Ch
 
         ### (3) Deslice
-        return self._deslice(out_slice_token, slice_weights, N0_)
+        return self._deslice(out_slice_token, slice_weights_deslice, N0_)
     
     def _forward_slice(self, x: torch.Tensor):
         '''
@@ -156,14 +159,23 @@ class Physics_Attention(Attention):
          
         
         '''
-        slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
+        slice_weights = self._compute_slice_weights(self.in_project_slice, x_mid, N_)
+        if self.use_dual_slice_projection:
+            slice_weights_deslice = self._compute_slice_weights(self.in_project_slice_deslice, x_mid, N_)
+        else:
+            slice_weights_deslice = slice_weights
+
+        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)    # B Nh M Ch
+        
+        return slice_token, slice_weights, slice_weights_deslice
+
+    def _compute_slice_weights(self, projection_layer: nn.Module, x_mid: torch.Tensor, N_: int) -> torch.Tensor:
+        
+        slice_weights = self.softmax(projection_layer(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
         slice_norm    = slice_weights.sum(2)  # B Nh M
         # Nov. 8 2024 -> move non-dimensional for slice here -> the weights used for reconstruct will be different
         slice_weights = slice_weights / ((slice_norm + 1e-5)[:, :, None, :].repeat(1, 1, N_, 1))
-        
-        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights)    # B Nh M Ch
-        
-        return slice_token, slice_weights
+        return slice_weights
     
     def _deslice(self, out_slice_token: torch.Tensor, slice_weights: torch.Tensor, N0_) -> torch.Tensor:
         
@@ -180,7 +192,7 @@ class Physics_Attention(Attention):
         
         '''
         x_mid, fx_mid, N_, N0_ = self._forward_slice(x)
-        slice_weights = self.softmax(self.in_project_slice(x_mid) / torch.clamp(self.temperature, min=0.1, max=5))  # B Nh N M 
+        slice_weights = self._compute_slice_weights(self.in_project_slice, x_mid, N_)  # B Nh N M 
         
         return slice_weights.reshape(-1, self.heads, *N0_, self.slice_num)
 
@@ -206,9 +218,9 @@ class Physics_Attention_2D(Physics_Attention):
     B H W C -> B H W C_out
     
     '''
-    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0):
+    def __init__(self, dim, kernel=3, **kwargs):
         self.kernel = kernel
-        super().__init__(dim, heads, dim_head, slice_num, dropout)
+        super().__init__(dim, **kwargs)
         
     def _prepare_projection(self, dim, inner_dim):
         
@@ -234,9 +246,9 @@ class Physics_Attention_2D(Physics_Attention):
 
 class Physics_Attention_3D(Physics_Attention):
 
-    def __init__(self, dim, heads=8, dim_head=64, slice_num=64, kernel=3, dropout=0):
+    def __init__(self, dim, kernel=3, **kwargs):
         self.kernel = kernel
-        super().__init__(dim, heads, dim_head, slice_num, dropout)
+        super().__init__(dim, **kwargs)
         
     def _prepare_projection(self, dim, inner_dim):
         
