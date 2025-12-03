@@ -102,7 +102,7 @@ class ModelOperator():
                        output_folder: str = "save", 
                        init_lr: float = 0.01, 
                        num_epochs: int = 50,
-                       split_train_ratio: float = 0.9,
+                       split_train_ratio: Union[float, List[float]] = 0.9,
                        split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
                        batch_size: int = 8, 
@@ -145,7 +145,11 @@ class ModelOperator():
                 
             else:
                 # split training data
-                self.phases = self.split_train_valid_dataset(recover=recover_split, train_r=split_train_ratio)
+                if isinstance(split_train_ratio, float):
+                    train_r, val_r = split_train_ratio, None
+                else:
+                    train_r, val_r = split_train_ratio
+                self.phases = self.split_train_valid_dataset(recover=recover_split, train_r=train_r, val_r=val_r)
             
             self.dataset_size = {phase: len(self.dataset[phase]) for phase in self.phases}
                 
@@ -305,7 +309,7 @@ class ModelOperator():
             self._scheduler_setting = kwargs
             self._scheduler = sch_class(self._optimizer, **kwargs)
     
-    def split_train_valid_dataset(self, recover: Optional[str] = None, train_r: float = 0.9):
+    def split_train_valid_dataset(self, recover: Optional[str] = None, train_r: float = 0.9, val_r: Optional[float] = None):
         '''
         Split the validation set from the training one; the testing dataset should 
         be split before training use functions in `FlowDataset` classes
@@ -336,8 +340,14 @@ class ModelOperator():
             else:
             
                 train_size = int(train_r * len(self.all_dataset))
-                val_size =   len(self.all_dataset) - train_size
-                self.dataset['train'], self.dataset['val'] = random_split(self.all_dataset, [train_size, val_size])
+                if val_r is None:
+                    val_size =   len(self.all_dataset) - train_size
+                    rest_size = 0
+                else:
+                    assert train_r + val_r <= 1.0, "train_r and val_r should be lower than 1"
+                    val_size = int(val_r * len(self.all_dataset))
+                    rest_size = len(self.all_dataset) - train_size - val_size
+                self.dataset['train'], self.dataset['val'], _ = random_split(self.all_dataset, [train_size, val_size, rest_size])
                 print("Random Split Dataset length: (Train: %d, Val: %d)" % (train_size, val_size))
 
             path = os.path.join(self.output_folder, self.optname, 'dataset_indice')

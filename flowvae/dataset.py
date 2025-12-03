@@ -452,18 +452,23 @@ class MCFlowDataset(FlowDataset):
         if usable_shape <= 0:
             raise ValueError('nTest removes all shapes; decrease nTest to build pairs')
 
-        if self._split_paras['isLastTest']:
-            return list(range(usable_shape))
-        return random.sample(range(self.n_shape), usable_shape)
+        if isinstance(self._split_paras['isLastTest'], str):
+            # select training dataset from given indexs
+            candidate_index = self._load_shape_index(self._split_paras['isLastTest'])
+            assert usable_shape <= len(candidate_index), 'not enough shape from loaded'
+        else:
+            if self._split_paras['isLastTest']:
+                return list(range(usable_shape))
+            
+            candidate_index = range(self.n_shape)
+        return random.sample(list(candidate_index), usable_shape)
 
-    def _load_shape_index(self) -> List[int]:
-
-        fname = self._split_paras['useShapeFile']
+    def _load_shape_index(self, fname: str) -> List[int]:
     
         assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist for using existing shape split!' % fname
         index = np.loadtxt(fname, dtype=np.int32)
         assert all(index < self.n_shape), ' *** ERROR *** Loaded shape indexs larger then size!'
-        print(f'> Load shape split index from {self._split_paras["useShapeFile"]}')
+        print(f'> Load shape split index from {fname} of size {len(index)}')
         return index
 
     def _select_index(self):
@@ -492,7 +497,7 @@ class MCFlowDataset(FlowDataset):
 
             if self._split_paras['method'] in ['fix', 'random', 'all', 'exrf']:
                 if self._split_paras['useShapeFile'] is not None:
-                    self.shape_idxs = self._load_shape_index()
+                    self.shape_idxs = self._load_shape_index(self._split_paras['useShapeFile'])
                 else:
                     self.shape_idxs = self._select_shape_index()
 
@@ -516,8 +521,8 @@ class MCFlowDataset(FlowDataset):
             
             self._save_data_idx()
 
-        # self.data = torch.from_numpy(np.take(self.all_data, self.data_idx, axis=0)).float()
-        # self.cond = torch.from_numpy(np.take(self.all_index[:, 3:3+self.condis_dim], self.data_idx, axis=0)).float() 
+        if self._split_paras['saveShapeFile'] is not None:
+            self._save_shape_idx()
         self.dataset_size = len(self.data_idxs)
 
         print(f'---------------------------------------')
@@ -720,7 +725,7 @@ class MCFlowPairDataset(MCFlowDataset):
                 self._save_shape_idx()
         else:
             if self._split_paras['useShapeFile'] is not None:
-                self.shape_idxs = self._load_shape_index()
+                self.shape_idxs = self._load_shape_index(self._split_paras['useShapeFile'])
             else:
                 self.shape_idxs = self._select_shape_index()
 
