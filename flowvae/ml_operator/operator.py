@@ -102,6 +102,7 @@ class ModelOperator():
                        output_folder: str = "save", 
                        init_lr: float = 0.01, 
                        num_epochs: int = 50,
+                       restart: Optional[int] = None,
                        split_train_ratio: Union[float, List[float]] = 0.9,
                        split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
@@ -144,6 +145,8 @@ class ModelOperator():
                 print("Dataset split based on input: (Train: %d, Val: %d)" % (len(self.dataset['train']), len(self.dataset['val'])))
                 
             else:
+                if restart is not None: recover_split = self.optname    # load original data split
+
                 # split training data
                 if isinstance(split_train_ratio, float):
                     train_r, val_r = split_train_ratio, None
@@ -175,7 +178,8 @@ class ModelOperator():
         # runing parameters
         self.history = {'loss': {'train':MDCounter(), 'val':MDCounter()}, 'lr':[]}
         self.epoch = 0
-        self.best_loss = 1e4       
+        self.best_loss = 1e4  
+        self.restart = restart     
 
         self.initial_oprtor()
 
@@ -320,7 +324,7 @@ class ModelOperator():
             path = os.path.join(self.output_folder, recover, 'dataset_indice')
             if not os.path.exists(path):
                 raise IOError("checkpoint not exist in {}".format(self.output_folder))
-            dataset_dict = torch.load(path, map_location=self.device)
+            dataset_dict = torch.load(path, map_location=self.device, weights_only=False)
             for phase in dataset_dict.keys():
                 self.dataset[phase] = Subset(self.all_dataset, dataset_dict[phase])
 
@@ -353,9 +357,12 @@ class ModelOperator():
             path = os.path.join(self.output_folder, self.optname, 'dataset_indice')
             torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
-            return self.dataset.keys()
+        return self.dataset.keys()
 
     def train_model(self, save_check, save_best=True, v_tqdm=True, update_lr_batch=False):
+
+        if self.restart is not None:
+            self.load_checkpoint(self.restart, load_opt=True)
 
         load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
         #* *** Training section ***
@@ -519,11 +526,11 @@ class ModelOperator():
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
     
-    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
+    def load_checkpoint(self, epoch, load_opt=True):
 
         path = _check_existance_checkpoint(epoch, self.output_path)
         
-        save_dict = torch.load(path, map_location=self.device)
+        save_dict = torch.load(path, map_location=self.device, weights_only=False)
         # print(save_dict['epoch'])
         self.epoch = save_dict['epoch'] + 1
         self._model.load_state_dict(save_dict['model_state_dict'], strict=True)
@@ -538,9 +545,6 @@ class ModelOperator():
             self._transfer_output_bias = None
         else:
             self._transfer_output_bias = load_bias.detach().clone().to(self.device)
-
-        if load_data_split and len(self.dataset) > 0:
-            self.split_train_valid_dataset(recover=self.optname)
 
         print('checkpoint at epoch %d loaded from %s' % (save_dict['epoch'], path))
 
@@ -681,7 +685,7 @@ class BasicAEOperator(ModelOperator):
     '''
 
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
-                 output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
+                 output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, restart: Optional[int] = None,
                  split_train_ratio: float = 0.9, split_dataset: Optional[Dict[str, Subset]] = None, recover_split: str = None, 
                  batch_size: int = 8, shuffle: bool = True, num_workers: int = 4, ema_optimizer: bool = False,
                  ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None), device: str = 'cuda:0'):
@@ -690,7 +694,7 @@ class BasicAEOperator(ModelOperator):
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, restart, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -742,6 +746,7 @@ class AEOperator(ModelOperator):
                        output_folder="save", 
                        init_lr=0.01, 
                        num_epochs: int = 50,
+                       restart: Optional[int] = None,
                        split_train_ratio = 0.9,
                        split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
@@ -756,7 +761,7 @@ class AEOperator(ModelOperator):
                        device: str = 'cuda:0'
                        ):
         
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
+        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, restart, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, ema_optimizer, device)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels
