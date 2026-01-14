@@ -62,7 +62,6 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     save_dict = torch.load(path, map_location=device, weights_only=False)
     
     if 'history' not in save_dict.keys():
-    # if epoch == -1:
         model.load_state_dict(save_dict, strict=True)
         last_error = None
     else:
@@ -74,6 +73,32 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     print(f'load checkpoint from {path}')
 
     return last_error
+
+def load_model_weights(model: nn.Module, weights_path: str, device, set_to_eval: bool = True):
+    '''
+    Saver load with only weights checkpoints
+    
+    :param model: Description
+    :param weights_path: Description
+    :param device: Description
+    '''
+
+    model.to(device)
+    state_dict = torch.load(weights_path, map_location=device)
+    model.load_state_dict(state_dict, strict=True, weights_only=True)
+    if set_to_eval: model.eval()
+
+def transfer_checkpoint_to_save_weights(epoch: int, folder: str):
+
+    path = _check_existance_checkpoint(epoch=epoch, folder=folder)
+    save_dict = torch.load(path, weights_only=False)
+    
+    if 'history' not in save_dict.keys():
+        model_state_dict = save_dict
+    else:
+        model_state_dict = save_dict['model_state_dict']
+
+    torch.save(model_state_dict, path + '_weights')
 
 class ModelOperator():
     '''
