@@ -1139,7 +1139,6 @@ class PDEImpl(nn.Module):
         self.inj_active = inj_active
 
         self.is_decoder = (output_type is None)
-        print(self.is_decoder)
 
         self.sampler = sampler
         if not isinstance(self.sampler, int):
