@@ -1190,42 +1190,9 @@ class ConditionDataset(Dataset):
     def get_index_info(self, i_f, i_c, i_idx):
         return self.all_index[int(self.condis_st[i_f] + i_c), i_idx]
 
+    def get_index_series(self, i_f, i_idx):
+        return self.all_index[int(self.condis_st[i_f]): self.condis_st[i_f] + self.condis_all_num[i_f], i_idx]
+        
     def get_buffet(self, idx):
 
         return self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 3), self.get_index_info(idx, self.all_index[self.condis_st[idx], 8], 6)
-    
-class DatasetIterator():
-    '''
-    for FlowDataset, return every sample and whether it is inside training dataset
-    for MCFlowDataset, return all flowfield of every airfoil and whether it is inside training dataset
-    
-    '''
-    
-    def __init__(self, dataset: Union[FlowDataset, MCFlowDataset]):
-        self.dataset = dataset
-        self.current = 0
-        if isinstance(dataset, FlowDataset):
-            self._getitem = self._getitem_flowdataset
-            self.n = dataset.dataset_size
-        elif isinstance(dataset, MCFlowDataset):
-            self._getitem = self._getitem_mcflowdataset
-            self.n = dataset.airfoil_num
-    
-    def __next__(self):
-        if self.current < self.n:
-            results = self._getitem(self.current)
-            self.current += 1
-            return results
-        else:
-            raise StopIteration
-    
-    def __iter__(self):
-        return self
-    
-    def _getitem_flowdataset(self, idx):
-        raise NotImplementedError
-    
-    def _getitem_mcflowdataset(self, idx):
-        return {'sample': self.dataset.get_series(idx),
-                'flag': idx in self.airfoil_idx}
-        
