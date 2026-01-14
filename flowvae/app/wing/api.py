@@ -10,9 +10,11 @@ Currently use: SLD estimated with model (no need to call VLM codes)
 '''
 
 
-from flowvae.ml_operator.operator import load_model_from_checkpoint
-from flowvae.app.wing import models
+from flowvae.ml_operator.operator import load_model_weights
+from flowvae.ml_operator.config import ModelConfig
+from flowvae.ml_operator.hf import download_model_from_hf
 from flowvae.sim.cfl3d import AirfoilSimulator
+from flowvae.utils import device_select
 import torch
 
 import numpy as np
@@ -81,42 +83,38 @@ class Wing_api():
             - `aoa`: use aoa as input first two index are: aoa, mach
             - `cl`: use cl as input first two index are: mach, cl
         '''
-        if device == 'default':
-            if torch.cuda.is_available():
-                _device = 'cuda:0'
-            elif torch.backends.mps.is_available():
-                _device = 'mps'
-            else:
-                _device = 'cpu'
 
-        print(f'Pytorch Backend device is set to {_device}')
-
+        _device = device_select(device)
         self.device = _device
-        models.device = _device
         
         self.sa_type = 0.25 # base on 1/4 chord line
         self.input_ref = 5 # x, y, z plus cp_2d, cf_2d
-        
-        if saves_folder is None:
-            saves_folder = os.path.join(absolute_file_path, 'saves')
-        
-        # load airfoil prediction model
-        self.model_2d = models.bresnetunetmodel1(h_e=[16, 32, 64], h_d1=[64, 128], h_d2=[512, 256, 128, 64], h_out=2, h_in=1, device=_device)
-        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][0]), device=_device)
-        
-        # load SLD prediction model
-        self.model_sld = models.triinput_simplemodel1(h_e1=[32, 32], h_e2=[16, 16], h_e3=[16], h_d1=[64, 101], nt=101)
-        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, self.version_folder[model_version][1]), device=_device)
-        
-        # load airfoil-to-wing model
-        self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
-                                  h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=_device)
-        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][2]), device=_device)
+
+        self.load_model()
         
         self.info = {}
         self.nondimension_coefs = nondim_index_values(model_version=model_version)
         self.model_version = model_version
     
+    def load_model(self):
+
+        print('loading model...')
+
+        models = ['model_2d', 'model_sld', 'model_3d']
+        epochs = [299, 899, 299]
+
+        # check and download models if needed
+        base_folder = os.path.join('..', 'save')
+        if not os.path.exists(os.path.join(base_folder, 'model_2d', 'model_config')):
+            print(f'downloading models from huggingface...')
+            os.makedirs(base_folder)
+            download_model_from_hf(repo_id='yunplus/PI_Trans_Wings', local_folder=base_folder)
+
+        for model_name, epoch in zip(models, epochs):
+            model_fram = ModelConfig(os.path.join(base_folder, model_name, 'model_config')).create()
+            load_model_weights(model_fram, os.path.join(base_folder, model_name, f'checkpoint_epoch_{epoch}_weights'), device=self.device)
+            self.__setattr__(model_name, model_fram)
+
     @staticmethod
     def display_sectional_airfoil(ax, inputs: np.ndarray, write_to_file: Optional[str] = None):
         '''

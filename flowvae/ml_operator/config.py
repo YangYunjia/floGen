@@ -75,8 +75,8 @@ class ModelConfig():
 
         self.config = model_config
 
-    def save(self, path) -> None:
-        if os.path.exists(path):
+    def save(self, path, exist_ok=False) -> None:
+        if not exist_ok and os.path.exists(path):
             raise IOError(f"model config exist in {path}")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(self.config, handle, indent=2, sort_keys=True)

@@ -3,7 +3,7 @@ from typing import Optional, Any
 from .operator import transfer_checkpoint_to_save_weights
 
 try:
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import HfApi, snapshot_download
 except Exception:
     raise ImportError(
         "huggingface_hub is required. Install it with: pip install huggingface_hub"
@@ -27,9 +27,6 @@ def upload_model_to_hf(folder: str, epoch: int,
         **hub_kwargs
     )
 
-def download_model_from_hf(folder: str,
-                       repo_id: str,
-                       subfolder: str):
+def download_model_from_hf(repo_id: str, local_folder: str):
     
-    # hf_hub_download(repo_id, filename=)
-    pass
+    snapshot_download(repo_id, repo_type='model', local_dir=local_folder)
