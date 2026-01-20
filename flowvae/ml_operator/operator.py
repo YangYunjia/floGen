@@ -162,7 +162,7 @@ class ModelOperator():
                 break
             model.compile(*input_args, **input_kwargs)
         
-            model.to(device)
+        model.to(device)
 
         self._model = model
         self._transfer_output_bias = None

@@ -20,6 +20,7 @@ import torch
 import numpy as np
 import os, copy
 from cfdpost.wing.single_section_wing import Wing, plot_frame
+from cfdpost.wing.multi_section_wing import MultiSecWing
 from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
 from typing import Optional
 from abc import abstractmethod
@@ -63,7 +64,7 @@ class WingAPI():
         self.device = _device
         
 
-        self.saves_folder = saves_folder if saves_folder is not None else os.path.join('..', 'save')
+        self.saves_folder = saves_folder if saves_folder is not None else os.path.join('..', 'save', self.__class__.__name__)   
         self.load_model()
         
     def load_model(self):
@@ -91,7 +92,7 @@ class WingAPI():
         }
     
 
-class Wing_api(WingAPI):
+class SimpleWingAPI(WingAPI):
 
     models = ['model_2d', 'model_sld', 'model_3d']
     model_save_names = [f'checkpoint_epoch_{epoch}_weights' for epoch in [299, 899, 299]]
@@ -393,10 +394,55 @@ class Wing_api(WingAPI):
         self.info['2d_sec_surf'] = surfaces
  
         return corr_2d
-        
+
 class SuperWingAPI(WingAPI):
+
+    models = ['ATsurf_L']
+    model_save_names = ['best_model_weights']
+    hf_repo_id = 'yunplus/AeroTransformer'
 
     def __init__(self, saves_folder = None, device = 'default'):
         super().__init__(saves_folder, device)
 
-    
+    def predict(self, shape_paras):
+        geom_dict = {
+            'SA': shape_paras['planform'][0],
+            'AR': shape_paras['planform'][1],
+            'TR': shape_paras['planform'][2],
+            'kink': shape_paras['planform'][3],
+            'rootadj': shape_paras['planform'][4],
+            'tmaxs': shape_paras['secpara'][0],
+            'DAs': shape_paras['secpara'][1],
+            'twists': shape_paras['secpara'][2],
+            'cst_u': np.array([cst[0] for cst in shape_paras['csts']]),
+            'cst_l': np.array([cst[1] for cst in shape_paras['csts']])
+        }
+
+        wg = MultiSecWing(geom_dict, aoa=shape_paras['condition'][0], iscentric=True)
+        wg.reconstruct_surface_grids(nx=129, nzs=[129])
+        origeom, geom = wg.get_all_geometries()
+        print(origeom.shape, geom.shape)
+        inputs = torch.from_numpy(geom).float().to(self.device).unsqueeze(0)
+        auxs   = torch.tensor(shape_paras['condition']).float().to(self.device).unsqueeze(0)
+        output = self.ATsurf_L(inputs, code=auxs)[0].cpu().detach().numpy()
+        print(output.shape)
+
+        wg.read_formatted_surface(data=output[0], isinitg=False, isnormed=True)
+
+        return wg
+
+
+    def end2end_predict(self, data):
+
+        wg = self.predict(data)
+        wg.aero_force()
+
+        formated = wg.get_formatted_surface()
+        print(formated[0].shape, formated[1].shape)
+        # formated[0][..., 2] = -formated[0][..., 2]
+
+        return {
+            "geom": formated[0].transpose(2, 0, 1).tolist(),
+            "value": formated[1].transpose(2, 0, 1).tolist(),
+            "cl_array": wg.coefficients.tolist()
+        }
