@@ -4,6 +4,7 @@ Interface for MDO lab optimization to call pretrained models
 
 import argparse
 import ast
+import os
 from typing import Dict, Iterable, List, Optional, Tuple, Union, Callable
 from abc import abstractmethod
 
@@ -69,19 +70,25 @@ class MLSolver(AeroSolver):
             'mach': [0.75, 0.90],
             'reynolds': 20000000.0,
         },    # The dict of array input for operating conditions; including the range of them
+        options: Dict = {},
         device=None,
         comm=None,
+        debug: bool = False,
     ):
         if not output_keys:
             raise ValueError("At least one output key must be provided for the ML CFD solver.")
 
-        default_options = {}
+        default_options = {
+            "output_dir": (str, "output"),
+            "output_prefix": (str, "ml_surface"),
+            "write_surface_plot3d": (bool, True)
+        }
 
         super().__init__(
             name="MLCFD",
             category="Machine-Learned CFD",
             defaultOptions=default_options,
-            options={},
+            options=options,
             comm=comm,
         )
 
@@ -89,6 +96,7 @@ class MLSolver(AeroSolver):
         self.output_keys = output_keys
         self.condition_keys = {} if condition_keys is None else condition_keys
         self.model: MLModel
+        self.debug = debug
 
         self.DVGeo: Optional[DVGeometry] = None
         self.surface_mesh: Optional[np.ndarray] = None
@@ -107,7 +115,7 @@ class MLSolver(AeroSolver):
         self.adjointFailed = False
         self._stored_lift_distribution = None
         self._stored_slices = None
-
+        self.calling_counter = 0
 
     # ------------------------------------------------------------------ #
     # Interface setup helpers
@@ -136,7 +144,7 @@ class MLSolver(AeroSolver):
         # Tell the user if we are switching aeroProblems
         if self.curAP != aeroProblem:
             self.pp("+" + "-" * 70 + "+")
-            self.pp("|  Switching to Aero Problem: %-41s|" % aeroProblem.name)
+            self.pp("|  ML Switching to Aero Problem: %-41s|" % aeroProblem.name)
             self.pp("+" + "-" * 70 + "+")
 
         self.curAP = aeroProblem
@@ -161,19 +169,6 @@ class MLSolver(AeroSolver):
         if not hasattr(self.curAP, "adjointFailed"):
             self.curAP.adjointFailed = False
 
-    # def _gather_surface(self, local_surface):
-    #     counts = self.comm.allgather(local_surface.shape[0])
-    #     gathered = self.comm.gather(local_surface, root=0)
-    #     if self.comm.rank == 0:
-    #         if gathered:
-    #             global_surface = np.vstack(gathered)
-    #         else:
-    #             global_surface = np.zeros((0, 3))
-    #     else:
-    #         global_surface = None
-    #     global_surface = self.comm.bcast(global_surface, root=0)
-    #     return global_surface, counts
-
     def setDVGeo(self, DVGeo: DVGeometry, useBaseline: int = 1, pointSetKwargs=None, customPointSetFamilies=None):
         '''
         Set DVGeo
@@ -187,11 +182,45 @@ class MLSolver(AeroSolver):
         if useBaseline >= 0:
             assert isinstance(DVGeo, DVGeometryCustom), 'only DVGeometryCustom class has the baseline geometry stored'
             DVGeo: DVGeometryCustom
+            if self.debug: print('Update surface mesh from DVGeo baseline geometry ...')
             self.surface_mesh = DVGeo._updateOneModel(useBaseline, DVGeo.parameters, keep_shape=True)   # this should be single proc. for refernce
 
     def setSurfaceMesh(self, mesh: np.ndarray):
         self.surface_mesh = mesh
         # Reset point-set registration so it can be rebuilt with the new mesh.
+
+    def _write_surface_plot3d_mesh(self, fname):
+        mesh = self.surface_mesh
+
+        from cst_modeling.io import output_plot3d_concat
+        output_plot3d_concat([mesh], fname=fname + '.xyz', order='ji', verbose=0)
+
+    def _write_surface_plot3d_solution(self, surface_outputs, fname):
+
+        data = np.asarray(surface_outputs, fname)
+        if data.ndim == 4:
+            data = data[0]
+
+        nvar, ni, nj = data.shape
+        with open(fname + '.q', "w", encoding="ascii") as f:
+            f.write("1\n")
+            f.write(f"{ni} {nj} 1\n")
+            for ivar in range(nvar):
+                data[ivar].flatten(order="F").tofile(f, sep="\n")
+                f.write("\n")
+
+    def _write_surface_plot3d(self, surface_outputs):
+        if not self.getOption("write_surface_plot3d"):
+            return
+        if self.comm is not None and self.comm.rank != 0:
+            return
+        
+        fname = os.path.join(
+            self.getOption("output_dir"),
+            f"{self.getOption('output_prefix')}_{self.calling_counter:05d}",
+        )
+        self._write_surface_plot3d_mesh(fname)
+        self._write_surface_plot3d_solution(surface_outputs, fname)
 
     @property
     def surface_mesh_shape(self):
@@ -323,13 +352,18 @@ class MLSolver(AeroSolver):
             eval_result = self._evaluate_model(self.surface_mesh, condition_vector)
         else:
             eval_result = None
-
         eval_result = self.comm.bcast(eval_result, root=0)
 
         self._last_outputs = eval_result["values"]
         self._last_surface_grad_global = eval_result["surface_grad"]
         self._last_condition_grad = eval_result["condition_grad"]
         self._last_condition_meta = condition_meta
+
+        self.calling_counter += 1
+        if self.comm.rank == 0:
+            surface_outputs = getattr(self.model, "last_surface_outputs", None)
+            if surface_outputs is not None and self.getOption("write_surface_plot3d"):
+                self._write_surface_plot3d(surface_outputs)
 
         # deal failure
         if any(np.isnan(val) for val in self._last_outputs.values()):

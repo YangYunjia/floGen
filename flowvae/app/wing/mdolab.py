@@ -1,5 +1,4 @@
 
-
 from flowvae.ml_operator import load_model_from_checkpoint
 from flowvae.post import _xy_2_cl_tc, get_cellinfo_1d_t, get_cellinfo_2d_t, get_force_2d_t, get_moment_2d_t
 from flowvae.app.mdolab import MLModel
@@ -146,6 +145,7 @@ class SurfacePredictionModel(MLModel):
         inp_cen = 0.25 * (inp[..., 1:,1:] + inp[..., 1:,:-1] + inp[..., :-1,1:] + inp[..., :-1,:-1])
 
         outputs = self.model(inp_cen, code=cnd)[0]
+        self.last_surface_outputs = outputs.detach().cpu().numpy()
 
         forces = intergal_output(inp, outputs, cnd[:, 0], 
                                  s=self.ap.areaRef, c=self.ap.chordRef, xref=self.ap.xRef, yref=self.ap.yRef)
