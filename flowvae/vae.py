@@ -35,7 +35,6 @@ class AutoEncoder(nn.Module):
                  decoder: Decoder = None,
                  decoder_input_layer: Union[float, List[int], nn.Module] = 0.,
                  decoder_input_dropout: float = 0.,
-                 device = 'cuda:0',
                  **kwargs) -> None:
         super().__init__()
 
@@ -44,7 +43,6 @@ class AutoEncoder(nn.Module):
         self.paras = kwargs
         self.paras['decoder_input_layer'] = decoder_input_layer
         self.paras['decoder_input_dropout'] = decoder_input_dropout
-        self.device = device
 
         if encoder is None:
             pass
@@ -108,8 +106,8 @@ class AutoEncoder(nn.Module):
 class VariAutoEncoder(AutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
-                 decoder_input_layer: Union[float, List[int], nn.Module] = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
-        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+                 decoder_input_layer: Union[float, List[int], nn.Module] = 0, decoder_input_dropout: float = 0, **kwargs) -> None:
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, **kwargs)
 
         if latent_dim > 0:
             self.fc_var = nn.Sequential(nn.Flatten(start_dim=1),
@@ -145,9 +143,9 @@ class CondAutoEncoder(AutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
                  code_mode: str = 'prod', coder: nn.Module = nn.Identity(), code_dim: int = 1,
-                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, **kwargs) -> None:
         
-        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, decoder_input_dropout, **kwargs)
         self.coder = coder
         self.code_mode = code_mode
         self.code_dim  = code_dim
@@ -207,7 +205,7 @@ class CondAutoEncoder(AutoEncoder):
     # def _1dved(self, mu: Tensor, log_var: Tensor, c: Tensor):
         # elif self.cm in ['ved']:
         #     #! this is log_var, so std_var=1 means log_var=0
-        #     zc = self.reparameterize(c, torch.zeros_like(c, device=self.device))
+        #     zc = self.reparameterize(c, torch.zeros_like(c, device=c.device))
         #     zf = self.reparameterize(mu, log_var)
         #     zc = self.fc_code(zc)
         #     z = torch.cat([zc, zf], dim=1)
@@ -284,7 +282,7 @@ class EncoderDecoder(AutoEncoder):
                  **kwargs) -> None:
 
 
-        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, 0., device, **kwargs)
+        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, 0., **kwargs)
         
         self.code_dim = code_dim
         self.cm = code_mode
@@ -820,9 +818,9 @@ class Unet(CondAutoEncoder):
 
     def __init__(self, latent_dim: int, encoder: Encoder = None, decoder: Decoder = None, 
                  code_mode: str = 'prod', coder: nn.Module = nn.Identity(), code_dim = 1,
-                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, device='cuda:0', **kwargs) -> None:
+                 decoder_input_layer: int = 0, decoder_input_dropout: float = 0, **kwargs) -> None:
         
-        super().__init__(latent_dim, encoder, decoder, code_mode, coder, code_dim, decoder_input_layer, decoder_input_dropout, device, **kwargs)
+        super().__init__(latent_dim, encoder, decoder, code_mode, coder, code_dim, decoder_input_layer, decoder_input_dropout, **kwargs)
 
         if isinstance(decoder, Decoder):
             if not (self.encoder.is_unet and self.decoder.is_unet):
@@ -882,9 +880,8 @@ class DecoderModel(AutoEncoder):
 
 class BranchDecoderModel(BranchEncoderDecoder, nn.Module):
 
-    def __init__(self, input_channels: int, decoders: List[Decoder], device: str, decoder_input_layer: float = 1.5) -> None:
+    def __init__(self, input_channels: int, decoders: List[Decoder], decoder_input_layer: float = 1.5) -> None:
         nn.Module.__init__(self)
-        self.device = device
         _decoder_inputs = []
         for decoder in decoders:
             decoder_input = _decoder_input(typ=decoder_input_layer, ld=input_channels, lfd=decoder.last_flat_size)
@@ -907,13 +904,12 @@ class EncoderModel(AutoEncoder):
 
 class EncoderDecoderLSTM(nn.Module):
     
-    def __init__(self, lstm, encoder, decoder, nt, decoder_input_mode: str = 'stack', device: str = 'cuda:0') -> None:
+    def __init__(self, lstm, encoder, decoder, nt, decoder_input_mode: str = 'stack') -> None:
         super().__init__()
 
         self.lstm  = lstm
         self.encoder = encoder
         self.decoder = decoder
-        self.device = device
         self.nt = nt
         self.decoder_input_mode = decoder_input_mode
 

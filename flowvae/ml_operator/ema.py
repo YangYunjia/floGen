@@ -10,7 +10,7 @@ from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_
 
 try:
     from torch.utils._foreach_utils import _device_has_foreach_support
-except AttributeError:
+except (AttributeError, ImportError):
     def _device_has_foreach_support(device): return True
 
 from typing import List, Callable, NewType, Union, Any, NewType, Tuple, Iterable, Optional, Dict

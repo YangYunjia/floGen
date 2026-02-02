@@ -19,9 +19,10 @@ from flowvae.vae import EncoderDecoder
 from flowvae.dataset import ConditionDataset, FlowDataset
 # from .post import _get_vector, _get_force_cl, get_aoa, WORKCOD, _get_force_o
 from .ema import EmaGradClip
-from ..utils import MDCounter
 from .lora import add_lora_to_model, enable_gradient
-from flowvae.post import get_xyforce_2d_t
+from .config import ModelConfig
+from ..utils import MDCounter
+from ..post import get_xyforce_2d_t
 
 is_conflictfree_import = True
 try:
@@ -61,7 +62,6 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     save_dict = torch.load(path, map_location=device, weights_only=False)
     
     if 'history' not in save_dict.keys():
-    # if epoch == -1:
         model.load_state_dict(save_dict, strict=True)
         last_error = None
     else:
@@ -74,7 +74,31 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
 
     return last_error
 
+def load_model_weights(model: nn.Module, weights_path: str, device, set_to_eval: bool = True):
+    '''
+    Saver load with only weights checkpoints
+    
+    :param model: Description
+    :param weights_path: Description
+    :param device: Description
+    '''
 
+    model.to(device)
+    state_dict = torch.load(weights_path, map_location=device)
+    model.load_state_dict(state_dict, strict=True)
+    if set_to_eval: model.eval()
+
+def transfer_checkpoint_to_save_weights(epoch: int, folder: str):
+
+    path = _check_existance_checkpoint(epoch=epoch, folder=folder)
+    save_dict = torch.load(path, weights_only=False)
+    
+    if 'history' not in save_dict.keys():
+        model_state_dict = save_dict
+    else:
+        model_state_dict = save_dict['model_state_dict']
+
+    torch.save(model_state_dict, path + '_weights')
 
 class ModelOperator():
     '''
@@ -97,31 +121,57 @@ class ModelOperator():
     
     '''
     def __init__(self, opt_name: str, 
-                       model: nn.Module, 
+                       model: Optional[Union[nn.Module, ModelConfig]], 
                        dataset: Union[FlowDataset, ConditionDataset],
                        output_folder: str = "save", 
-                       init_lr: float = 0.01, 
                        num_epochs: int = 50,
-                       split_train_ratio: float = 0.9,
+                       restart: Optional[int] = None,   # epoch number
+                       split_train_ratio: Union[float, List[float]] = 0.9,
                        split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle: bool = True,
-                       ema_optimizer: bool = False
+                       num_workers: int = 4,
+                       device: str = 'cuda:0'
                        ) -> None:
         
         self.output_folder = output_folder
         self.set_optname(opt_name)
-        self.device = model.device
+
+        model_config_path = os.path.join(self.output_path, 'model_config')
+        if model is None:
+            print('Use saved config if no model is provided!')
+            model = ModelConfig(config_path=model_config_path).create()
+
+        else:
+            if isinstance(model, ModelConfig):
+                model.save(model_config_path)
+                model = model.create()
+
+        # we recommand to set `device` here, rather than with the model
+        if hasattr(model, device):
+            assert device == model.device, 'model and operator should be on same device'
+        else:
+            self.device = device
         
+        if hasattr(model, 'is_compiled'):
+            load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
+            for test_data in self.dataloaders['train']:
+                test_data, _ = self._load_batch_data(test_data, load_kwargs)
+                input_args, input_kwargs = self._forward_model(test_data, forward_kwargs)
+                break
+            model.compile(*input_args, **input_kwargs)
+        
+        model.to(device)
+
         self._model = model
-        self._model.to(self.device)
         self._transfer_output_bias = None
+        self.restart = restart     
 
         self.paras = {}
         self.paras['num_epochs'] = num_epochs
         self.paras['batch_size'] = batch_size
-        self.paras['num_workers'] = 0
+        self.paras['num_workers'] = num_workers
         # self.paras['init_lr'] = init_lr
         self.paras['shuffle'] = shuffle
         self.paras['loss_parameters'] = {}
@@ -138,11 +188,16 @@ class ModelOperator():
                 print("Dataset split based on input: (Train: %d, Val: %d)" % (len(self.dataset['train']), len(self.dataset['val'])))
                 
             else:
+                if restart is not None: recover_split = self.optname    # load original data split
+
                 # split training data
-                self.phases = self.split_train_valid_dataset(recover=recover_split, train_r=split_train_ratio)
+                if isinstance(split_train_ratio, float):
+                    train_r, val_r = split_train_ratio, None
+                else:
+                    train_r, val_r = split_train_ratio
+                self.phases = self.split_train_valid_dataset(recover=recover_split, train_r=train_r, val_r=val_r)
             
             self.dataset_size = {phase: len(self.dataset[phase]) for phase in self.phases}
-                
             
             self.dataloaders = {phase: DataLoader(self.dataset[phase], 
                                                   batch_size=self.paras['batch_size'], 
@@ -153,23 +208,12 @@ class ModelOperator():
                                     for phase in self.phases}     
         # optimizer
         self._optimizer: torch.optim.Optimizer = None
-        self._optimizer_name = 'Not set'
-        self._optimizer_setting = {
-            'lr': init_lr,
-            'ema_optimizer': ema_optimizer,
-        }
         self._scheduler = None
-        self._scheduler_name = 'Not set'
-        self._scheduler_setting = None
 
-        # runing parameters
-        self.history = {'loss': {'train':MDCounter(), 'val':MDCounter()}, 'lr':[]}
-        self.epoch = 0
-        self.best_loss = 1e4       
+        # runing parameters 
+        self.initial_oprtor(init_model=False, init_optimitor=False) # originally here was True for model, which 
 
-        self.initial_oprtor()
-
-        self.set_optimizer('Adam', **self._optimizer_setting)
+        # self.set_optimizer('Adam', **self._optimizer_setting)
         # self.set_scheduler('ReduceLROnPlateau', mode='min', factor=0.1, patience=5)
         print("network have {} paramerters in total".format(sum(x.numel() for x in self.model.parameters())))
 
@@ -227,7 +271,7 @@ class ModelOperator():
             print(f'> ---  {key} = {self.paras["loss_parameters"][key]}')
 
     @property
-    def model(self):
+    def model(self) -> nn.Module:
         return self._model
     
     def set_optname(self, opt_name):
@@ -251,48 +295,49 @@ class ModelOperator():
         self.history = {'loss': {'train':MDCounter(), 'val':MDCounter()}, 'lr':[]}
         self.epoch = 0
         
-        if hasattr(self.model, 'is_compiled'):
-            load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
-            for test_data in self.dataloaders['train']:
-                test_data, _ = self._load_batch_data(test_data, load_kwargs)
-                input_args, input_kwargs = self._forward_model(test_data, forward_kwargs)
-                break
-            self.model.compile(*input_args, **input_kwargs)
-            self.model.to(self.device)   
-            
         if init_model and self._model is not None:
             self._model.apply(reset_paras)
         if init_optimitor and self._optimizer is not None:
-            self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
+            self.set_optimizer(**self._optimizer_setting)
         self.best_loss = 1e4
 
-    def set_optimizer(self, optimizer_name, ema_optimizer, **kwargs):
+    def set_optimizer(self, optimizer_name: str = 'Adam',
+                      ema_optimizer: Union[bool, int, float] = False, 
+                      **optimizer_setting):
+        
         if optimizer_name not in dir(opt):
             raise AttributeError(optimizer_name + ' not a vaild optimizer name!')
-        else:
-            print('optimizer Using Method: ' + optimizer_name, kwargs)
-            opt_class = getattr(opt, optimizer_name)
-            self._optimizer_name = optimizer_name
-            self._optimizer_setting = kwargs
-            if ema_optimizer:
-                self.ema_clip = EmaGradClip(ema_coef1=0.99, ema_coef2=0.999)
-            self._optimizer = opt_class(self._model.parameters(), **kwargs)
-            self._optimizer_setting['ema_optimizer'] = ema_optimizer
 
-        if self._scheduler is not None:
-            self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
+        opt_class = getattr(opt, optimizer_name)
+        self.clip_active = False
+        if isinstance(ema_optimizer, bool):
+            if ema_optimizer:
+                self.clip_active = 1
+                self.ema_clip = EmaGradClip(ema_coef1=0.99, ema_coef2=0.999)
+        elif isinstance(ema_optimizer, float):
+            self.clip_active = 0
+            self.clip_max_norm = ema_optimizer
+        else:
+            raise AttributeError()
         
-    def set_scheduler(self, scheduler_name, **kwargs):
+        assert self.model is not None, 'Set model before setting optimizer'
+        self._optimizer = opt_class(self._model.parameters(), **optimizer_setting)
+        self._optimizer_setting = {'optimizer_name': optimizer_name, 
+                                   'ema_optimizer': ema_optimizer} | optimizer_setting
+        
+        print('optimizer Using Method: ', self._optimizer_setting)
+        
+    def set_scheduler(self, scheduler_name, **scheduler_setting):
         if scheduler_name not in dir(opt.lr_scheduler):
             raise AttributeError(scheduler_name + ' not a vaild pressure method!')
-        else:
-            print('scheduler Using Method: ' + scheduler_name, kwargs)
-            sch_class = getattr(opt.lr_scheduler, scheduler_name)
-            self._scheduler_name = scheduler_name
-            self._scheduler_setting = kwargs
-            self._scheduler = sch_class(self._optimizer, **kwargs)
+
+        sch_class = getattr(opt.lr_scheduler, scheduler_name)
+        self._scheduler = sch_class(self._optimizer, **scheduler_setting)
+        self._scheduler_setting = {'scheduler_name': scheduler_name} | scheduler_setting
+
+        print('scheduler Using Method: ' + scheduler_name, self._scheduler_setting)
     
-    def split_train_valid_dataset(self, recover: Optional[str] = None, train_r: float = 0.9):
+    def split_train_valid_dataset(self, recover: Optional[str] = None, train_r: float = 0.9, val_r: Optional[float] = None):
         '''
         Split the validation set from the training one; the testing dataset should 
         be split before training use functions in `FlowDataset` classes
@@ -303,7 +348,7 @@ class ModelOperator():
             path = os.path.join(self.output_folder, recover, 'dataset_indice')
             if not os.path.exists(path):
                 raise IOError("checkpoint not exist in {}".format(self.output_folder))
-            dataset_dict = torch.load(path, map_location=self.device)
+            dataset_dict = torch.load(path, map_location=self.device, weights_only=False)
             for phase in dataset_dict.keys():
                 self.dataset[phase] = Subset(self.all_dataset, dataset_dict[phase])
 
@@ -323,16 +368,29 @@ class ModelOperator():
             else:
             
                 train_size = int(train_r * len(self.all_dataset))
-                val_size =   len(self.all_dataset) - train_size
-                self.dataset['train'], self.dataset['val'] = random_split(self.all_dataset, [train_size, val_size])
+                if val_r is None:
+                    val_size =   len(self.all_dataset) - train_size
+                    rest_size = 0
+                else:
+                    assert train_r + val_r <= 1.0, "train_r and val_r should be lower than 1"
+                    val_size = int(val_r * len(self.all_dataset))
+                    rest_size = len(self.all_dataset) - train_size - val_size
+                self.dataset['train'], self.dataset['val'], _ = random_split(self.all_dataset, [train_size, val_size, rest_size])
                 print("Random Split Dataset length: (Train: %d, Val: %d)" % (train_size, val_size))
 
             path = os.path.join(self.output_folder, self.optname, 'dataset_indice')
             torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val']}, path)
             # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
-            return self.dataset.keys()
+        return self.dataset.keys()
 
     def train_model(self, save_check, save_best=True, v_tqdm=True, update_lr_batch=False):
+
+        if self.restart is not None:
+            self.load_checkpoint(self.restart, load_opt=True)
+            
+        ## pre test for training 
+        assert self._optimizer is not None and self._scheduler is not None, 'Optimizer or scheduler not set'
+        assert self.model is not None, 'Model not load'
 
         load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
         #* *** Training section ***
@@ -402,8 +460,10 @@ class ModelOperator():
                                     self._optimizer.zero_grad()
                                     total_loss.backward()
 
-                                if self._optimizer_setting['ema_optimizer']:
+                                if self.clip_active == 1:
                                     self.ema_clip.on_before_optimizer_step(self._model)
+                                elif self.clip_active == 0:
+                                    torch.nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=self.clip_max_norm)
                                 self._optimizer.step()
                                 if update_lr_batch:
                                     self._scheduler.step()
@@ -460,6 +520,7 @@ class ModelOperator():
         return [data['input']], {}
 
     def _calculate_loss(self, data, output: torch.Tensor, kwargs):
+        # print(output.shape, data['label'].shape)
         recons = torch.nn.functional.mse_loss(output, data['label'])
         loss = {'recons': recons}
         
@@ -493,11 +554,11 @@ class ModelOperator():
         torch.save(save_dict, path)
         print('checkpoint saved to' + path)
     
-    def load_checkpoint(self, epoch, load_opt=True, load_data_split=True):
+    def load_checkpoint(self, epoch, load_opt=True):
 
         path = _check_existance_checkpoint(epoch, self.output_path)
         
-        save_dict = torch.load(path, map_location=self.device)
+        save_dict = torch.load(path, map_location=self.device, weights_only=False)
         # print(save_dict['epoch'])
         self.epoch = save_dict['epoch'] + 1
         self._model.load_state_dict(save_dict['model_state_dict'], strict=True)
@@ -512,9 +573,6 @@ class ModelOperator():
             self._transfer_output_bias = None
         else:
             self._transfer_output_bias = load_bias.detach().clone().to(self.device)
-
-        if load_data_split and len(self.dataset) > 0:
-            self.split_train_valid_dataset(recover=self.optname)
 
         print('checkpoint at epoch %d loaded from %s' % (save_dict['epoch'], path))
 
@@ -655,16 +713,16 @@ class BasicAEOperator(ModelOperator):
     '''
 
     def __init__(self, opt_name: str, model: Module, dataset: FlowDataset, 
-                 output_folder: str = "save", init_lr: float = 0.01, num_epochs: int = 50, 
+                 output_folder: str = "save", num_epochs: int = 50, restart: Optional[int] = None,
                  split_train_ratio: float = 0.9, split_dataset: Optional[Dict[str, Subset]] = None, recover_split: str = None, 
-                 batch_size: int = 8, shuffle: bool = True, ema_optimizer: bool = False,
-                 ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None)):
+                 batch_size: int = 8, shuffle: bool = True, num_workers: int = 4, 
+                 ref: bool = False, ref_channels: Tuple[int] = (None, 2), recon_channels = (None, None), input_channels = (None, None), device: str = 'cuda:0'):
         
         self.ref = ref
         self.ref_channels = ref_channels
         self.recon_channels = recon_channels
         self.input_channels = input_channels
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, num_epochs, restart, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, device)
 
     def _forward_model(self, data, kwargs):
         return [data['input'][:, self.input_channels[0]: self.input_channels[1]]], {}
@@ -714,21 +772,22 @@ class AEOperator(ModelOperator):
                        model: EncoderDecoder, 
                        dataset: ConditionDataset,
                        output_folder="save", 
-                       init_lr=0.01, 
                        num_epochs: int = 50,
+                       restart: Optional[int] = None,
                        split_train_ratio = 0.9,
                        split_dataset: Optional[Dict[str, Subset]] = None,
                        recover_split: str = None,
                        batch_size: int = 8, 
                        shuffle=True,
-                       ema_optimizer: bool = False,
+                       num_workers: int = 4,
                        ref=False,
                        input_channels: Tuple[int, int] = (None, None), 
                        recon_channels: Tuple[int, int] =(1, None),
-                       recon_type: str = 'field'
+                       recon_type: str = 'field',
+                       device: str = 'cuda:0'
                        ):
         
-        super().__init__(opt_name, model, dataset, output_folder, init_lr, num_epochs, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, ema_optimizer)
+        super().__init__(opt_name, model, dataset, output_folder, num_epochs, restart, split_train_ratio, split_dataset, recover_split, batch_size, shuffle, num_workers, device)
         
         self.recon_type = recon_type
         # channel markers are not include extra reference channels
@@ -736,7 +795,8 @@ class AEOperator(ModelOperator):
         
         self.paras['ref'] = ref
         self.paras['code_mode'] = model.cm
-        self.paras['loss_parameters'] = {'sm_mode':     'NS',
+        self.paras['loss_parameters'] = {'conFIG': False,
+                                         'sm_mode':     'NS',
                                          'sm_epoch':        1, 
                                          'sm_weight':       1, 
                                          'sm_offset':       2,

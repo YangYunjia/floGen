@@ -10,44 +10,22 @@ Currently use: SLD estimated with model (no need to call VLM codes)
 '''
 
 
-from flowvae.ml_operator.operator import load_model_from_checkpoint
-from flowvae.app.wing import models
+from flowvae.ml_operator.operator import load_model_weights
+from flowvae.ml_operator.config import ModelConfig
+from flowvae.ml_operator.hf import download_model_from_hf
 from flowvae.sim.cfl3d import AirfoilSimulator
+from flowvae.utils import device_select
 import torch
 
 import numpy as np
 import os, copy
 from cfdpost.wing.single_section_wing import Wing, plot_frame
+from cfdpost.wing.multi_section_wing import MultiSecWing
 from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
 from typing import Optional
+from abc import abstractmethod
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
-
-def nondim_index_values(model_version: str = 'aoa'):
-    '''
-    get non-dimensionalize index values (according to minmax of Dataset No. 17)
-    return the range_value and min_value
-    
-    paras:
-    ===
-    - `model_version`: 
-        - `aoa`: first two index are: aoa, mach
-        - `cl`: first two index are: mach, cl
-    '''
-    range_values = np.array([4.98356865e+00, 1.29940258e-01, 3.49481674e+01, 2.99908783e+00, 3.99400411e+00, 7.98910782e-01, 5.99364106e+00, 1.99938913e-01,
-                             5.62159090e-02, 2.37829522e-01, 1.71319984e-01, 3.83469554e-01, 7.06469046e-01, 1.10903631e+00, 1.39157365e+00, 1.18536700e+00,
-                             7.59821456e-01, 5.03237704e-01, 5.85693591e-01, 7.51407350e-02, 2.25723228e-01, 2.43932506e-01, 4.56790965e-01, 4.37682678e-01,
-                             5.66290589e-01, 4.64605103e-01, 4.65208148e-01, 3.67536969e-01, 4.10273588e-01])
-    min_values   = np.array([1.00110293e+00, 7.20032034e-01, 7.80648300e-03, 8.60524000e-04, 6.00205655e+00, 2.01073046e-01, 3.73024600e-03, 8.00043103e-01,
-                            7.37786170e-02, 3.71495620e-02, 5.57531820e-02,-2.29357000e-04,-3.49942788e-01,-1.09036313e-01,-8.00000000e-01,-1.85366995e-01,
-                            -3.00000000e-01,-3.23770400e-03,-4.19250390e-02,-1.73883091e-01,-2.25613883e-01,-2.98053582e-01,-3.45981178e-01,-4.43266647e-01,
-                            -3.66290589e-01,-3.13444839e-01,-5.00000000e-01,-1.67536969e-01,-8.25543820e-02])
-    
-    if model_version in ['cl']:
-        range_values[0:2] = [1.29940258e-01, 9.78320385e-01]
-        min_values[0:2]   = [7.20032034e-01, -4.35158583e-02]
-    
-    return range_values, min_values
 
 def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
     
@@ -65,7 +43,60 @@ def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tenso
 api to transfer learning model
 
 '''
-class Wing_api():
+
+class WingAPI():
+
+    models = []
+    model_save_names = []
+    hf_repo_id = ''
+
+    def __init__(self, saves_folder: Optional[str] = None, device: str = 'default') -> None:
+        '''
+        
+        paras:
+        ===
+        - `model_version`: 
+            - `aoa`: use aoa as input first two index are: aoa, mach
+            - `cl`: use cl as input first two index are: mach, cl
+        '''
+
+        _device = device_select(device)
+        self.device = _device
+        
+
+        self.saves_folder = saves_folder if saves_folder is not None else os.path.join('..', 'save', self.__class__.__name__)   
+        self.load_model()
+        
+    def load_model(self):
+
+        print('loading model...')
+
+        # check and download models if needed
+        if not os.path.exists(os.path.join(self.saves_folder, self.models[0], 'model_config')):
+            print(f'downloading models from huggingface...')
+            os.makedirs(self.saves_folder)
+            download_model_from_hf(repo_id=self.hf_repo_id, local_folder=self.saves_folder)
+
+        for model_name, save_name in zip(self.models, self.model_save_names):
+            model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
+            load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, save_name), device=self.device)
+            self.__setattr__(model_name, model_fram)
+
+    @abstractmethod
+    def end2end_predict(self, data: dict) -> dict:
+        
+        return {
+            "geom": [],
+            "value": [],
+            "cl_array": []
+        }
+    
+
+class SimpleWingAPI(WingAPI):
+
+    models = ['model_2d', 'model_sld', 'model_3d']
+    model_save_names = [f'checkpoint_epoch_{epoch}_weights' for epoch in [299, 899, 299]]
+    hf_repo_id = 'yunplus/PI_Trans_Wings'
     
     version_folder = {
         'aoa':  ['0330_25_Run3', 'modelcl21_1658_Run0_cl', 'modelcl21_1658_Run0'],  
@@ -81,42 +112,43 @@ class Wing_api():
             - `aoa`: use aoa as input first two index are: aoa, mach
             - `cl`: use cl as input first two index are: mach, cl
         '''
-        if device == 'default':
-            if torch.cuda.is_available():
-                _device = 'cuda:0'
-            elif torch.backends.mps.is_available():
-                _device = 'mps'
-            else:
-                _device = 'cpu'
 
-        print(f'Pytorch Backend device is set to {_device}')
-
-        self.device = _device
-        models.device = _device
+        super().__init__(saves_folder, device)
         
         self.sa_type = 0.25 # base on 1/4 chord line
         self.input_ref = 5 # x, y, z plus cp_2d, cf_2d
-        
-        if saves_folder is None:
-            saves_folder = os.path.join(absolute_file_path, 'saves')
-        
-        # load airfoil prediction model
-        self.model_2d = models.bresnetunetmodel1(h_e=[16, 32, 64], h_d1=[64, 128], h_d2=[512, 256, 128, 64], h_out=2, h_in=1, device=_device)
-        load_model_from_checkpoint(self.model_2d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][0]), device=_device)
-        
-        # load SLD prediction model
-        self.model_sld = models.triinput_simplemodel1(h_e1=[32, 32], h_e2=[16, 16], h_e3=[16], h_d1=[64, 101], nt=101)
-        load_model_from_checkpoint(self.model_sld, epoch=899, folder=os.path.join(saves_folder, self.version_folder[model_version][1]), device=_device)
-        
-        # load airfoil-to-wing model
-        self.model_3d = models.ounetbedmodel(h_e=[32, 64, 64, 128, 128, 256], h_e1=None, h_e2=None, h_d=[258, 128, 128, 64, 64, 32, 32],
-                                  h_in=self.input_ref, h_out=3, de_type='cat', coder_type ='onlycond', coder_kernel=3, device=_device)
-        load_model_from_checkpoint(self.model_3d, epoch=299, folder=os.path.join(saves_folder, self.version_folder[model_version][2]), device=_device)
-        
+
         self.info = {}
-        self.nondimension_coefs = nondim_index_values(model_version=model_version)
+        self.nondimension_coefs = self.nondim_index_values(model_version=model_version)
         self.model_version = model_version
     
+    @staticmethod
+    def nondim_index_values(model_version: str = 'aoa'):
+        '''
+        get non-dimensionalize index values (according to minmax of Dataset No. 17)
+        return the range_value and min_value
+        
+        paras:
+        ===
+        - `model_version`: 
+            - `aoa`: first two index are: aoa, mach
+            - `cl`: first two index are: mach, cl
+        '''
+        range_values = np.array([4.98356865e+00, 1.29940258e-01, 3.49481674e+01, 2.99908783e+00, 3.99400411e+00, 7.98910782e-01, 5.99364106e+00, 1.99938913e-01,
+                                5.62159090e-02, 2.37829522e-01, 1.71319984e-01, 3.83469554e-01, 7.06469046e-01, 1.10903631e+00, 1.39157365e+00, 1.18536700e+00,
+                                7.59821456e-01, 5.03237704e-01, 5.85693591e-01, 7.51407350e-02, 2.25723228e-01, 2.43932506e-01, 4.56790965e-01, 4.37682678e-01,
+                                5.66290589e-01, 4.64605103e-01, 4.65208148e-01, 3.67536969e-01, 4.10273588e-01])
+        min_values   = np.array([1.00110293e+00, 7.20032034e-01, 7.80648300e-03, 8.60524000e-04, 6.00205655e+00, 2.01073046e-01, 3.73024600e-03, 8.00043103e-01,
+                                7.37786170e-02, 3.71495620e-02, 5.57531820e-02,-2.29357000e-04,-3.49942788e-01,-1.09036313e-01,-8.00000000e-01,-1.85366995e-01,
+                                -3.00000000e-01,-3.23770400e-03,-4.19250390e-02,-1.73883091e-01,-2.25613883e-01,-2.98053582e-01,-3.45981178e-01,-4.43266647e-01,
+                                -3.66290589e-01,-3.13444839e-01,-5.00000000e-01,-1.67536969e-01,-8.25543820e-02])
+        
+        if model_version in ['cl']:
+            range_values[0:2] = [1.29940258e-01, 9.78320385e-01]
+            min_values[0:2]   = [7.20032034e-01, -4.35158583e-02]
+        
+        return range_values, min_values
+
     @staticmethod
     def display_sectional_airfoil(ax, inputs: np.ndarray, write_to_file: Optional[str] = None):
         '''
@@ -290,7 +322,7 @@ class Wing_api():
     
     def end2end_predict(self, data: dict) -> dict:
         
-        inputs = data['conditions'] + data['planform'] + [data['t']] + data['cstu'] + data['cstl']
+        inputs = data['condition'] + data['planform'] + data['secpara'][0] + data['csts'][0][0] + data['csts'][0][1]
         wg = self.predict(inputs)
         wg.aero_force()
         cl_array = wg.coefficients
@@ -362,5 +394,55 @@ class Wing_api():
         self.info['2d_sec_surf'] = surfaces
  
         return corr_2d
-        
-        
+
+class SuperWingAPI(WingAPI):
+
+    models = ['ATsurf_L']
+    model_save_names = ['best_model_weights']
+    hf_repo_id = 'yunplus/AeroTransformer'
+
+    def __init__(self, saves_folder = None, device = 'default'):
+        super().__init__(saves_folder, device)
+
+    def predict(self, shape_paras):
+        geom_dict = {
+            'SA': shape_paras['planform'][0],
+            'AR': shape_paras['planform'][1],
+            'TR': shape_paras['planform'][2],
+            'kink': shape_paras['planform'][3],
+            'rootadj': shape_paras['planform'][4],
+            'tmaxs': shape_paras['secpara'][0],
+            'DAs': shape_paras['secpara'][1],
+            'twists': shape_paras['secpara'][2],
+            'cst_u': np.array([cst[0] for cst in shape_paras['csts']]),
+            'cst_l': np.array([cst[1] for cst in shape_paras['csts']])
+        }
+
+        wg = MultiSecWing(geom_dict, aoa=shape_paras['condition'][0], iscentric=True)
+        wg.reconstruct_surface_grids(nx=129, nzs=[129])
+        origeom, geom = wg.get_all_geometries()
+        print(origeom.shape, geom.shape)
+        inputs = torch.from_numpy(geom).float().to(self.device).unsqueeze(0)
+        auxs   = torch.tensor(shape_paras['condition']).float().to(self.device).unsqueeze(0)
+        output = self.ATsurf_L(inputs, code=auxs)[0].cpu().detach().numpy()
+        print(output.shape)
+
+        wg.read_formatted_surface(data=output[0], isinitg=False, isnormed=True)
+
+        return wg
+
+
+    def end2end_predict(self, data):
+
+        wg = self.predict(data)
+        wg.aero_force()
+
+        formated = wg.get_formatted_surface()
+        print(formated[0].shape, formated[1].shape)
+        # formated[0][..., 2] = -formated[0][..., 2]
+
+        return {
+            "geom": formated[0].transpose(2, 0, 1).tolist(),
+            "value": formated[1].transpose(2, 0, 1).tolist(),
+            "cl_array": wg.coefficients.tolist()
+        }
