@@ -14,6 +14,8 @@ from mpi4py import MPI
 from baseclasses import AeroSolver, AeroProblem
 from pygeo.parameterization import DVGeometry, DVGeometryCustom
 
+from flowvae.app.wing.api import WingAPI
+
 try:
     import torch
 except ImportError as exc:
@@ -22,30 +24,6 @@ except ImportError as exc:
     ) from exc
 
 from flowvae.ml_operator.operator import load_model_from_checkpoint
-
-class MLModel():
-    """
-    abstract class for model prediction
-    
-    
-    """
-
-    def __init__(self, device: Optional[str] = None):
-        
-        if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-
-
-    @abstractmethod
-    def loading(self) -> None:
-        pass
-
-    @abstractmethod
-    def predict(self, inp: torch.Tensor, cnd: torch.Tensor) -> torch.Tensor:
-        pass
-
 
 class MLSolver(AeroSolver):
     """
@@ -81,7 +59,7 @@ class MLSolver(AeroSolver):
         default_options = {
             "output_dir": (str, "output"),
             "output_prefix": (str, "ml_surface"),
-            "write_surface_plot3d": (bool, True)
+            "write_surface_tecplot": (bool, True)
         }
 
         super().__init__(
@@ -95,7 +73,7 @@ class MLSolver(AeroSolver):
         self.device = device
         self.output_keys = output_keys
         self.condition_keys = {} if condition_keys is None else condition_keys
-        self.model: MLModel
+        self.model: WingAPI
         self.debug = debug
 
         self.DVGeo: Optional[DVGeometry] = None
@@ -116,19 +94,20 @@ class MLSolver(AeroSolver):
         self._stored_lift_distribution = None
         self._stored_slices = None
         self.calling_counter = 0
+        self._tecplot_file = None
+        self._tecplot_header_written = False
 
     # ------------------------------------------------------------------ #
     # Interface setup helpers
     # ------------------------------------------------------------------ #
-    def setModel(self, model: MLModel):
+    def setModel(self, model: WingAPI, ap: AeroProblem):
         '''
         load model from standard floGen savings
         
         '''
-
         if self.comm is None or self.comm.rank == 0:
             self.model = model
-            self.model.loading()
+            self.model.setAP(ap)
 
         if self.comm is not None:
             self.comm.barrier()
@@ -189,28 +168,57 @@ class MLSolver(AeroSolver):
         self.surface_mesh = mesh
         # Reset point-set registration so it can be rebuilt with the new mesh.
 
-    def _write_surface_plot3d_mesh(self, fname):
+    def _write_surface_tecplot(self, surface_outputs, fname):
         mesh = self.surface_mesh
+        if mesh.ndim == 4 and mesh.shape[-1] == 3:
+            mesh = mesh[:, :, 0, :]
+        elif mesh.ndim == 3 and mesh.shape[0] == 3:
+            mesh = mesh.transpose(1, 2, 0)
+        if mesh.ndim != 3 or mesh.shape[-1] != 3:
+            self.pp("Tecplot output skipped: unsupported mesh shape.")
+            return
 
-        from cst_modeling.io import output_plot3d_concat
-        output_plot3d_concat([mesh], fname=fname + '.xyz', order='ji', verbose=0)
-
-    def _write_surface_plot3d_solution(self, surface_outputs, fname):
-
-        data = np.asarray(surface_outputs, fname)
+        data = np.asarray(surface_outputs)
         if data.ndim == 4:
             data = data[0]
+        if data.ndim != 3:
+            self.pp("Tecplot output skipped: unsupported output shape.")
+            return
 
-        nvar, ni, nj = data.shape
-        with open(fname + '.q', "w", encoding="ascii") as f:
-            f.write("1\n")
-            f.write(f"{ni} {nj} 1\n")
-            for ivar in range(nvar):
-                data[ivar].flatten(order="F").tofile(f, sep="\n")
-                f.write("\n")
+        nvar, ci, cj = data.shape
+        ni, nj, _ = mesh.shape
+        if ci != ni - 1 or cj != nj - 1:
+            self.pp("Tecplot output skipped: output shape does not match mesh.")
+            return
 
-    def _write_surface_plot3d(self, surface_outputs):
-        if not self.getOption("write_surface_plot3d"):
+        # Cell-centered -> node-centered (vectorized)
+        node_vals = np.zeros((nvar, ni, nj), dtype=data.dtype)
+        counts = np.zeros((ni, nj), dtype=np.int32)
+        for di, dj in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            node_vals[:, di:di + ci, dj:dj + cj] += data
+            counts[di:di + ci, dj:dj + cj] += 1
+            
+        node_vals /= counts[None, :, :]
+
+        print("Writing surface Tecplot output...")
+        if self._tecplot_file is None:
+            self._tecplot_file = fname + ".dat"
+        mode = "a" if self._tecplot_header_written else "w"
+        with open(self._tecplot_file, mode, encoding="ascii") as f:
+            if not self._tecplot_header_written:
+                f.write('TITLE="ML Surface"\n')
+                var_names = ["X", "Y", "Z"] + [f"Q{i+1}" for i in range(nvar)]
+                f.write("VARIABLES=" + ",".join(f'"{v}"' for v in var_names) + "\n")
+                self._tecplot_header_written = True
+            f.write(f'ZONE T="step_{self.calling_counter:05d}", I={ni}, J={nj}, F=POINT\n')
+            for j in range(nj):
+                for i in range(ni):
+                    x, y, z = mesh[i, j]
+                    q = node_vals[:, i, j]
+                    f.write(f"{x} {y} {z} " + " ".join(str(val) for val in q) + "\n")
+
+    def _write_surface(self, surface_outputs):
+        if not self.getOption("write_surface_tecplot"):
             return
         if self.comm is not None and self.comm.rank != 0:
             return
@@ -219,8 +227,7 @@ class MLSolver(AeroSolver):
             self.getOption("output_dir"),
             f"{self.getOption('output_prefix')}_{self.calling_counter:05d}",
         )
-        self._write_surface_plot3d_mesh(fname)
-        self._write_surface_plot3d_solution(surface_outputs, fname)
+        self._write_surface_tecplot(surface_outputs, fname)
 
     @property
     def surface_mesh_shape(self):
@@ -284,6 +291,13 @@ class MLSolver(AeroSolver):
         TODO: Consider multicondition optimization, the `values` output can have a batch dimension 
         to enable the model batch process results under multiple operating conditions
         '''
+        if self.comm is not None and self.comm.rank != 0:
+            return {
+                "values": None,
+                "surface_grad": None,
+                "condition_grad": None,
+            }
+
         inp = torch.tensor(surface_points, dtype=torch.float32, device=self.device, requires_grad=True).unsqueeze(0)
         cnd = torch.tensor(condition_vector, dtype=torch.float32, device=self.device, requires_grad=True).unsqueeze(0)
 
@@ -362,8 +376,8 @@ class MLSolver(AeroSolver):
         self.calling_counter += 1
         if self.comm.rank == 0:
             surface_outputs = getattr(self.model, "last_surface_outputs", None)
-            if surface_outputs is not None and self.getOption("write_surface_plot3d"):
-                self._write_surface_plot3d(surface_outputs)
+            if surface_outputs is not None and self.getOption("write_surface_tecplot"):
+                self._write_surface(surface_outputs)
 
         # deal failure
         if any(np.isnan(val) for val in self._last_outputs.values()):

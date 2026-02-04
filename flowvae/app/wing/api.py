@@ -15,14 +15,17 @@ from flowvae.ml_operator.config import ModelConfig
 from flowvae.ml_operator.hf import download_model_from_hf
 from flowvae.sim.cfl3d import AirfoilSimulator
 from flowvae.utils import device_select
+from flowvae.post import rotate_input, intergal_output
 import torch
 
 import numpy as np
 import os, copy
+import json
 from cfdpost.wing.single_section_wing import Wing, plot_frame
 from cfdpost.wing.multi_section_wing import MultiSecWing
 from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
-from typing import Optional
+from cst_modeling.io import read_plot3d, output_plot3d_concat
+from typing import Optional, Tuple
 from abc import abstractmethod
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +41,31 @@ def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tenso
     
     return data_new
 
+def surface_meshing_ML(wingCoefs: dict, config=None, save_surface=False):
+    '''
+    only for mdolab API use
+    
+    '''
+    
+    #* surface meshing
+    block = MultiSecWing._reconstruct_surface_grids(wingCoefs, 129, [129], zaxis=0.25, lower_cst_constraints=True, twists0=6.7166)
+    
+    global mesh_generation_index
+    if save_surface:
+        output_dict = {}
+        for k in wingCoefs.keys():
+            if isinstance(wingCoefs[k], np.ndarray):
+                output_dict[k] = wingCoefs[k].tolist()
+            else:
+                output_dict[k] = wingCoefs[k]
+        with open(f'output/input_{mesh_generation_index:d}.json', 'w') as f:
+            json.dump(output_dict, f)
+            
+        output_plot3d_concat([copy.deepcopy(block)[None, ...].transpose(2, 3, 0, 1)], fname=f'output/wing_{mesh_generation_index:d}.xyz', order='ij', verbose=0)
+        mesh_generation_index += 1
+
+
+    return block
 
 '''
 api to transfer learning model
@@ -49,8 +77,9 @@ class WingAPI():
     models = []
     model_save_names = []
     hf_repo_id = ''
+    version_folder = {}
 
-    def __init__(self, saves_folder: Optional[str] = None, device: str = 'default') -> None:
+    def __init__(self, saves_folder: Optional[str] = None, model_version: str = 'default', device: str = 'default') -> None:
         '''
         
         paras:
@@ -62,34 +91,60 @@ class WingAPI():
 
         _device = device_select(device)
         self.device = _device
+        self.model_version = model_version
         
-
         self.saves_folder = saves_folder if saves_folder is not None else os.path.join('..', 'save', self.__class__.__name__)   
         self.load_model()
         
-    def load_model(self):
+    def load_model(self) -> None:
+
+        self.loaded_models = []
 
         print('loading model...')
+        needed_models = []
+        needed_models_save_names = []
+        # select models to load according to version
+        if self.model_version in self.version_folder:
+            for md in self.version_folder[self.model_version]:
+                assert md in self.models, f'model version {self.model_version} requires model {md}, which is not in available models for {self.__class__.__name__}'
+                needed_models.append(md)
+                needed_models_save_names.append(self.model_save_names[self.models.index(md)])
+        else:
+            raise RuntimeError(f'model version {self.model_version} not supported for {self.__class__.__name__}')
+
 
         # check and download models if needed
-        if not os.path.exists(os.path.join(self.saves_folder, self.models[0], 'model_config')):
+        if not os.path.exists(os.path.join(self.saves_folder, needed_models[0], 'model_config')):
             print(f'downloading models from huggingface...')
-            os.makedirs(self.saves_folder)
+            os.makedirs(self.saves_folder, exist_ok=True)
             download_model_from_hf(repo_id=self.hf_repo_id, local_folder=self.saves_folder)
 
-        for model_name, save_name in zip(self.models, self.model_save_names):
+        for model_name, save_name in zip(needed_models, needed_models_save_names):
             model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
             load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, save_name), device=self.device)
-            self.__setattr__(model_name, model_fram)
+            self.loaded_models.append(model_fram)
 
     @abstractmethod
-    def end2end_predict(self, data: dict) -> dict:
+    def end2end_predict(self, shape_paras: dict) -> dict:
         
         return {
             "geom": [],
             "value": [],
             "cl_array": []
         }
+
+    @abstractmethod
+    def predict(self, inp: torch.Tensor, cnd: torch.Tensor) -> torch.Tensor:
+        pass
+
+    def setAP(self, ap) -> None:
+        '''
+        set the AeroProblem for the model if needed (containing operating conditions etc.)
+        
+        :param ap: AeroProblem object
+        :type ap: AeroProblem
+        '''
+        self.ap = ap
     
 
 class SimpleWingAPI(WingAPI):
@@ -99,8 +154,8 @@ class SimpleWingAPI(WingAPI):
     hf_repo_id = 'yunplus/PI_Trans_Wings'
     
     version_folder = {
-        'aoa':  ['0330_25_Run3', 'modelcl21_1658_Run0_cl', 'modelcl21_1658_Run0'],  
-        'cl':   ['0330_25_Run3', '0420_1082_Run2', '0328_589_Run1']
+        'aoa':  ['model_2d', 'model_sld', 'model_3d'],  
+        'cl':   ['model_2d', '0420_1082_Run2', '0328_589_Run1']
     }
     
     def __init__(self, saves_folder: Optional[str] = None, model_version: str = 'aoa', device: str = 'default') -> None:
@@ -234,7 +289,7 @@ class SimpleWingAPI(WingAPI):
         
         if real_sld is None:
             # SLD prediction
-            sld_3d = self.model_sld(wing_paras)[:, 0]
+            sld_3d = self.loaded_models[1](wing_paras)[:, 0]
         else:
             # use prescribed SLD
             sld_3d = torch.from_numpy(real_sld).unsqueeze(0).float().to(self.device)
@@ -263,7 +318,7 @@ class SimpleWingAPI(WingAPI):
         
         else:    
             # 2D surface value prediction with pretrained model
-            output_2d = self.model_2d(geoms2d, code=auxs2d)[0]
+            output_2d = self.loaded_models[0](geoms2d, code=auxs2d)[0]
             
         self.info['2d_surf'] = output_2d
         self.info['2d_geom'] = geoms2d.detach().cpu().numpy()
@@ -276,7 +331,7 @@ class SimpleWingAPI(WingAPI):
         # airfoil to wing
         geoms = torch.from_numpy(wg.geom.transpose((2, 0, 1))).unsqueeze(0).float().to(self.device)
         prior_field = torch.concatenate((geoms, output_2d_corr), dim=1)
-        output_3d = self.model_3d(prior_field[:, : self.input_ref], code=wing_paras[:, :2])[0]
+        output_3d = self.loaded_models[2](prior_field[:, : self.input_ref], code=wing_paras[:, :2])[0]
         output_3d[:, :2] += output_2d_corr
         
         wg.read_formatted_surface(geometry=None, data=output_3d[0].detach().cpu().numpy(), isnormed=True)
@@ -397,14 +452,32 @@ class SimpleWingAPI(WingAPI):
 
 class SuperWingAPI(WingAPI):
 
-    models = ['ATsurf_L']
-    model_save_names = ['best_model_weights']
+    models = ['ATsurf_L', 'ATsurf_L_v1', 'ATsurf_L_v1_FT']
+    model_save_names = ['best_model_weights' for _ in range(3)]
     hf_repo_id = 'yunplus/AeroTransformer'
 
-    def __init__(self, saves_folder = None, device = 'default'):
-        super().__init__(saves_folder, device)
+    version_folder = {
+        'default': ['ATsurf_L_v1'],
+        'finetune': ['ATsurf_L_v1_FT']
+    }
 
-    def predict(self, shape_paras):
+    def __init__(self, saves_folder = None, model_version = 'default', device = 'default'):
+        super().__init__(saves_folder, model_version, device)
+
+    def _predict(self, inp, cnd):
+        return self.loaded_models[0](inp, code=cnd)[0]
+
+    def end2end_predict(self, shape_paras: dict) -> dict:
+
+        '''
+        end2end predict from shape parameters to surface field
+        
+        :param shape_paras: WebWing format shape parameters
+        :type shape_paras: dict
+        :return: Description
+        :rtype: dict
+        '''
+
         geom_dict = {
             'SA': shape_paras['planform'][0],
             'AR': shape_paras['planform'][1],
@@ -421,20 +494,13 @@ class SuperWingAPI(WingAPI):
         wg = MultiSecWing(geom_dict, aoa=shape_paras['condition'][0], iscentric=True)
         wg.reconstruct_surface_grids(nx=129, nzs=[129])
         origeom, geom = wg.get_all_geometries()
-        print(origeom.shape, geom.shape)
+        # print(origeom.shape, geom.shape)
         inputs = torch.from_numpy(geom).float().to(self.device).unsqueeze(0)
         auxs   = torch.tensor(shape_paras['condition']).float().to(self.device).unsqueeze(0)
-        output = self.ATsurf_L(inputs, code=auxs)[0].cpu().detach().numpy()
-        print(output.shape)
+        output = self._predict(inputs, auxs).cpu().detach().numpy()
+        # print(output.shape)
 
         wg.read_formatted_surface(data=output[0], isinitg=False, isnormed=True)
-
-        return wg
-
-
-    def end2end_predict(self, data):
-
-        wg = self.predict(data)
         wg.aero_force()
 
         formated = wg.get_formatted_surface()
@@ -446,3 +512,25 @@ class SuperWingAPI(WingAPI):
             "value": formated[1].transpose(2, 0, 1).tolist(),
             "cl_array": wg.coefficients.tolist()
         }
+
+    def predict(self, inp: torch.Tensor, cnd: torch.Tensor) -> torch.Tensor:
+        '''
+        :param inp: input surface grid points
+        :type inp: torch.Tensor B x 3 x spanwise x W
+        :param cnd: condition parameters
+        :type cnd: torch.Tensor B x 2 (AoA, Mach)
+        :return: forces (lift, drag, moment)
+        :rtype: torch.Tensor B x 3
+
+        '''
+        inp, cnd = rotate_input(inp, cnd)
+        inp_cen = 0.25 * (inp[..., 1:,1:] + inp[..., 1:,:-1] + inp[..., :-1,1:] + inp[..., :-1,:-1])
+
+        outputs = self._predict(inp_cen, cnd)  # B, 3, H-1, W-1
+        self.last_surface_outputs = outputs.detach().cpu().numpy()
+
+        forces = intergal_output(inp, outputs, cnd[:, 0], 
+                                 s=self.ap.areaRef, c=self.ap.chordRef, xref=self.ap.xRef, yref=self.ap.yRef)
+        # forces = outputs[:, 0, 0, :2]
+
+        return forces # B, 3

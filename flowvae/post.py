@@ -378,14 +378,11 @@ def get_flux_1d_t(geom: Tensor, pressure: Tensor, xvel: Tensor, yvel: Tensor, rh
 def get_cellinfo_2d_t(geom: Tensor) -> Tuple[Tensor]:
     
     '''
-    params:
-    ===
-    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
-
-    returns:
-    ===
-    `normals`: shape: (I-1, J-1, 3)
-    `areas`  : shape: (I-1, J-1)
+    get the normal vector and area of each surface grid cell
+    :param geom: The geometry (x, y, z)
+    :type geom: torch.Tensor (..., I, J, 3)
+    :return: normals and areas
+    :rtype: Tuple(torch.Tensor, torch.Tensor), shape (..., I-1, J-1, 3), (..., I-1, J-1)
     '''
     
     # get corner points（p0, p1, p2, p3）
@@ -405,10 +402,17 @@ def get_cellinfo_2d_t(geom: Tensor) -> Tuple[Tensor]:
 
 def get_dxyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
+    integrate forces from 2D surface data on every surface grid cell
+    
+    :param geom: The geometry (x, y, z)
+    :type geom: torch.Tensor (..., I, J, 3)
+    :param cp: pressure coefficients Cp = (p - p_inf) / 0.5 * rho * U_\infty^2
+    :type cp: torch.Tensor (..., I-1, J-1)
+    :param cf: friction coefficients Cf = (tau @ n) / 0.5 * rho * U_\infty^2
+    :type cf: torch.Tensor (..., I-1, J-1, 3)
         
-    return:
-    ===
-    torch.Tensor: (CX, CY, CZ), shape (I, J, 3)
+    :return: coefficients of forces in x, y, z directions
+    :rtype: torch.Tensor, (dCx, dCy, dCz), shape (..., I-1, J-1, 3)
     
     '''
     # calculate normal vector
@@ -426,10 +430,17 @@ def get_dxyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=
 
 def get_xyforce_2d_t(geom: Union[Tensor, List[Tensor]], cp: Tensor, cf: Tensor=None) -> Tensor:
     '''
+    integrate forces from 2D surface data
     
-    return:
-    ===
-    torch.Tensor: (CX, CY, CZ)
+    :param geom: The geometry (x, y, z)
+    :type geom: torch.Tensor (..., I, J, 3)
+    :param cp: pressure coefficients Cp = (p - p_inf) / 0.5 * rho * U_\infty^2
+    :type cp: torch.Tensor (..., I-1, J-1)
+    :param cf: friction coefficients Cf = (tau @ n) / 0.5 * rho * U_\infty^2
+    :type cf: torch.Tensor (..., I-1, J-1, 3)
+        
+    :return: coefficients of forces in x, y, z directions
+    :rtype: torch.Tensor (CX, CY, CZ)
     '''
     return torch.sum(get_dxyforce_2d_t(geom, cp, cf), dim=(-3,-2))
 
@@ -437,19 +448,17 @@ def get_force_2d_t(geom: Union[Tensor, List[Tensor]], aoa: Tensor, cp: Tensor, c
     '''
     integrate lift and drag from 2D surface data
     
-    params:
-    ===
-    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
-    `aoa`: in DEGREE
-    `cp`  :  shape: (I-1, J-1)
-         Cp = (p - p_inf) / 0.5 * rho * U^2
-    `cf`:    (Cfx, Cfy, Cfz), shape: (I-1, J-1, 3)
-         Cf = (tau @ n) / 0.5 * rho * U^2 
-         
+    :param geom: The geometry (x, y, z)
+    :type geom: torch.Tensor (..., I, J, 3)
+    :param aoa: angle of attack in Degree
+    :type aoa: torch.Tensor (..., )
+    :param cp: pressure coefficients Cp = (p - p_inf) / 0.5 * rho * U_\infty^2
+    :type cp: torch.Tensor (..., I-1, J-1)
+    :param cf: friction coefficients Cf = (tau @ n) / 0.5 * rho * U_\infty^2
+    :type cf: torch.Tensor (..., I-1, J-1, 3)
         
-    return:
-    ===
-    torch.Tensor: (CD, CL, CZ)
+    :return: coefficients of drag, lift, and side force
+    :rtype: torch.Tensor (CD, CL, CZ)
     '''
     dfp = get_xyforce_2d_t(geom, cp, cf)
     dfp_xy = _xy_2_cl_tc(dfp[..., :2], aoa)
@@ -458,20 +467,17 @@ def get_force_2d_t(geom: Union[Tensor, List[Tensor]], aoa: Tensor, cp: Tensor, c
 
 def get_moment_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None, ref_point: torch.Tensor=np.array([0.25, 0, 0])) -> torch.Tensor:
     '''
-    integrate moment from 2D surface data
-    
-    params:
-    ===
-    `geom`:  The geometry (x, y, z), shape: (I, J, 3)
-    `cp`  :  shape: (I-1, J-1)
-         Cp = (p - p_inf) / 0.5 * rho * U^2
-    `cf`:    (Cfx, Cfy, Cfz), shape: (I-1, J-1, 3)
-         Cf = (tau @ n) / 0.5 * rho * U^2 
-    `ref_point`: torch.Tensor: shape: (3,)
+    :param geom: The geometry (x, y, z)
+    :type geom: torch.Tensor (..., I, J, 3)
+    :param cp: pressure coefficients Cp = (p - p_inf) / 0.5 * rho * U_\infty^2
+    :type cp: torch.Tensor (..., I-1, J-1)
+    :param cf: friction coefficients Cf = (tau @ n) / 0.5 * rho * U_\infty^2
+    :type cf: torch.Tensor (..., I-1, J-1, 3)
+    :param ref_point: ref point for moment calculation
+    :type ref_point: torch.Tensor (..., 3)
         
-    return:
-    ===
-    torch.Tensor: (CMx, CMy, CMz)
+    :return: moment around z-axis
+    :rtype: torch.Tensor (CMx, CMy, CMz)
     '''
     
     dxyforce = get_dxyforce_2d_t(geom, cp, cf)
@@ -479,17 +485,13 @@ def get_moment_2d_t(geom: torch.Tensor, cp: torch.Tensor, cf: torch.Tensor=None,
     
     return torch.sum(torch.cross(r, dxyforce, dim=-1), dim=(-3, -2))
 
-def get_cellinfo_1d_t(geom: torch.Tensor) -> torch.Tensor:
+def get_cellinfo_1d_t(geom: torch.Tensor) -> Tuple[torch.Tensor]:
     '''
-    params:
-    ===
-    `geom`:  The geometry (x, y), shape: (..., I, 2)
+    :param geom: The geometry (x, y)
+    :type geom: torch.Tensor (..., I, 2)
 
-    returns:
-    ===
-    `tangens`: shape: (..., I-1, 2)
-    `normals`: shape: (..., I-1, 2)
-    # `areas`  : shape: (I-1, J-1)
+    :return: tangens, normals
+    :rtype: Tuple[torch.Tensor] (..., I-1, 2), (..., I-1, 2)
     '''
     
     # grid centric
@@ -498,6 +500,71 @@ def get_cellinfo_1d_t(geom: torch.Tensor) -> torch.Tensor:
     normals = torch.concatenate((-tangens[..., [1]], tangens[..., [0]]), axis=-1)
     
     return tangens, normals
+
+#* functions for wings
+
+def rotate_input(inp: torch.Tensor, cnd: torch.Tensor, root_twist: float = 6.7166) -> Tuple[torch.Tensor]:
+    '''
+    rotate the input and condition to remove the baseline twist effect
+    
+    :param inp: geometric mesh input
+    :type inp: torch.Tensor (B, C, H, W)
+    :param cnd: operating condition (AoA, Mach)
+    :type cnd: torch.Tensor (B, 2)
+    :param root_twist: The root twist value to be removed
+    :type root_twist: float
+    :return: inp, cnd
+    :rtype: Tuple[Tensor]
+    '''
+
+    B, C, H, W = inp.shape
+    
+    # rotate to without baseline twist ( w.r.t centerline LE (0,0,0))
+    inp = torch.cat([
+        _xy_2_cl_tc(inp[:, :2].permute(0, 2, 3, 1).reshape(-1, 2), -root_twist * torch.ones((B*H*W,))).reshape(B, H, W, 2).permute(0, 3, 1, 2),
+        inp[:, 2:]
+    ], dim = 1) 
+    
+    cnd = torch.cat([
+        cnd[:, :1] + root_twist,
+        cnd[:, 1:]
+    ], dim = 1)
+
+    return inp, cnd
+
+def intergal_output(geom: torch.Tensor, outputs: torch.Tensor, aoa: torch.Tensor,
+                    s: float, c: float, xref: float, yref: float) -> torch.Tensor:
+    '''
+    torch version intergal_output from cell-centric outputs to forces/moments
+    
+    :param geom: geometric
+    :type geom: torch.Tensor (B, 3, I, J)
+    :param outputs: pressure and friction coefficients (cp, cf_tau, cf_z)
+    :type outputs: torch.Tensor (B, 3, I-1, J-1)
+    :param aoa: angle of attacks
+    :type aoa: torch.Tensor (B, )
+    :param s: reference area
+    :type s: float
+    :param c: reference chord
+    :type c: float
+    :param xref: x reference point
+    :type xref: float
+    :param yref: y reference point
+    :type yref: float
+    :return: lift, drag, moment_z
+    :rtype: torch.Tensor (B, 3)  
+    '''
+
+    cp = outputs[:, 0]
+    tangens, normals2d = get_cellinfo_1d_t(geom[:, :2].permute(0, 2, 3, 1))                    
+    tangens = 0.5 * (tangens[:, 1:] + tangens[:, :-1])    # transfer to cell centre at spanwise direction
+
+    cf = torch.concatenate((outputs[:, [1]].permute(0, 2, 3, 1) * tangens / 150, outputs[:, [2]].permute(0, 2, 3, 1) / 300), axis=-1)
+    forces = get_force_2d_t(geom.permute(0, 2, 3, 1), aoa=aoa, cp=cp, cf=cf)[:, [1, 0]] / s
+    moment = get_moment_2d_t(geom.permute(0, 2, 3, 1), cp=cp, cf=cf, 
+                             ref_point=torch.Tensor([xref, yref, 0.]))[:, [2]] / s / c
+
+    return torch.cat((forces, moment), dim=-1)
 
 def _get_xz_cf_t(geom: torch.Tensor, cf: torch.Tensor):
     '''
