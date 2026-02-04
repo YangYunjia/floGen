@@ -133,13 +133,15 @@ class MLSolver(AeroSolver):
             # DVGeo appeared and we have not embedded points!
             if ptSetName not in self.DVGeo.points:
                 assert self.surface_mesh is not None, "Set the surface mesh before calling setAeroProblem"
-                self.DVGeo.addPointSet(self.surface_mesh.reshape(-1, 3), ptSetName, **self.pointSetKwargs)
+                # for DVGeoCustom, the surface flow for ml is not updated with projection, but with hard rewritten.
+                # for other DVGeo, the point-set will be updated with projection when calling update
+                self.DVGeo.addPointSet(self.surface_mesh.reshape(3, -1).transpose(), ptSetName, **self.pointSetKwargs)
 
         # Check if our point-set is up to date:
         if not self.DVGeo.pointSetUpToDate(ptSetName):
             coords = self.DVGeo.update(ptSetName, config=aeroProblem.name)
             # global_coords, counts = self._gather_surface(coords)
-            self.surface_mesh = coords.reshape(self.surface_mesh_shape)
+            self.surface_mesh = coords.transpose().reshape(self.surface_mesh_shape)
 
         if not hasattr(self.curAP, "solveFailed"):
             self.curAP.solveFailed = False
@@ -162,7 +164,9 @@ class MLSolver(AeroSolver):
             assert isinstance(DVGeo, DVGeometryCustom), 'only DVGeometryCustom class has the baseline geometry stored'
             DVGeo: DVGeometryCustom
             if self.debug: print('Update surface mesh from DVGeo baseline geometry ...')
+            if self.debug: print('wing_coefs:', DVGeo.parameters)
             self.surface_mesh = DVGeo._updateOneModel(useBaseline, DVGeo.parameters, keep_shape=True)   # this should be single proc. for refernce
+            if self.debug: print('wing_mesh', self.surface_mesh[:, 0, :3])
 
     def setSurfaceMesh(self, mesh: np.ndarray):
         self.surface_mesh = mesh
@@ -361,7 +365,7 @@ class MLSolver(AeroSolver):
             self.solveFailed = True
             self.curAP.solveFailed = True
             return self._last_outputs
-
+        # print('model input ->', self.surface_mesh.shape, condition_vector)
         if self.comm.rank == 0:
             eval_result = self._evaluate_model(self.surface_mesh, condition_vector)
         else:

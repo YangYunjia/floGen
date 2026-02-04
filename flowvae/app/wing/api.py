@@ -450,6 +450,39 @@ class SimpleWingAPI(WingAPI):
  
         return corr_2d
 
+class SuperWingcoefAPI(WingAPI):
+    models = ['ATcoef_L']
+    model_save_names = ['best_model_weights' for _ in range(len(models))]
+    hf_repo_id = 'yunplus/AeroTransformer'
+
+    version_folder = {
+        'default': ['ATcoef_L_v1'],
+        # 'finetune': ['ATcoef_L_v1_FT']
+    }
+
+    def __init__(self, saves_folder = None, model_version = 'default', device = 'default'):
+        super().__init__(saves_folder, model_version, device)
+
+    def _predict(self, inp, cnd):
+        return self.loaded_models[0](inp, code=cnd)[0]
+
+    def predict(self, inp: torch.Tensor, cnd: torch.Tensor) -> torch.Tensor:
+        '''
+        :param inp: input wing coef points
+        :type inp: torch.Tensor B x 29
+        :param cnd: condition parameters
+        :type cnd: torch.Tensor B x 2 (AoA, Mach)
+        :return: forces (lift, drag, moment)
+        :rtype: torch.Tensor B x 3
+
+        '''
+        inp, cnd = rotate_input(inp, cnd)
+        inp_cen = 0.25 * (inp[..., 1:,1:] + inp[..., 1:,:-1] + inp[..., :-1,1:] + inp[..., :-1,:-1])
+        outputs = self._predict(inp_cen, cnd)  # B, 3
+        self.last_outputs = None
+
+        return outputs # B, 3
+
 class SuperWingAPI(WingAPI):
 
     models = ['ATsurf_L', 'ATsurf_L_v1', 'ATsurf_L_v1_FT']
