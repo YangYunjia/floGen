@@ -357,6 +357,8 @@ class MLSolver(AeroSolver):
         self.setAeroProblem(aeroProblem)
 
         # initial flags of failure
+        self.curAP.solveFailed = False  # reset the flags in case CFD varification runs setting them to True
+        self.curAP.fatalFail = False
         self.solveFailed = False    # try restart clean
         self.fatalFail = False  # force reset
 
@@ -385,17 +387,16 @@ class MLSolver(AeroSolver):
 
         # deal failure
         if any(np.isnan(val) for val in self._last_outputs.values()):
+            self.pp("> ======= ML solver returned NaN outputs.")
             self.solveFailed = True
             self.curAP.solveFailed = True
 
         if any(np.isnan(arr).any() for arr in self._last_surface_grad_global.values()) or any(
             np.isnan(arr).any() for arr in self._last_condition_grad.values()
         ):
+            self.pp("> ======= ML solver gradient returned NaN outputs.")
             self.adjointFailed = True
             self.curAP.adjointFailed = True
-        else:
-            self.adjointFailed = False
-            self.curAP.adjointFailed = False
 
         self.curAP.solveFailed = self.curAP.solveFailed or self.solveFailed
         self.curAP.fatalFail = self.curAP.fatalFail or self.fatalFail
