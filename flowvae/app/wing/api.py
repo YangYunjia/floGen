@@ -95,6 +95,36 @@ class WingAPI():
         
         self.saves_folder = saves_folder if saves_folder is not None else os.path.join('..', 'save', self.__class__.__name__)   
         self.load_model()
+
+    @staticmethod
+    def _average_outputs(outputs):
+        # print('averaging ensemble outputs... from ', len(outputs), ' members')
+        if len(outputs) == 0:
+            raise ValueError('No outputs to average.')
+        ref = outputs[0]
+        if torch.is_tensor(ref):
+            return torch.stack(outputs, dim=0).mean(dim=0)
+        if isinstance(ref, (list, tuple)):
+            avg_items = [WingAPI._average_outputs([o[i] for o in outputs]) for i in range(len(ref))]
+            return type(ref)(avg_items)
+        if isinstance(ref, dict):
+            return {k: WingAPI._average_outputs([o[k] for o in outputs]) for k in ref.keys()}
+        raise TypeError(f'Unsupported output type for ensemble averaging: {type(ref)}')
+
+    def _wrap_ensemble(self, models):
+        if len(models) == 1:
+            return models[0]
+
+        class _EnsembleWrapper:
+            def __init__(self, members, avg_fn):
+                self.members = members
+                self.avg_fn = avg_fn
+
+            def __call__(self, *args, **kwargs):
+                outputs = [m(*args, **kwargs) for m in self.members]
+                return self.avg_fn(outputs)
+
+        return _EnsembleWrapper(models, self._average_outputs)
         
     def load_model(self) -> None:
 
@@ -114,15 +144,28 @@ class WingAPI():
 
 
         # check and download models if needed
-        if not os.path.exists(os.path.join(self.saves_folder, needed_models[0], 'model_config')):
-            print(f'downloading models from huggingface...')
-            os.makedirs(self.saves_folder, exist_ok=True)
-            download_model_from_hf(repo_id=self.hf_repo_id, local_folder=self.saves_folder)
-
         for model_name, save_name in zip(needed_models, needed_models_save_names):
-            model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
-            load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, save_name), device=self.device)
-            self.loaded_models.append(model_fram)
+            if not os.path.exists(os.path.join(self.saves_folder, model_name, 'model_config')):
+                print(f'downloading model {model_name} from huggingface...')
+                os.makedirs(self.saves_folder, exist_ok=True)
+                download_model_from_hf(repo_id=self.hf_repo_id, local_folder=self.saves_folder, model_name=model_name)
+
+            folders = [d for d in os.listdir(os.path.join(self.saves_folder, model_name)) if os.path.isdir(os.path.join(self.saves_folder, model_name, d))]
+            if len(folders) > 0:
+                # this model is ensemble
+                ensemble_members = []
+
+                for subfolder in folders:
+                    model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
+                    load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, subfolder, save_name), device=self.device)
+                    ensemble_members.append(model_fram)
+                self.loaded_models.append(self._wrap_ensemble(ensemble_members))
+
+            else:
+                # single model
+                model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
+                load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, save_name), device=self.device)
+                self.loaded_models.append(model_fram)
 
     @abstractmethod
     def end2end_predict(self, shape_paras: dict) -> dict:
@@ -485,13 +528,14 @@ class SuperWingcoefAPI(WingAPI):
 
 class SuperWingAPI(WingAPI):
 
-    models = ['ATsurf_L', 'ATsurf_L_v1', 'ATsurf_L_v1_FT']
-    model_save_names = ['best_model_weights' for _ in range(3)]
+    models = ['ATsurf_L', 'ATsurf_L_v1', 'ATsurf_L_v1_FT', 'ATsurf_L_v1_FT_ENS']
+    model_save_names = ['best_model_weights' for _ in range(4)]
     hf_repo_id = 'yunplus/AeroTransformer'
 
     version_folder = {
         'default': ['ATsurf_L_v1'],
-        'finetune': ['ATsurf_L_v1_FT']
+        'finetune': ['ATsurf_L_v1_FT'],
+        'ensemble': ['ATsurf_L_v1_FT_ENS']
     }
 
     def __init__(self, saves_folder = None, model_version = 'default', device = 'default'):
