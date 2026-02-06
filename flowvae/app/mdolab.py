@@ -135,13 +135,13 @@ class MLSolver(AeroSolver):
                 assert self.surface_mesh is not None, "Set the surface mesh before calling setAeroProblem"
                 # for DVGeoCustom, the surface flow for ml is not updated with projection, but with hard rewritten.
                 # for other DVGeo, the point-set will be updated with projection when calling update
-                self.DVGeo.addPointSet(self.surface_mesh.reshape(3, -1).transpose(), ptSetName, **self.pointSetKwargs)
+                self.DVGeo.addPointSet(self.surface_mesh.reshape(3, -1).T, ptSetName, **self.pointSetKwargs)
 
         # Check if our point-set is up to date:
         if not self.DVGeo.pointSetUpToDate(ptSetName):
             coords = self.DVGeo.update(ptSetName, config=aeroProblem.name)
             # global_coords, counts = self._gather_surface(coords)
-            self.surface_mesh = coords.transpose().reshape(self.surface_mesh_shape)
+            self.surface_mesh = coords.T.reshape(self.surface_mesh_shape)
 
         if not hasattr(self.curAP, "solveFailed"):
             self.curAP.solveFailed = False
@@ -173,7 +173,8 @@ class MLSolver(AeroSolver):
         # Reset point-set registration so it can be rebuilt with the new mesh.
 
     def _write_surface_tecplot(self, surface_outputs, fname):
-        mesh = self.surface_mesh
+
+        mesh = np.asarray(self.surface_mesh)
         if mesh.ndim == 4 and mesh.shape[-1] == 3:
             mesh = mesh[:, :, 0, :]
         elif mesh.ndim == 3 and mesh.shape[0] == 3:
@@ -204,7 +205,7 @@ class MLSolver(AeroSolver):
             
         node_vals /= counts[None, :, :]
 
-        print("Writing surface Tecplot output...")
+        print(f"Writing surface Tecplot output to {fname}.dat...")
         if self._tecplot_file is None:
             self._tecplot_file = fname + ".dat"
         mode = "a" if self._tecplot_header_written else "w"
@@ -327,18 +328,15 @@ class MLSolver(AeroSolver):
                 create_graph=False,
                 allow_unused=False,
             )
-            surface_rows.append(grads[0].detach().cpu().numpy())
-            condition_rows.append(grads[1].detach().cpu().numpy())
-
-        surface_jac = np.vstack(surface_rows).reshape(len(self.output_keys), -1, 3)
-        condition_jac = np.vstack(condition_rows).reshape(len(self.output_keys), -1)
+            surface_rows.append(grads[0].detach().cpu().numpy().reshape(3, -1).T)
+            condition_rows.append(grads[1].detach().cpu().numpy().reshape(-1))
 
         values = {name: float(values_np[idx]) for idx, name in enumerate(self.output_keys)}
         surface_grads = {
-            name: surface_jac[idx].astype(np.float64, copy=True) for idx, name in enumerate(self.output_keys)
+            name: surface_rows[idx].astype(np.float64, copy=True) for idx, name in enumerate(self.output_keys)
         }
         condition_grads = {
-            name: condition_jac[idx].astype(np.float64, copy=True) for idx, name in enumerate(self.output_keys)
+            name: condition_rows[idx].astype(np.float64, copy=True) for idx, name in enumerate(self.output_keys)
         }
 
         # print(surface_grads, condition_grads)
@@ -475,16 +473,18 @@ class MLSolver(AeroSolver):
 
     def getSurfaceCoordinates(self, groupName='', **kwargs):
 
+        raise NotImplementedError("getSurfaceCoordinates is not implemented for MLSolver. Use the surface mesh directly instead.")
+
         if self.surface_mesh is None:
             raise RuntimeError("A mesh object is required to access surface coordinates.")
-        return self.surface_mesh.reshape(-1, 3)
+        return self.surface_mesh.reshape(3, -1).T
 
     def getSurfaceConnectivity(self, groupName=None):
         _ = groupName
         if self.surface_mesh is None:
             raise RuntimeError("Surface mesh data is required to build connectivity.")
 
-        ni, nj = self.surface_mesh.shape[:2]
+        ni, nj = self.surface_mesh.shape[1:]
         if ni < 2 or nj < 2:
             conn = np.zeros((0, 4), dtype=np.int32)
             face_sizes = np.zeros(0, dtype=np.int32)

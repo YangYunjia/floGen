@@ -152,6 +152,7 @@ class WingAPI():
 
             folders = [d for d in os.listdir(os.path.join(self.saves_folder, model_name)) if os.path.isdir(os.path.join(self.saves_folder, model_name, d))]
             if len(folders) > 0:
+                print(f'loading ensemble model {model_name}... with {len(folders)} members')
                 # this model is ensemble
                 ensemble_members = []
 
@@ -162,6 +163,7 @@ class WingAPI():
                 self.loaded_models.append(self._wrap_ensemble(ensemble_members))
 
             else:
+                print(f'loading single model {model_name}...')
                 # single model
                 model_fram = ModelConfig(os.path.join(self.saves_folder, model_name, 'model_config')).create()
                 load_model_weights(model_fram, os.path.join(self.saves_folder, model_name, save_name), device=self.device)
