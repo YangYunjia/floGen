@@ -1,5 +1,6 @@
 
 import os
+import shutil
 from typing import Optional, Any
 from .operator import transfer_checkpoint_to_save_weights
 
@@ -10,15 +11,42 @@ except Exception:
         "huggingface_hub is required. Install it with: pip install huggingface_hub"
     )
 
+def find_config(folder: str) -> None:
+    '''
+    if model_config is not exist, find it in the corresponding folder (without _Tran...),
+    and return the folder of the config file. 
+    
+    :param folder: Description
+    :type folder: str
+    :return: Description
+    :rtype: str | None
+    '''
+
+    if os.path.exists(os.path.join(folder, 'model_config')):
+        return
+    else:
+        # find the corresponding folder without _Tran
+        parent_folder = os.path.dirname(folder)
+        folder_name = os.path.basename(folder)
+        if '_Tran' in folder_name:
+            base_folder_name = os.path.join(parent_folder, folder_name.split('_Tran')[0])
+            if os.path.exists(os.path.join(base_folder_name, 'model_config')):
+                print(f"model_config found in {base_folder_name}, copy to {folder}")
+                shutil.copy(os.path.join(base_folder_name, 'model_config'), os.path.join(folder, 'model_config'))
+                return
+    
+    raise FileNotFoundError(f"model_config not found in {folder} or its corresponding base folder {base_folder_name}.")
+    
 def upload_model_to_hf(folder: str, epoch: int,
                        repo_id: str, model_name: str,
                        **hub_kwargs: Any) -> None:
     
     # transfer to save weights fie
     transfer_checkpoint_to_save_weights(epoch=epoch, folder=folder)
+    find_config(folder=folder)
 
     api = HfApi()
-    return api.upload_folder(
+    api.upload_folder(
         repo_id=repo_id,
         repo_type="model",
         folder_path=folder,

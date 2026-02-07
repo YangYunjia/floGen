@@ -537,7 +537,8 @@ class SuperWingAPI(WingAPI):
     version_folder = {
         'default': ['ATsurf_L_v1'],
         'finetune': ['ATsurf_L_v1_FT'],
-        'ensemble': ['ATsurf_L_v1_FT_ENS']
+        'ensemble': ['ATsurf_L_v1_FT_ENS'],
+        'scratch': ['ATsurf_L_v1_SC'],
     }
 
     def __init__(self, saves_folder = None, model_version = 'default', device = 'default'):

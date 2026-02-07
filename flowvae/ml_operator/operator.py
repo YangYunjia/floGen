@@ -85,7 +85,7 @@ def load_model_weights(model: nn.Module, weights_path: str, device, set_to_eval:
 
     model.to(device)
     state_dict = torch.load(weights_path, map_location=device)
-    model.load_state_dict(state_dict, strict=True)
+    model.load_state_dict(state_dict, strict=True, weights_only=True)
     if set_to_eval: model.eval()
 
 def transfer_checkpoint_to_save_weights(epoch: int, folder: str):
@@ -162,7 +162,7 @@ class ModelOperator():
                 break
             model.compile(*input_args, **input_kwargs)
         
-        model.to(device)
+            model.to(device)
 
         self._model = model
         self._transfer_output_bias = None
