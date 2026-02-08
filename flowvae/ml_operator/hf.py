@@ -60,6 +60,8 @@ def upload_ensemble_models_to_hf(folder: str, n_runs: int, epoch: int,
                        repo_id: str, model_name: str,
                        **hub_kwargs: Any) -> None:
     
+    find_config(folder=folder + f'_Run0')
+    
     api = HfApi()
     comments_info = []
 
