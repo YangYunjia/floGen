@@ -5,14 +5,17 @@ Interface for MDO lab optimization to call pretrained models
 import argparse
 import ast
 import os
+import json
 from typing import Dict, Iterable, List, Optional, Tuple, Union, Callable
 from abc import abstractmethod
 
+import comm
 import numpy as np
 from mpi4py import MPI
 
 from baseclasses import AeroSolver, AeroProblem
 from pygeo.parameterization import DVGeometry, DVGeometryCustom
+from pyoptsparse import OPT
 
 from flowvae.app.wing.api import WingAPI
 
@@ -504,3 +507,162 @@ class MLSolver(AeroSolver):
         conn = np.asarray(quads, dtype=np.int32)
         face_sizes = np.full(conn.shape[0], 4, dtype=np.int32)
         return conn, face_sizes
+
+
+
+def _jsonify_value(val):
+    if isinstance(val, np.ndarray):
+        if val.shape == ():
+            return float(val)
+        return val.tolist()
+    if isinstance(val, (np.floating, np.integer)):
+        return val.item()
+    if isinstance(val, (list, tuple)):
+        return [_jsonify_value(v) for v in val]
+    return val
+
+def _append_cfd_hist(path, row):
+
+    if not os.path.exists(path):
+        data = {key: [] for key in row}
+    else:
+        with open(path, "r", encoding="ascii") as f:
+            data = json.load(f)
+    for key in row:
+        data.setdefault(key, [])
+        data[key].append(_jsonify_value(row[key]))
+    with open(path, "w", encoding="ascii") as f:
+        json.dump(data, f)
+
+class SolverCombined():
+    """
+    This class is a wrapper to combine the ML solver with a traditional CFD solver (e.g. ADflow) for multi-fidelity optimization. 
+    The user can specify which functions to evaluate with the ML solver and which to evaluate with the CFD solver, and this class 
+    will route the calls accordingly. This allows leveraging the speed of the ML solver for some functions while retaining the 
+    accuracy of the CFD solver for others.
+    
+    """
+
+    def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
+                 cfd_frequency: int = 10, cfd_include_mode: int = 1):
+
+        self.opt = opt
+        self.ap = ap
+        self.comm = comm
+        self.cfd_frequency = cfd_frequency
+        self.cfd_include_mode = cfd_include_mode
+        self.output_dir = output_dir
+        self.enter_CFD = False
+
+    def wrap_cruiseFuncs(self, _ml_solver: Callable, _cfd_solver: Callable, _pre: Optional[Callable] = None, _post: Optional[Callable] = None):
+        '''
+        This function will return a function that is called by the optimizer at each iteration with the current design variables `x`.
+        It combines the ML solver and the CFD solver according to the specified function keys and the optimization iteration number.
+        
+        '''
+        def cruiseFuncs(x):
+ 
+
+            opt_iter = self.opt.iterCounter
+            major_opt_iter = self.opt.majorIterCounter
+
+            if self.comm.rank == 0:
+                print(f'opt iter: {opt_iter}')
+
+            self.ap.setDesignVars(x)
+
+            if _pre is not None:
+                _pre(self.ap, x)
+
+            funcs = _ml_solver(self.ap)
+
+            self.enter_CFD = self.cfd_frequency > 0 and major_opt_iter > 0 and ((major_opt_iter+1) % self.cfd_frequency == 0)
+            self.enter_CFD = self.comm.bcast(self.enter_CFD, root=0)
+
+            if self.enter_CFD:
+                cfd_funcs = {}
+                if self.comm.rank == 0:
+                    print(f"")
+                    print(f">>>>>>>>>>>>>>>>>>>>>>>>")
+                    print(f"Running Solver (evaluation {opt_iter} / major iteration {major_opt_iter})")
+
+                # print(f'Rank {comm.rank}: Starting CFD solve...')
+                cfd_funcs = _cfd_solver(self.ap)
+
+                if self.comm.rank == 0:
+                    row = {"iter": opt_iter, "major_iter": major_opt_iter, "ml_fail": funcs.get("fail", 0.0), "cfd_fail": cfd_funcs.get("fail", 0.0)}
+                    # update ML and CFD predictions to the writting row
+                    for func in self.ap.evalFuncs:
+                        row[f"ml_{self.ap.name}_{func}"] = funcs[f"{self.ap.name}_{func}"]
+                        row[f"cfd_{self.ap.name}_{func}"] = cfd_funcs[f"{self.ap.name}_{func}"]
+
+                    # Store xuser variables into cfd.hst with a consistent prefix
+                    for k, v in x.items():
+                        row[f"xuser_{k}"] = v
+
+                    _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
+                    # simluated_iters.append(opt_iter)
+                    print('current cfd funcs', row)
+
+                if self.cfd_include_mode == 0:
+                    self.ap.solveFailed = False
+                    self.ap.fatalFail = False
+                elif self.cfd_include_mode == 1:
+                    pass # to update fail information
+                elif self.cfd_include_mode == 2:
+                    # use CFD solver results to replace ML's
+                    for func in self.ap.evalFuncs:
+                        funcs[f"{self.ap.name}_{func}"] = cfd_funcs[f"{self.ap.name}_{func}"]
+                    if "fail" in cfd_funcs:
+                        funcs["fail"] = cfd_funcs["fail"]
+            # input()
+            return funcs
+        
+        return cruiseFuncs
+    
+    def wrap_cruiseFuncsSens(self, _ml_solver: Callable, _cfd_solver: Callable, _pre: Optional[Callable] = None, _post: Optional[Callable] = None):
+        '''
+        This function will return a function that is called by the optimizer at each iteration with the current design variables `x`.
+        It combines the ML solver and the CFD solver according to the specified function keys and the optimization iteration number.
+        
+        '''
+
+        def cruiseFuncsSens(x, funcs):
+            
+            if _pre is not None:
+                _pre(self.ap, x, funcs)
+
+            funcsSens = _ml_solver(self.ap, x=x, funcs=funcs)
+
+            if self.cfd_include_mode == 0:
+                print(f'Skip Sen ({self.cfd_include_mode})')
+            elif self.cfd_include_mode == 1:
+                print(f'Skip Sen ({self.cfd_include_mode})')
+            elif self.cfd_include_mode == 2:
+                print(f'Sen ({self.cfd_include_mode}), (enter_CFD = {self.enter_CFD})')
+                if self.enter_CFD:
+
+                    cfd_funcsSens = _cfd_solver(self.ap, x=x, funcs=funcs)
+
+                    if self.comm.rank == 0: 
+                        print("cfd_funcsSens keys:", list(cfd_funcsSens.keys()))
+
+                        row = {"ml_sen_fail": funcsSens.get("fail", 0.0), "cfd_sen_fail": cfd_funcsSens.get("fail", 0.0)}
+                        for func in self.ap.evalFuncs:
+                            row[f"ml_sen_{self.ap.name}_{func}"] = funcsSens[f"{self.ap.name}_{func}"]
+                            row[f"cfd_sen_{self.ap.name}_{func}"] = cfd_funcsSens[f"{self.ap.name}_{func}"]
+                        
+                        print('current cfd recording funcsSens', row)
+                        _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
+
+                    # Update funcsSens with CFD sensitivities
+                    for func in self.ap.evalFuncs:
+                        funcsSens[f"{self.ap.name}_{func}"] = cfd_funcsSens[f"{self.ap.name}_{func}"]
+                    if "fail" in cfd_funcsSens:
+                        funcsSens["fail"] = cfd_funcsSens["fail"]
+
+            # if comm.rank == 0:
+            #     print('current cfd funcs sen', funcsSens)
+            return funcsSens
+        
+        return cruiseFuncsSens
