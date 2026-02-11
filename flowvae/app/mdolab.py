@@ -6,8 +6,12 @@ import argparse
 import ast
 import os
 import json
+import sys
+import traceback
+from contextlib import contextmanager
 from typing import Dict, Iterable, List, Optional, Tuple, Union, Callable
 from abc import abstractmethod
+from collections import OrderedDict
 
 import comm
 import numpy as np
@@ -515,8 +519,12 @@ def _jsonify_value(val):
         if val.shape == ():
             return float(val)
         return val.tolist()
+    if isinstance(val, (np.bool_, bool)):
+        return bool(val)
     if isinstance(val, (np.floating, np.integer)):
         return val.item()
+    if isinstance(val, dict):
+        return {k: _jsonify_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):
         return [_jsonify_value(v) for v in val]
     return val
@@ -533,6 +541,21 @@ def _append_cfd_hist(path, row):
         data[key].append(_jsonify_value(row[key]))
     with open(path, "w", encoding="ascii") as f:
         json.dump(data, f)
+
+@contextmanager
+def _rank0_guard(comm):
+    is_rank0 = (comm is None) or (comm.rank == 0)
+    if not is_rank0:
+        yield False
+        return
+    try:
+        yield True
+    except Exception:
+        traceback.print_exc()
+        sys.stderr.flush()
+        if comm is not None:
+            comm.Abort(1)
+        raise
 
 class SolverCombined():
     """
@@ -553,6 +576,18 @@ class SolverCombined():
         self.cfd_include_mode = cfd_include_mode
         self.output_dir = output_dir
         self.enter_CFD = False
+        # First-order correction model (CFD - ML) updated at each CFD run
+        self._correction: dict = None
+
+    @staticmethod
+    def update_funcs(ap: AeroProblem, ml_funcs, cfd_funcs):
+        
+        for func in ap.evalFuncs:
+            ml_funcs[f"{ap.name}_{func}"] = cfd_funcs[f"{ap.name}_{func}"]
+        if "fail" in cfd_funcs:
+            ml_funcs["fail"] = cfd_funcs["fail"]
+
+        return ml_funcs
 
     def wrap_cruiseFuncs(self, _ml_solver: Callable, _cfd_solver: Callable, _pre: Optional[Callable] = None, _post: Optional[Callable] = None):
         '''
@@ -566,8 +601,9 @@ class SolverCombined():
             opt_iter = self.opt.iterCounter
             major_opt_iter = self.opt.majorIterCounter
 
-            if self.comm.rank == 0:
-                print(f'opt iter: {opt_iter}')
+            with _rank0_guard(self.comm) as is_rank0:
+                if is_rank0:
+                    print(f'opt iter: {opt_iter}')
 
             self.ap.setDesignVars(x)
 
@@ -581,28 +617,30 @@ class SolverCombined():
 
             if self.enter_CFD:
                 cfd_funcs = {}
-                if self.comm.rank == 0:
-                    print(f"")
-                    print(f">>>>>>>>>>>>>>>>>>>>>>>>")
-                    print(f"Running Solver (evaluation {opt_iter} / major iteration {major_opt_iter})")
+                with _rank0_guard(self.comm) as is_rank0:
+                    if is_rank0:
+                        print(f"")
+                        print(f">>>>>>>>>>>>>>>>>>>>>>>>")
+                        print(f"Running Solver (evaluation {opt_iter} / major iteration {major_opt_iter})")
 
                 # print(f'Rank {comm.rank}: Starting CFD solve...')
                 cfd_funcs = _cfd_solver(self.ap)
 
-                if self.comm.rank == 0:
-                    row = {"iter": opt_iter, "major_iter": major_opt_iter, "ml_fail": funcs.get("fail", 0.0), "cfd_fail": cfd_funcs.get("fail", 0.0)}
-                    # update ML and CFD predictions to the writting row
-                    for func in self.ap.evalFuncs:
-                        row[f"ml_{self.ap.name}_{func}"] = funcs[f"{self.ap.name}_{func}"]
-                        row[f"cfd_{self.ap.name}_{func}"] = cfd_funcs[f"{self.ap.name}_{func}"]
+                with _rank0_guard(self.comm) as is_rank0:
+                    if is_rank0:
+                        row = {"iter": opt_iter, "major_iter": major_opt_iter, "ml_fail": funcs.get("fail", 0.0), "cfd_fail": cfd_funcs.get("fail", 0.0)}
+                        # update ML and CFD predictions to the writting row
+                        for func in self.ap.evalFuncs:
+                            row[f"ml_{self.ap.name}_{func}"] = funcs[f"{self.ap.name}_{func}"]
+                            row[f"cfd_{self.ap.name}_{func}"] = cfd_funcs[f"{self.ap.name}_{func}"]
 
-                    # Store xuser variables into cfd.hst with a consistent prefix
-                    for k, v in x.items():
-                        row[f"xuser_{k}"] = v
+                        # Store xuser variables into cfd.hst with a consistent prefix
+                        for k, v in x.items():
+                            row[f"xuser_{k}"] = v
 
-                    _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
-                    # simluated_iters.append(opt_iter)
-                    print('current cfd funcs', row)
+                        _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
+                        # simluated_iters.append(opt_iter)
+                        print('current cfd funcs', row)
 
                 if self.cfd_include_mode == 0:
                     self.ap.solveFailed = False
@@ -611,10 +649,31 @@ class SolverCombined():
                     pass # to update fail information
                 elif self.cfd_include_mode == 2:
                     # use CFD solver results to replace ML's
+                    print(f"rank {self.comm.rank} enter 2")
+                    funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
+                elif self.cfd_include_mode == 3:
+                    # build first-order correction model and return CFD results
+                    self._correction = {
+                        "x": x,
+                        "funcs": {},
+                        "funcSens": OrderedDict()
+                    }
                     for func in self.ap.evalFuncs:
-                        funcs[f"{self.ap.name}_{func}"] = cfd_funcs[f"{self.ap.name}_{func}"]
-                    if "fail" in cfd_funcs:
-                        funcs["fail"] = cfd_funcs["fail"]
+                        key = f"{self.ap.name}_{func}"
+                        if key in cfd_funcs and key in funcs:
+                            self._correction["funcs"][key] = cfd_funcs[key] - funcs[key]
+                    funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
+
+            else:
+                # print(f'Mode: {self.cfd_include_mode}, _correction is None?: {bool(self._correction)}')
+                if self.cfd_include_mode == 3 and self._correction:
+                    # apply correction model to ML results between CFD updates
+                    for func in self.ap.evalFuncs:
+                        key = f"{self.ap.name}_{func}"
+                        funcs[key] += self._correction["funcs"][key]
+                        for dv, delta in self._correction["funcSens"][key].items():
+                            # print(dv, x[dv].shape, self._correction["x"][dv].shape, delta.shape)
+                            funcs[key] += np.dot(delta, (x[dv] - self._correction["x"][dv]))
             # input()
             return funcs
         
@@ -634,32 +693,51 @@ class SolverCombined():
 
             funcsSens = _ml_solver(self.ap, x=x, funcs=funcs)
 
-            if self.cfd_include_mode == 0:
-                print(f'Skip Sen ({self.cfd_include_mode})')
-            elif self.cfd_include_mode == 1:
-                print(f'Skip Sen ({self.cfd_include_mode})')
-            elif self.cfd_include_mode == 2:
-                print(f'Sen ({self.cfd_include_mode}), (enter_CFD = {self.enter_CFD})')
+            if self.cfd_include_mode in [0, 1]:
+                pass
+            else:
                 if self.enter_CFD:
+
+                    with _rank0_guard(self.comm) as is_rank0:
+                        if is_rank0:
+                            print(f"")
+                            print(f">>>>>>>>>>>>>>>>>>>>>>>>")
+                            print(f"Running Solver Adjoint")
 
                     cfd_funcsSens = _cfd_solver(self.ap, x=x, funcs=funcs)
 
-                    if self.comm.rank == 0: 
-                        print("cfd_funcsSens keys:", list(cfd_funcsSens.keys()))
+                    with _rank0_guard(self.comm) as is_rank0:
+                        if is_rank0:
+                            row = {"ml_sen_fail": funcsSens.get("fail", 0.0), "cfd_sen_fail": cfd_funcsSens.get("fail", 0.0)}
+                            for func in self.ap.evalFuncs:
+                                row[f"ml_sen_{self.ap.name}_{func}"] = funcsSens[f"{self.ap.name}_{func}"]
+                                row[f"cfd_sen_{self.ap.name}_{func}"] = cfd_funcsSens[f"{self.ap.name}_{func}"]
+                            
+                            print('current cfd recording funcsSens', row)
+                            _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
 
-                        row = {"ml_sen_fail": funcsSens.get("fail", 0.0), "cfd_sen_fail": cfd_funcsSens.get("fail", 0.0)}
+                    if self.cfd_include_mode == 2:
+                        # Update funcsSens with CFD sensitivities
+                        funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
+
+                    elif self.cfd_include_mode == 3:
+
                         for func in self.ap.evalFuncs:
-                            row[f"ml_sen_{self.ap.name}_{func}"] = funcsSens[f"{self.ap.name}_{func}"]
-                            row[f"cfd_sen_{self.ap.name}_{func}"] = cfd_funcsSens[f"{self.ap.name}_{func}"]
-                        
-                        print('current cfd recording funcsSens', row)
-                        _append_cfd_hist(os.path.join(self.output_dir, "cfd.hst"), row)
+                            key = f"{self.ap.name}_{func}"
+                            # for initialization
+                            if key not in self._correction["funcSens"]:
+                                self._correction["funcSens"][key] = OrderedDict()
+                            for dv, cfd_val in cfd_funcsSens[key].items():
+                                self._correction["funcSens"][key][dv] = cfd_val - funcsSens[key][dv]
+                        # Ensure funcsSens at CFD point matches high-fidelity results
+                        funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
 
-                    # Update funcsSens with CFD sensitivities
-                    for func in self.ap.evalFuncs:
-                        funcsSens[f"{self.ap.name}_{func}"] = cfd_funcsSens[f"{self.ap.name}_{func}"]
-                    if "fail" in cfd_funcsSens:
-                        funcsSens["fail"] = cfd_funcsSens["fail"]
+                else:
+                    if self.cfd_include_mode == 3 and self._correction:
+                        for func in self.ap.evalFuncs:
+                            key = f"{self.ap.name}_{func}"
+                            for dv, delta in self._correction["funcSens"][key].items():
+                                funcsSens[key][dv] += delta
 
             # if comm.rank == 0:
             #     print('current cfd funcs sen', funcsSens)
