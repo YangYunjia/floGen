@@ -533,8 +533,8 @@ class SuperWingAPI(WingAPI):
     models = ['ATsurf_L', 'ATsurf_L_v1', 
               'ATsurf_L_v1_FT', 'ATsurf_L_v1_FT_ENS', 
               'ATsurf_L_v1_FT20', 'ATsurf_L_v1_FT20_ENS', 
-              'ATsurf_L_v1_SC']
-    model_save_names = ['best_model_weights' for _ in range(7)]
+              'ATsurf_L_v1_SC', 'ATsurf_L_v1_SC20', 'ATsurf_L_v1_SCFULL']
+    model_save_names = ['best_model_weights' for _ in range(9)]
     hf_repo_id = 'yunplus/AeroTransformer'
 
     version_folder = {
@@ -544,6 +544,8 @@ class SuperWingAPI(WingAPI):
         'finetune20': ['ATsurf_L_v1_FT20'],
         'ensemble20': ['ATsurf_L_v1_FT20_ENS'],
         'scratch': ['ATsurf_L_v1_SC'],
+        'scratch20': ['ATsurf_L_v1_SC20'],
+        'scratchfull': ['ATsurf_L_v1_SCFULL'],
     }
 
     def __init__(self, saves_folder = None, model_version = 'default', device = 'default'):

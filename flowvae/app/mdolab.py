@@ -567,13 +567,21 @@ class SolverCombined():
     """
 
     def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
-                 cfd_frequency: int = 10, cfd_include_mode: int = 1):
+                 cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1):
+        '''
+
+        majorIter updated at end of iteration
+        0, 1, .... cfd_f-1, cfd_f, cfd_f+1, ... cfd_f+cfd_i
+        ML         ML       ML     CFD          CFD         
+
+        '''
 
         self.opt = opt
         self.ap = ap
         self.comm = comm
         self.cfd_frequency = cfd_frequency
         self.cfd_include_mode = cfd_include_mode
+        self.cfd_iter = cfd_iter
         self.output_dir = output_dir
         self.enter_CFD = False
         # First-order correction model (CFD - ML) updated at each CFD run
@@ -612,7 +620,10 @@ class SolverCombined():
 
             funcs = _ml_solver(self.ap)
 
-            self.enter_CFD = self.cfd_frequency > 0 and major_opt_iter > 0 and ((major_opt_iter+1) % self.cfd_frequency == 0)
+            trigger_portion = (major_opt_iter + 1) % (self.cfd_frequency + self.cfd_iter)
+            self.enter_CFD = ((self.cfd_iter <= 0) and (major_opt_iter+1 >= self.cfd_frequency)) or \
+                             (self.cfd_iter > 0 and self.cfd_frequency > 0 and trigger_portion >= self.cfd_frequency)
+
             self.enter_CFD = self.comm.bcast(self.enter_CFD, root=0)
 
             if self.enter_CFD:
@@ -673,7 +684,11 @@ class SolverCombined():
                         funcs[key] += self._correction["funcs"][key]
                         for dv, delta in self._correction["funcSens"][key].items():
                             # print(dv, x[dv].shape, self._correction["x"][dv].shape, delta.shape)
-                            funcs[key] += np.dot(delta, (x[dv] - self._correction["x"][dv]))
+                            contrib = np.dot(delta, (x[dv] - self._correction["x"][dv]))
+                            if isinstance(contrib, np.ndarray) and contrib.shape in [(), (1,)]:
+                                contrib = float(contrib.reshape(-1)[0])
+                            funcs[key] += contrib
+
             # input()
             return funcs
         
