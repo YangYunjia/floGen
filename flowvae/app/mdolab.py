@@ -565,6 +565,13 @@ class SolverCombined():
     accuracy of the CFD solver for others.
     
     """
+    include_modes = [
+        "just have a verfication",
+        "CFD fail signal will be passed to optimizor",
+        "single point replacement",
+        "linear correction (with gradient to value)",
+        "linear correction (without gradient to value)"
+    ]
 
     def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
                  cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1):
@@ -586,6 +593,14 @@ class SolverCombined():
         self.enter_CFD = False
         # First-order correction model (CFD - ML) updated at each CFD run
         self._correction: dict = None
+
+        if self.comm.rank == 0:
+            print("==============================")
+            print("ML-CFD combined solver defined")
+            print(f"Current combination mode = {cfd_include_mode}")
+            print(f"    -> {SolverCombined.include_modes[cfd_include_mode]}")
+            print(f"ML every {cfd_frequency:d} / {(cfd_frequency + cfd_iter):d}; CFD every {cfd_iter:d} / {(cfd_frequency + cfd_iter):d}")
+            print("==============================")
 
     @staticmethod
     def update_funcs(ap: AeroProblem, ml_funcs, cfd_funcs):
@@ -660,9 +675,9 @@ class SolverCombined():
                     pass # to update fail information
                 elif self.cfd_include_mode == 2:
                     # use CFD solver results to replace ML's
-                    print(f"rank {self.comm.rank} enter 2")
+                    # print(f"rank {self.comm.rank} enter 2")
                     funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
-                elif self.cfd_include_mode == 3:
+                elif self.cfd_include_mode >= 3:
                     # build first-order correction model and return CFD results
                     self._correction = {
                         "x": x,
@@ -677,17 +692,19 @@ class SolverCombined():
 
             else:
                 # print(f'Mode: {self.cfd_include_mode}, _correction is None?: {bool(self._correction)}')
-                if self.cfd_include_mode == 3 and self._correction:
+                if self.cfd_include_mode in [3, 4] and self._correction:
                     # apply correction model to ML results between CFD updates
                     for func in self.ap.evalFuncs:
                         key = f"{self.ap.name}_{func}"
                         funcs[key] += self._correction["funcs"][key]
-                        for dv, delta in self._correction["funcSens"][key].items():
-                            # print(dv, x[dv].shape, self._correction["x"][dv].shape, delta.shape)
-                            contrib = np.dot(delta, (x[dv] - self._correction["x"][dv]))
-                            if isinstance(contrib, np.ndarray) and contrib.shape in [(), (1,)]:
-                                contrib = float(contrib.reshape(-1)[0])
-                            funcs[key] += contrib
+
+                        if self.cfd_include_mode == 3:
+                            for dv, delta in self._correction["funcSens"][key].items():
+                                # print(dv, x[dv].shape, self._correction["x"][dv].shape, delta.shape)
+                                contrib = np.dot(delta, (x[dv] - self._correction["x"][dv]))
+                                if isinstance(contrib, np.ndarray) and contrib.shape in [(), (1,)]:
+                                    contrib = float(contrib.reshape(-1)[0])
+                                funcs[key] += contrib
 
             # input()
             return funcs
@@ -735,7 +752,7 @@ class SolverCombined():
                         # Update funcsSens with CFD sensitivities
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
 
-                    elif self.cfd_include_mode == 3:
+                    elif self.cfd_include_mode >= 3:
 
                         for func in self.ap.evalFuncs:
                             key = f"{self.ap.name}_{func}"
@@ -748,7 +765,7 @@ class SolverCombined():
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
 
                 else:
-                    if self.cfd_include_mode == 3 and self._correction:
+                    if self.cfd_include_mode in [3,4] and self._correction:
                         for func in self.ap.evalFuncs:
                             key = f"{self.ap.name}_{func}"
                             for dv, delta in self._correction["funcSens"][key].items():
