@@ -9,7 +9,7 @@ import json
 import sys
 import traceback
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, Callable
 from abc import abstractmethod
 from collections import OrderedDict
 
@@ -557,6 +557,224 @@ def _rank0_guard(comm):
             comm.Abort(1)
         raise
 
+class _OnlineGEKDeltaModel:
+    """
+    Online GEK model for delta = CFD - ML using function values and gradients.
+    """
+
+    def __init__(self, ap: AeroProblem, max_points: int = 20, max_dims: int = 40, nugget: float = 1e-8):
+        self.ap = ap
+        self.max_points = max(2, int(max_points))
+        self.max_dims = max(1, int(max_dims))
+        self.nugget = float(nugget)
+
+        self._layout_ready = False
+        self._dv_names: List[str] = []
+        self._dv_shapes: Dict[str, Tuple[int, ...]] = {}
+        self._offsets: Dict[str, Tuple[int, int]] = {}
+        self._full_dim = 0
+        self._active_idx = None
+
+        self._X: List[np.ndarray] = []
+        self._Y: Dict[str, List[float]] = OrderedDict()
+        self._G: Dict[str, List[np.ndarray]] = OrderedDict()
+        self._alpha: Dict[str, np.ndarray] = OrderedDict()
+        self._Xmat = None
+        self._ell = None
+        self._n_train = 0
+        self._fitted = False
+        self._just_initialized_layout = False
+
+    def has_model(self) -> bool:
+        return self._fitted and self._n_train >= 2 and self._Xmat is not None
+
+    def _init_layout(self, x: Dict[str, Any], sens_delta_by_func: Dict[str, Dict[str, Any]]):
+        self._dv_names = list(x.keys())
+        pos = 0
+        for dv in self._dv_names:
+            arr = np.asarray(x[dv], dtype=float)
+            self._dv_shapes[dv] = arr.shape
+            self._offsets[dv] = (pos, pos + arr.size)
+            pos += arr.size
+        self._full_dim = pos
+
+        if self._full_dim <= self.max_dims:
+            self._active_idx = np.arange(self._full_dim, dtype=np.int64)
+        else:
+            score = np.zeros((self._full_dim,), dtype=float)
+            for _, grad_dict in sens_delta_by_func.items():
+                score += np.abs(self._flatten_grad_full(grad_dict))
+            if np.all(score <= 0.0):
+                self._active_idx = np.arange(self.max_dims, dtype=np.int64)
+            else:
+                self._active_idx = np.argsort(score)[-self.max_dims:]
+                self._active_idx.sort()
+        self._layout_ready = True
+        self._just_initialized_layout = True
+
+    def _flatten_x_full(self, x: Dict[str, Any]) -> np.ndarray:
+        flat = np.zeros((self._full_dim,), dtype=float)
+        for dv in self._dv_names:
+            s0, s1 = self._offsets[dv]
+            flat[s0:s1] = np.asarray(x[dv], dtype=float).reshape(-1)
+        return flat
+
+    def _flatten_grad_full(self, grad_dict: Dict[str, Any]) -> np.ndarray:
+        flat = np.zeros((self._full_dim,), dtype=float)
+        for dv in self._dv_names:
+            if dv not in grad_dict:
+                continue
+            s0, s1 = self._offsets[dv]
+            flat[s0:s1] = np.asarray(grad_dict[dv], dtype=float).reshape(-1)
+        return flat
+
+    def _flatten_x(self, x: Dict[str, Any]) -> np.ndarray:
+        return self._flatten_x_full(x)[self._active_idx]
+
+    def _flatten_grad(self, grad_dict: Dict[str, Any]) -> np.ndarray:
+        return self._flatten_grad_full(grad_dict)[self._active_idx]
+
+    def _unflatten_grad(self, grad_red: np.ndarray) -> OrderedDict:
+        grad_full = np.zeros((self._full_dim,), dtype=float)
+        grad_full[self._active_idx] = grad_red
+        out = OrderedDict()
+        for dv in self._dv_names:
+            s0, s1 = self._offsets[dv]
+            out[dv] = grad_full[s0:s1].reshape(self._dv_shapes[dv]).copy()
+        return out
+
+    def _build_covariance(self, X: np.ndarray, ell: np.ndarray) -> np.ndarray:
+        n, d = X.shape
+        nd = n * d
+        diff = X[:, None, :] - X[None, :, :]
+        inv_l2 = 1.0 / np.maximum(ell * ell, 1e-16)
+        kff = np.exp(-0.5 * np.sum((diff * np.sqrt(inv_l2)[None, None, :]) ** 2, axis=2))
+
+        kfg = np.zeros((n, nd), dtype=float)
+        for j in range(n):
+            b = j * d
+            kfg[:, b:b + d] = kff[:, [j]] * (diff[:, j, :] * inv_l2[None, :])
+
+        kgg = np.zeros((nd, nd), dtype=float)
+        eye_l = np.diag(inv_l2)
+        for i in range(n):
+            bi = i * d
+            for j in range(n):
+                bj = j * d
+                rij = diff[i, j, :]
+                kgg[bi:bi + d, bj:bj + d] = kff[i, j] * (eye_l - np.outer(rij * inv_l2, rij * inv_l2))
+
+        K = np.vstack([np.hstack([kff, kfg]), np.hstack([kfg.T, kgg])])
+        K[np.diag_indices_from(K)] += self.nugget
+        return K
+
+    def _fit(self):
+        self._fitted = False
+        self._alpha = OrderedDict()
+        n = len(self._X)
+        self._n_train = n
+        if n < 2:
+            return
+
+        X = np.vstack(self._X)
+        ell = np.where(np.std(X, axis=0) > 1e-12, np.std(X, axis=0), 1.0)
+        K = self._build_covariance(X, ell)
+
+        for func in self.ap.evalFuncs:
+            key = f"{self.ap.name}_{func}"
+            if key not in self._Y or key not in self._G:
+                continue
+            if len(self._Y[key]) != n or len(self._G[key]) != n:
+                continue
+            y = np.asarray(self._Y[key], dtype=float)
+            g = np.vstack(self._G[key]).reshape(-1)
+            obs = np.concatenate([y, g])
+            try:
+                self._alpha[key] = np.linalg.solve(K, obs)
+            except np.linalg.LinAlgError:
+                self._alpha[key] = np.linalg.lstsq(K, obs, rcond=1e-12)[0]
+
+        self._Xmat = X
+        self._ell = ell
+        self._fitted = len(self._alpha) > 0
+
+    def add_sample(self, x: Dict[str, Any], func_delta: Dict[str, float], sens_delta: Dict[str, Dict[str, Any]]):
+        if not self._layout_ready:
+            self._init_layout(x, sens_delta)
+
+        self._X.append(self._flatten_x(x))
+        if len(self._X) > self.max_points:
+            self._X.pop(0)
+
+        for func in self.ap.evalFuncs:
+            key = f"{self.ap.name}_{func}"
+            self._Y.setdefault(key, [])
+            self._G.setdefault(key, [])
+            self._Y[key].append(float(func_delta.get(key, 0.0)))
+            self._G[key].append(self._flatten_grad(sens_delta.get(key, {})))
+            if len(self._Y[key]) > self.max_points:
+                self._Y[key].pop(0)
+            if len(self._G[key]) > self.max_points:
+                self._G[key].pop(0)
+
+        self._fit()
+
+    def model_info(self) -> Dict[str, Any]:
+        red_dim = int(self._active_idx.size) if self._active_idx is not None else 0
+        n = int(self._n_train)
+        n_obs = n * (1 + red_dim)
+        return {
+            "n_train": n,
+            "full_dim": int(self._full_dim),
+            "red_dim": red_dim,
+            "n_obs": n_obs,
+            "fitted_funcs": len(self._alpha),
+            "layout_initialized": bool(self._just_initialized_layout),
+        }
+
+    def consume_layout_init_flag(self) -> bool:
+        flag = self._just_initialized_layout
+        self._just_initialized_layout = False
+        return flag
+
+    def predict(self, x: Dict[str, Any]):
+        if not self.has_model():
+            return None, None
+
+        xq = self._flatten_x(x)
+        X = self._Xmat
+        ell = self._ell
+        n, d = X.shape
+        diff = X - xq[None, :]
+        inv_l2 = 1.0 / np.maximum(ell * ell, 1e-16)
+        kff = np.exp(-0.5 * np.sum((diff * np.sqrt(inv_l2)[None, :]) ** 2, axis=1))
+
+        k_grad_train = (xq[None, :] - X) * inv_l2[None, :] * kff[:, None]
+        ks_f = np.concatenate([kff, k_grad_train.reshape(-1)])
+
+        pred_f = OrderedDict()
+        pred_g = OrderedDict()
+        eye_l = np.diag(inv_l2)
+        for func in self.ap.evalFuncs:
+            key = f"{self.ap.name}_{func}"
+            if key not in self._alpha:
+                continue
+            alpha = self._alpha[key]
+            pred_f[key] = float(np.dot(ks_f, alpha))
+
+            grad_red = np.zeros((d,), dtype=float)
+            for b in range(d):
+                kf_gb = diff[:, b] * inv_l2[b] * kff
+                kg_gb = np.zeros((n, d), dtype=float)
+                for i in range(n):
+                    ri = X[i] - xq
+                    kg_gb[i, :] = kff[i] * (eye_l[:, b] - (ri * inv_l2) * (ri[b] * inv_l2[b]))
+                ks_g = np.concatenate([kf_gb, kg_gb.reshape(-1)])
+                grad_red[b] = float(np.dot(ks_g, alpha))
+            pred_g[key] = self._unflatten_grad(grad_red)
+
+        return pred_f, pred_g
+
 class SolverCombined():
     """
     This class is a wrapper to combine the ML solver with a traditional CFD solver (e.g. ADflow) for multi-fidelity optimization. 
@@ -565,16 +783,19 @@ class SolverCombined():
     accuracy of the CFD solver for others.
     
     """
-    include_modes = [
-        "just have a verfication",
-        "CFD fail signal will be passed to optimizor",
-        "single point replacement",
-        "linear correction (with gradient to value)",
-        "linear correction (without gradient to value)"
-    ]
+    include_modes = {
+        0: "just have a verfication",
+        1: "CFD fail signal will be passed to optimizor",
+        2: "single point replacement",
+        3: "linear correction (with gradient to value)",
+        4: "linear correction (without gradient to value)",
+        10: "online GEK correction (train on CFD-ML delta from funcs + funcSens)",
+    }
 
     def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
-                 cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1):
+                 cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1,
+                 gek_max_points: int = 100, gek_max_dims: int = 40, gek_nugget: float = 1e-8,
+                 gek_log_interval: int = 1):
         '''
 
         majorIter updated at end of iteration
@@ -593,14 +814,30 @@ class SolverCombined():
         self.enter_CFD = False
         # First-order correction model (CFD - ML) updated at each CFD run
         self._correction: dict = None
+        # online GEK correction
+        self._gek = _OnlineGEKDeltaModel(ap=self.ap, max_points=gek_max_points, max_dims=gek_max_dims, nugget=gek_nugget)
+        self._pending_gek = None
+        self._gek_log_interval = max(1, int(gek_log_interval))
+        self._gek_predict_counter = 0
+        self._gek_not_ready_warned = False
 
         if self.comm.rank == 0:
             print("==============================")
             print("ML-CFD combined solver defined")
             print(f"Current combination mode = {cfd_include_mode}")
-            print(f"    -> {SolverCombined.include_modes[cfd_include_mode]}")
+            print(f"    -> {SolverCombined.include_modes.get(cfd_include_mode, 'unknown mode')}")
             print(f"ML every {cfd_frequency:d} / {(cfd_frequency + cfd_iter):d}; CFD every {cfd_iter:d} / {(cfd_frequency + cfd_iter):d}")
+            if cfd_include_mode == 10:
+                print(f"GEK settings: max_points={gek_max_points}, max_dims={gek_max_dims}, nugget={gek_nugget:.1e}, log_interval={self._gek_log_interval}")
             print("==============================")
+
+    @staticmethod
+    def _copy_design_vars(x: Dict[str, Any]) -> OrderedDict:
+        copied = OrderedDict()
+        for k, v in x.items():
+            arr = np.asarray(v, dtype=float)
+            copied[k] = float(arr.reshape(-1)[0]) if arr.size == 1 else arr.copy()
+        return copied
 
     @staticmethod
     def update_funcs(ap: AeroProblem, ml_funcs, cfd_funcs):
@@ -677,7 +914,15 @@ class SolverCombined():
                     # use CFD solver results to replace ML's
                     # print(f"rank {self.comm.rank} enter 2")
                     funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
-                elif self.cfd_include_mode >= 3:
+                elif self.cfd_include_mode == 10:
+                    # For GEK training, keep both ML and CFD values at the CFD point.
+                    self._pending_gek = {
+                        "x": self._copy_design_vars(x),
+                        "ml_funcs": OrderedDict((f"{self.ap.name}_{func}", funcs[f"{self.ap.name}_{func}"]) for func in self.ap.evalFuncs),
+                        "cfd_funcs": OrderedDict((f"{self.ap.name}_{func}", cfd_funcs[f"{self.ap.name}_{func}"]) for func in self.ap.evalFuncs),
+                    }
+                    funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
+                elif self.cfd_include_mode in [3, 4]:
                     # build first-order correction model and return CFD results
                     self._correction = {
                         "x": x,
@@ -705,6 +950,28 @@ class SolverCombined():
                                 if isinstance(contrib, np.ndarray) and contrib.shape in [(), (1,)]:
                                     contrib = float(contrib.reshape(-1)[0])
                                 funcs[key] += contrib
+                elif self.cfd_include_mode == 10:
+                    pred_funcs, _ = self._gek.predict(x)
+                    if pred_funcs is not None:
+                        self._gek_predict_counter += 1
+                        with _rank0_guard(self.comm) as is_rank0:
+                            if is_rank0 and (self._gek_predict_counter % self._gek_log_interval == 0):
+                                msg = [f"GEK predict #{self._gek_predict_counter}"]
+                                for func in self.ap.evalFuncs:
+                                    key = f"{self.ap.name}_{func}"
+                                    if key in pred_funcs:
+                                        msg.append(f"{func}:d={pred_funcs[key]:+.6e}")
+                                print(" | ".join(msg))
+                        for func in self.ap.evalFuncs:
+                            key = f"{self.ap.name}_{func}"
+                            if key in pred_funcs and key in funcs:
+                                funcs[key] += pred_funcs[key]
+                    else:
+                        with _rank0_guard(self.comm) as is_rank0:
+                            if is_rank0 and not self._gek_not_ready_warned:
+                                info = self._gek.model_info()
+                                print(f"GEK predict skipped: model not ready (samples={info['n_train']}, need >=2).")
+                                self._gek_not_ready_warned = True
 
             # input()
             return funcs
@@ -751,6 +1018,30 @@ class SolverCombined():
                     if self.cfd_include_mode == 2:
                         # Update funcsSens with CFD sensitivities
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
+                    elif self.cfd_include_mode == 10:
+                        if self._pending_gek is not None:
+                            func_delta = OrderedDict()
+                            sens_delta = OrderedDict()
+                            for func in self.ap.evalFuncs:
+                                key = f"{self.ap.name}_{func}"
+                                func_delta[key] = self._pending_gek["cfd_funcs"][key] - self._pending_gek["ml_funcs"][key]
+                                sens_delta[key] = OrderedDict()
+                                for dv, cfd_val in cfd_funcsSens[key].items():
+                                    sens_delta[key][dv] = cfd_val - funcsSens[key][dv]
+                            self._gek.add_sample(self._pending_gek["x"], func_delta, sens_delta)
+                            with _rank0_guard(self.comm) as is_rank0:
+                                if is_rank0:
+                                    info = self._gek.model_info()
+                                    if self._gek.consume_layout_init_flag():
+                                        print(f"GEK layout initialized: full_dim={info['full_dim']}, reduced_dim={info['red_dim']}.")
+                                    print(
+                                        "GEK correction updated: "
+                                        f"samples={info['n_train']}, obs={info['n_obs']}, "
+                                        f"fitted_funcs={info['fitted_funcs']}/{len(self.ap.evalFuncs)}"
+                                    )
+                                    self._gek_not_ready_warned = False
+                        self._pending_gek = None
+                        funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
 
                     elif self.cfd_include_mode >= 3:
 
@@ -770,6 +1061,28 @@ class SolverCombined():
                             key = f"{self.ap.name}_{func}"
                             for dv, delta in self._correction["funcSens"][key].items():
                                 funcsSens[key][dv] += delta
+                    elif self.cfd_include_mode == 10:
+                        _, pred_sens = self._gek.predict(x)
+                        if pred_sens is not None:
+                            self._gek_predict_counter += 1
+                            with _rank0_guard(self.comm) as is_rank0:
+                                if is_rank0 and (self._gek_predict_counter % self._gek_log_interval == 0):
+                                    norms = []
+                                    for func in self.ap.evalFuncs:
+                                        key = f"{self.ap.name}_{func}"
+                                        if key in pred_sens:
+                                            norm_val = 0.0
+                                            for _, g in pred_sens[key].items():
+                                                norm_val += float(np.linalg.norm(np.asarray(g, dtype=float)))
+                                            norms.append(f"{func}:|dg|={norm_val:.3e}")
+                                    print("GEK grad predict | " + " | ".join(norms))
+                            for func in self.ap.evalFuncs:
+                                key = f"{self.ap.name}_{func}"
+                                if key not in pred_sens or key not in funcsSens:
+                                    continue
+                                for dv, dval in pred_sens[key].items():
+                                    if dv in funcsSens[key]:
+                                        funcsSens[key][dv] += dval
 
             # if comm.rank == 0:
             #     print('current cfd funcs sen', funcsSens)
