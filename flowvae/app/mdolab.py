@@ -562,11 +562,33 @@ class _OnlineGEKDeltaModel:
     Online GEK model for delta = CFD - ML using function values and gradients.
     """
 
-    def __init__(self, ap: AeroProblem, max_points: int = 20, max_dims: int = 40, nugget: float = 1e-8):
+    def __init__(
+        self,
+        ap: AeroProblem,
+        max_points: int = 20,
+        max_dims: int = 40,
+        nugget: float = 1e-8,
+        stable_norm: bool = False,
+        xscale_floor: float = 1e-3,
+        yscale_floor: float = 1e-8,
+        ell_floor: float = 0.2,
+        exp_clip: float = 60.0,
+        use_active_subspace: bool = False,
+        active_rank: int = 8,
+        active_energy: float = 0.95,
+    ):
         self.ap = ap
         self.max_points = max(2, int(max_points))
         self.max_dims = max(1, int(max_dims))
         self.nugget = float(nugget)
+        self.stable_norm = bool(stable_norm)
+        self.xscale_floor = float(xscale_floor)
+        self.yscale_floor = float(yscale_floor)
+        self.ell_floor = float(ell_floor)
+        self.exp_clip = float(exp_clip)
+        self.use_active_subspace = bool(use_active_subspace)
+        self.active_rank = max(1, int(active_rank))
+        self.active_energy = float(active_energy)
 
         self._layout_ready = False
         self._dv_names: List[str] = []
@@ -581,6 +603,12 @@ class _OnlineGEKDeltaModel:
         self._alpha: Dict[str, np.ndarray] = OrderedDict()
         self._Xmat = None
         self._ell = None
+        self._x_mu = None
+        self._x_scale = None
+        self._W = None
+        self._as_dim = 0
+        self._y_mu: Dict[str, float] = OrderedDict()
+        self._y_scale: Dict[str, float] = OrderedDict()
         self._n_train = 0
         self._fitted = False
         self._just_initialized_layout = False
@@ -648,7 +676,10 @@ class _OnlineGEKDeltaModel:
         nd = n * d
         diff = X[:, None, :] - X[None, :, :]
         inv_l2 = 1.0 / np.maximum(ell * ell, 1e-16)
-        kff = np.exp(-0.5 * np.sum((diff * np.sqrt(inv_l2)[None, None, :]) ** 2, axis=2))
+        expo = -0.5 * np.sum((diff * np.sqrt(inv_l2)[None, None, :]) ** 2, axis=2)
+        if self.stable_norm:
+            expo = np.clip(expo, -self.exp_clip, 0.0)
+        kff = np.exp(expo)
 
         kfg = np.zeros((n, nd), dtype=float)
         for j in range(n):
@@ -676,9 +707,59 @@ class _OnlineGEKDeltaModel:
         if n < 2:
             return
 
-        X = np.vstack(self._X)
-        ell = np.where(np.std(X, axis=0) > 1e-12, np.std(X, axis=0), 1.0)
-        K = self._build_covariance(X, ell)
+        X_raw = np.vstack(self._X)
+        if self.stable_norm:
+            self._x_mu = np.mean(X_raw, axis=0)
+            x_std = np.std(X_raw, axis=0)
+            self._x_scale = np.maximum(x_std, self.xscale_floor)
+            X = (X_raw - self._x_mu[None, :]) / self._x_scale[None, :]
+        else:
+            self._x_mu = np.zeros((X_raw.shape[1],), dtype=float)
+            self._x_scale = np.ones((X_raw.shape[1],), dtype=float)
+            X = X_raw
+
+        d = X.shape[1]
+        if self.use_active_subspace and d > 1:
+            grads_all = []
+            for func in self.ap.evalFuncs:
+                key = f"{self.ap.name}_{func}"
+                if key in self._G and len(self._G[key]) == n:
+                    g_raw = np.vstack(self._G[key])
+                    if self.stable_norm:
+                        y_raw = np.asarray(self._Y[key], dtype=float)
+                        y_scale = max(float(np.std(y_raw)), self.yscale_floor)
+                        g_norm = (g_raw * self._x_scale[None, :]) / y_scale
+                    else:
+                        g_norm = g_raw
+                    grads_all.append(g_norm)
+            if grads_all:
+                G = np.vstack(grads_all)
+                C = (G.T @ G) / max(G.shape[0], 1)
+                eigvals, eigvecs = np.linalg.eigh(C)
+                idx = np.argsort(eigvals)[::-1]
+                eigvals = eigvals[idx]
+                eigvecs = eigvecs[:, idx]
+                if np.sum(eigvals) > 0.0:
+                    cum = np.cumsum(np.clip(eigvals, 0.0, None)) / np.sum(np.clip(eigvals, 0.0, None))
+                    k_energy = int(np.searchsorted(cum, self.active_energy) + 1)
+                else:
+                    k_energy = 1
+                k = min(self.active_rank, k_energy, d)
+                self._W = eigvecs[:, :k]
+                self._as_dim = int(k)
+                X_use = X @ self._W
+            else:
+                self._W = np.eye(d)
+                self._as_dim = d
+                X_use = X
+        else:
+            self._W = np.eye(d)
+            self._as_dim = d
+            X_use = X
+
+        ell = np.std(X_use, axis=0)
+        ell = np.maximum(np.where(ell > 1e-12, ell, 1.0), self.ell_floor if self.stable_norm else 1e-12)
+        K = self._build_covariance(X_use, ell)
 
         for func in self.ap.evalFuncs:
             key = f"{self.ap.name}_{func}"
@@ -686,15 +767,31 @@ class _OnlineGEKDeltaModel:
                 continue
             if len(self._Y[key]) != n or len(self._G[key]) != n:
                 continue
-            y = np.asarray(self._Y[key], dtype=float)
-            g = np.vstack(self._G[key]).reshape(-1)
+            y_raw = np.asarray(self._Y[key], dtype=float)
+            g_raw = np.vstack(self._G[key])
+            if self.stable_norm:
+                y_mu = float(np.mean(y_raw))
+                y_scale = max(float(np.std(y_raw)), self.yscale_floor)
+                self._y_mu[key] = y_mu
+                self._y_scale[key] = y_scale
+                y = (y_raw - y_mu) / y_scale
+                # dz/dx_norm = (dy/dx_raw) * x_scale / y_scale
+                g_norm = (g_raw * self._x_scale[None, :]) / y_scale
+            else:
+                self._y_mu[key] = 0.0
+                self._y_scale[key] = 1.0
+                y = y_raw
+                g_norm = g_raw
+            # Active-subspace gradient: dy/dz = dy/dx * W
+            g = g_norm @ self._W
+            g = g.reshape(-1)
             obs = np.concatenate([y, g])
             try:
                 self._alpha[key] = np.linalg.solve(K, obs)
             except np.linalg.LinAlgError:
                 self._alpha[key] = np.linalg.lstsq(K, obs, rcond=1e-12)[0]
 
-        self._Xmat = X
+        self._Xmat = X_use
         self._ell = ell
         self._fitted = len(self._alpha) > 0
 
@@ -730,6 +827,9 @@ class _OnlineGEKDeltaModel:
             "n_obs": n_obs,
             "fitted_funcs": len(self._alpha),
             "layout_initialized": bool(self._just_initialized_layout),
+            "stable_norm": self.stable_norm,
+            "active_subspace": self.use_active_subspace,
+            "as_dim": int(self._as_dim),
         }
 
     def consume_layout_init_flag(self) -> bool:
@@ -741,15 +841,23 @@ class _OnlineGEKDeltaModel:
         if not self.has_model():
             return None, None
 
-        xq = self._flatten_x(x)
+        xq_raw = self._flatten_x(x)
+        if self.stable_norm:
+            xq = (xq_raw - self._x_mu) / self._x_scale
+        else:
+            xq = xq_raw
         X = self._Xmat
         ell = self._ell
         n, d = X.shape
-        diff = X - xq[None, :]
+        x_use = xq @ self._W
+        diff = X - x_use[None, :]
         inv_l2 = 1.0 / np.maximum(ell * ell, 1e-16)
-        kff = np.exp(-0.5 * np.sum((diff * np.sqrt(inv_l2)[None, :]) ** 2, axis=1))
+        expo = -0.5 * np.sum((diff * np.sqrt(inv_l2)[None, :]) ** 2, axis=1)
+        if self.stable_norm:
+            expo = np.clip(expo, -self.exp_clip, 0.0)
+        kff = np.exp(expo)
 
-        k_grad_train = (xq[None, :] - X) * inv_l2[None, :] * kff[:, None]
+        k_grad_train = (x_use[None, :] - X) * inv_l2[None, :] * kff[:, None]
         ks_f = np.concatenate([kff, k_grad_train.reshape(-1)])
 
         pred_f = OrderedDict()
@@ -760,17 +868,27 @@ class _OnlineGEKDeltaModel:
             if key not in self._alpha:
                 continue
             alpha = self._alpha[key]
-            pred_f[key] = float(np.dot(ks_f, alpha))
+            pred_z = float(np.dot(ks_f, alpha))
+            if self.stable_norm:
+                pred_f[key] = pred_z * self._y_scale[key] + self._y_mu[key]
+            else:
+                pred_f[key] = pred_z
 
-            grad_red = np.zeros((d,), dtype=float)
+            grad_z = np.zeros((d,), dtype=float)
             for b in range(d):
                 kf_gb = diff[:, b] * inv_l2[b] * kff
                 kg_gb = np.zeros((n, d), dtype=float)
                 for i in range(n):
-                    ri = X[i] - xq
+                    ri = X[i] - x_use
                     kg_gb[i, :] = kff[i] * (eye_l[:, b] - (ri * inv_l2) * (ri[b] * inv_l2[b]))
                 ks_g = np.concatenate([kf_gb, kg_gb.reshape(-1)])
-                grad_red[b] = float(np.dot(ks_g, alpha))
+                grad_z[b] = float(np.dot(ks_g, alpha))
+            # Back-map: dy/dx_norm = dy/dz * W^T
+            grad_x_norm = grad_z @ self._W.T
+            if self.stable_norm:
+                grad_red = (grad_x_norm * self._y_scale[key]) / self._x_scale
+            else:
+                grad_red = grad_x_norm
             pred_g[key] = self._unflatten_grad(grad_red)
 
         return pred_f, pred_g
@@ -790,12 +908,17 @@ class SolverCombined():
         3: "linear correction (with gradient to value)",
         4: "linear correction (without gradient to value)",
         10: "online GEK correction (train on CFD-ML delta from funcs + funcSens)",
+        11: "online GEK correction with stable normalization (x/y normalization + safe kernel)",
+        12: "active-subspace + normalized GEK correction",
     }
 
     def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
                  cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1,
                  gek_max_points: int = 100, gek_max_dims: int = 40, gek_nugget: float = 1e-8,
-                 gek_log_interval: int = 1):
+                 gek_log_interval: int = 1,
+                 gek11_xscale_floor: float = 1e-3, gek11_yscale_floor: float = 1e-8,
+                 gek11_ell_floor: float = 0.2, gek11_exp_clip: float = 60.0,
+                 gek12_active_rank: int = 8, gek12_active_energy: float = 0.95):
         '''
 
         majorIter updated at end of iteration
@@ -815,7 +938,26 @@ class SolverCombined():
         # First-order correction model (CFD - ML) updated at each CFD run
         self._correction: dict = None
         # online GEK correction
-        self._gek = _OnlineGEKDeltaModel(ap=self.ap, max_points=gek_max_points, max_dims=gek_max_dims, nugget=gek_nugget)
+        if self.cfd_include_mode == 12:
+            self._gek_tag = "GEK12"
+        elif self.cfd_include_mode == 11:
+            self._gek_tag = "GEK11"
+        else:
+            self._gek_tag = "GEK"
+        self._gek = _OnlineGEKDeltaModel(
+            ap=self.ap,
+            max_points=gek_max_points,
+            max_dims=gek_max_dims,
+            nugget=gek_nugget,
+            stable_norm=(self.cfd_include_mode in [11, 12]),
+            xscale_floor=gek11_xscale_floor,
+            yscale_floor=gek11_yscale_floor,
+            ell_floor=gek11_ell_floor,
+            exp_clip=gek11_exp_clip,
+            use_active_subspace=(self.cfd_include_mode == 12),
+            active_rank=gek12_active_rank,
+            active_energy=gek12_active_energy,
+        )
         self._pending_gek = None
         self._gek_log_interval = max(1, int(gek_log_interval))
         self._gek_predict_counter = 0
@@ -827,8 +969,15 @@ class SolverCombined():
             print(f"Current combination mode = {cfd_include_mode}")
             print(f"    -> {SolverCombined.include_modes.get(cfd_include_mode, 'unknown mode')}")
             print(f"ML every {cfd_frequency:d} / {(cfd_frequency + cfd_iter):d}; CFD every {cfd_iter:d} / {(cfd_frequency + cfd_iter):d}")
-            if cfd_include_mode == 10:
-                print(f"GEK settings: max_points={gek_max_points}, max_dims={gek_max_dims}, nugget={gek_nugget:.1e}, log_interval={self._gek_log_interval}")
+            if cfd_include_mode in [10, 11, 12]:
+                print(f"{self._gek_tag} settings: max_points={gek_max_points}, max_dims={gek_max_dims}, nugget={gek_nugget:.1e}, log_interval={self._gek_log_interval}")
+                if cfd_include_mode in [11, 12]:
+                    print(
+                        f"{self._gek_tag} stable norm: xscale_floor={gek11_xscale_floor:.1e}, "
+                        f"yscale_floor={gek11_yscale_floor:.1e}, ell_floor={gek11_ell_floor:.2f}, exp_clip={gek11_exp_clip:.1f}"
+                    )
+                if cfd_include_mode == 12:
+                    print(f"{self._gek_tag} active subspace: rank={gek12_active_rank}, energy={gek12_active_energy:.2f}")
             print("==============================")
 
     @staticmethod
@@ -914,7 +1063,7 @@ class SolverCombined():
                     # use CFD solver results to replace ML's
                     # print(f"rank {self.comm.rank} enter 2")
                     funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
-                elif self.cfd_include_mode == 10:
+                elif self.cfd_include_mode in [10, 11, 12]:
                     # For GEK training, keep both ML and CFD values at the CFD point.
                     self._pending_gek = {
                         "x": self._copy_design_vars(x),
@@ -950,13 +1099,13 @@ class SolverCombined():
                                 if isinstance(contrib, np.ndarray) and contrib.shape in [(), (1,)]:
                                     contrib = float(contrib.reshape(-1)[0])
                                 funcs[key] += contrib
-                elif self.cfd_include_mode == 10:
+                elif self.cfd_include_mode in [10, 11, 12]:
                     pred_funcs, _ = self._gek.predict(x)
                     if pred_funcs is not None:
                         self._gek_predict_counter += 1
                         with _rank0_guard(self.comm) as is_rank0:
                             if is_rank0 and (self._gek_predict_counter % self._gek_log_interval == 0):
-                                msg = [f"GEK predict #{self._gek_predict_counter}"]
+                                msg = [f"{self._gek_tag} predict #{self._gek_predict_counter}"]
                                 for func in self.ap.evalFuncs:
                                     key = f"{self.ap.name}_{func}"
                                     if key in pred_funcs:
@@ -970,7 +1119,7 @@ class SolverCombined():
                         with _rank0_guard(self.comm) as is_rank0:
                             if is_rank0 and not self._gek_not_ready_warned:
                                 info = self._gek.model_info()
-                                print(f"GEK predict skipped: model not ready (samples={info['n_train']}, need >=2).")
+                                print(f"{self._gek_tag} predict skipped: model not ready (samples={info['n_train']}, need >=2).")
                                 self._gek_not_ready_warned = True
 
             # input()
@@ -1018,7 +1167,7 @@ class SolverCombined():
                     if self.cfd_include_mode == 2:
                         # Update funcsSens with CFD sensitivities
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
-                    elif self.cfd_include_mode == 10:
+                    elif self.cfd_include_mode in [10, 11, 12]:
                         if self._pending_gek is not None:
                             func_delta = OrderedDict()
                             sens_delta = OrderedDict()
@@ -1033,11 +1182,12 @@ class SolverCombined():
                                 if is_rank0:
                                     info = self._gek.model_info()
                                     if self._gek.consume_layout_init_flag():
-                                        print(f"GEK layout initialized: full_dim={info['full_dim']}, reduced_dim={info['red_dim']}.")
+                                        print(f"{self._gek_tag} layout initialized: full_dim={info['full_dim']}, reduced_dim={info['red_dim']}.")
                                     print(
-                                        "GEK correction updated: "
+                                        f"{self._gek_tag} correction updated: "
                                         f"samples={info['n_train']}, obs={info['n_obs']}, "
-                                        f"fitted_funcs={info['fitted_funcs']}/{len(self.ap.evalFuncs)}"
+                                        f"fitted_funcs={info['fitted_funcs']}/{len(self.ap.evalFuncs)}, "
+                                        f"as_dim={info['as_dim']}"
                                     )
                                     self._gek_not_ready_warned = False
                         self._pending_gek = None
@@ -1061,7 +1211,7 @@ class SolverCombined():
                             key = f"{self.ap.name}_{func}"
                             for dv, delta in self._correction["funcSens"][key].items():
                                 funcsSens[key][dv] += delta
-                    elif self.cfd_include_mode == 10:
+                    elif self.cfd_include_mode in [10, 11, 12]:
                         _, pred_sens = self._gek.predict(x)
                         if pred_sens is not None:
                             self._gek_predict_counter += 1
@@ -1075,7 +1225,7 @@ class SolverCombined():
                                             for _, g in pred_sens[key].items():
                                                 norm_val += float(np.linalg.norm(np.asarray(g, dtype=float)))
                                             norms.append(f"{func}:|dg|={norm_val:.3e}")
-                                    print("GEK grad predict | " + " | ".join(norms))
+                                    print(f"{self._gek_tag} grad predict | " + " | ".join(norms))
                             for func in self.ap.evalFuncs:
                                 key = f"{self.ap.name}_{func}"
                                 if key not in pred_sens or key not in funcsSens:
