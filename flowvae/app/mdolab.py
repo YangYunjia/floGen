@@ -7,6 +7,7 @@ import ast
 import os
 import json
 import sys
+import time
 import traceback
 from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, Callable
@@ -560,11 +561,27 @@ def _rank0_guard(comm):
 class _OnlineGEKDeltaModel:
     """
     Online GEK model for delta = CFD - ML using function values and gradients.
+
+    Args:
+        ap: AeroProblem handle (used for objective/constraint keys).
+        max_points: Sliding-window size for online training samples.
+        max_dims: Maximum retained DV dimensions before GEK fitting.
+        nugget: Diagonal jitter added to covariance for numerical stability.
+        stable_norm: Enable x/y normalization for stable small-sample fitting.
+        xscale_floor: Lower bound for per-dimension x normalization scale.
+        yscale_floor: Lower bound for output-delta normalization scale.
+        ell_floor: Lower bound for GP length scales in normalized space.
+        exp_clip: Clamp exponent in RBF kernel evaluation to avoid underflow.
+        use_active_subspace: Learn and apply gradient-based active subspace.
+        active_rank: Hard cap for active-subspace dimension.
+        active_energy: Target cumulative eigenvalue energy for subspace size.
+        log_interval: Prediction-log print interval (stateful, used by helper methods).
     """
 
     def __init__(
         self,
         ap: AeroProblem,
+        comm=None,
         max_points: int = 20,
         max_dims: int = 40,
         nugget: float = 1e-8,
@@ -576,8 +593,10 @@ class _OnlineGEKDeltaModel:
         use_active_subspace: bool = False,
         active_rank: int = 8,
         active_energy: float = 0.95,
+        log_interval: int = 1,
     ):
         self.ap = ap
+        self.comm = comm
         self.max_points = max(2, int(max_points))
         self.max_dims = max(1, int(max_dims))
         self.nugget = float(nugget)
@@ -589,6 +608,7 @@ class _OnlineGEKDeltaModel:
         self.use_active_subspace = bool(use_active_subspace)
         self.active_rank = max(1, int(active_rank))
         self.active_energy = float(active_energy)
+        self.log_interval = max(1, int(log_interval))
 
         self._layout_ready = False
         self._dv_names: List[str] = []
@@ -598,6 +618,9 @@ class _OnlineGEKDeltaModel:
         self._active_idx = None
 
         self._X: List[np.ndarray] = []
+        # Per-function training buffers:
+        #   Y[key]: scalar delta samples
+        #   G[key]: gradient-delta samples (flattened reduced-DV space)
         self._Y: Dict[str, List[float]] = OrderedDict()
         self._G: Dict[str, List[np.ndarray]] = OrderedDict()
         self._alpha: Dict[str, np.ndarray] = OrderedDict()
@@ -612,11 +635,17 @@ class _OnlineGEKDeltaModel:
         self._n_train = 0
         self._fitted = False
         self._just_initialized_layout = False
+        self._predict_counter = 0
+        self._not_ready_warned = False
 
     def has_model(self) -> bool:
         return self._fitted and self._n_train >= 2 and self._Xmat is not None
 
+    def _is_rank0(self) -> bool:
+        return (self.comm is None) or (self.comm.rank == 0)
+
     def _init_layout(self, x: Dict[str, Any], sens_delta_by_func: Dict[str, Dict[str, Any]]):
+        # Build a stable flatten/unflatten map from structured DVs -> one vector.
         self._dv_names = list(x.keys())
         pos = 0
         for dv in self._dv_names:
@@ -629,6 +658,7 @@ class _OnlineGEKDeltaModel:
         if self._full_dim <= self.max_dims:
             self._active_idx = np.arange(self._full_dim, dtype=np.int64)
         else:
+            # Keep dimensions with strongest accumulated sensitivity magnitude.
             score = np.zeros((self._full_dim,), dtype=float)
             for _, grad_dict in sens_delta_by_func.items():
                 score += np.abs(self._flatten_grad_full(grad_dict))
@@ -672,6 +702,9 @@ class _OnlineGEKDeltaModel:
         return out
 
     def _build_covariance(self, X: np.ndarray, ell: np.ndarray) -> np.ndarray:
+        # GEK block covariance:
+        # [K_ff  K_fg]
+        # [K_gf  K_gg]
         n, d = X.shape
         nd = n * d
         diff = X[:, None, :] - X[None, :, :]
@@ -709,6 +742,7 @@ class _OnlineGEKDeltaModel:
 
         X_raw = np.vstack(self._X)
         if self.stable_norm:
+            # Normalize query space to avoid extreme distances / kernel underflow.
             self._x_mu = np.mean(X_raw, axis=0)
             x_std = np.std(X_raw, axis=0)
             self._x_scale = np.maximum(x_std, self.xscale_floor)
@@ -720,6 +754,7 @@ class _OnlineGEKDeltaModel:
 
         d = X.shape[1]
         if self.use_active_subspace and d > 1:
+            # Learn active subspace from gradient covariance in normalized space.
             grads_all = []
             for func in self.ap.evalFuncs:
                 key = f"{self.ap.name}_{func}"
@@ -770,6 +805,7 @@ class _OnlineGEKDeltaModel:
             y_raw = np.asarray(self._Y[key], dtype=float)
             g_raw = np.vstack(self._G[key])
             if self.stable_norm:
+                # Train in normalized output space to keep scales comparable.
                 y_mu = float(np.mean(y_raw))
                 y_scale = max(float(np.std(y_raw)), self.yscale_floor)
                 self._y_mu[key] = y_mu
@@ -816,6 +852,13 @@ class _OnlineGEKDeltaModel:
 
         self._fit()
 
+    def add_sample_logged(self, x: Dict[str, Any], func_delta: Dict[str, float], sens_delta: Dict[str, Dict[str, Any]], tag: str = "GEK"):
+        """Train on one sample and print training messages on rank0."""
+        self.add_sample(x, func_delta, sens_delta)
+        if self._is_rank0():
+            for msg in self.consume_training_messages(tag=tag):
+                print(msg)
+
     def model_info(self) -> Dict[str, Any]:
         red_dim = int(self._active_idx.size) if self._active_idx is not None else 0
         n = int(self._n_train)
@@ -830,6 +873,7 @@ class _OnlineGEKDeltaModel:
             "stable_norm": self.stable_norm,
             "active_subspace": self.use_active_subspace,
             "as_dim": int(self._as_dim),
+            "log_interval": int(self.log_interval),
         }
 
     def consume_layout_init_flag(self) -> bool:
@@ -837,8 +881,62 @@ class _OnlineGEKDeltaModel:
         self._just_initialized_layout = False
         return flag
 
-    def predict(self, x: Dict[str, Any]):
+    def consume_not_ready_message(self, tag: str = "GEK") -> Optional[str]:
+        if self.has_model() or self._not_ready_warned:
+            return None
+        self._not_ready_warned = True
+        info = self.model_info()
+        return f"{tag} predict skipped: model not ready (samples={info['n_train']}, need >=2)."
+
+    def consume_training_messages(self, tag: str = "GEK") -> List[str]:
+        info = self.model_info()
+        msgs: List[str] = []
+        if self.consume_layout_init_flag():
+            msgs.append(f"{tag} layout initialized: full_dim={info['full_dim']}, reduced_dim={info['red_dim']}.")
+        msgs.append(
+            f"{tag} correction updated: "
+            f"samples={info['n_train']}, obs={info['n_obs']}, "
+            f"fitted_funcs={info['fitted_funcs']}/{len(self.ap.evalFuncs)}, "
+            f"as_dim={info['as_dim']}"
+        )
+        self._not_ready_warned = False
+        return msgs
+
+    def consume_predict_func_message(self, pred_funcs: Optional[Dict[str, float]], tag: str = "GEK") -> Optional[str]:
+        if pred_funcs is None:
+            return None
+        self._predict_counter += 1
+        if self._predict_counter % self.log_interval != 0:
+            return None
+        msg = [f"{tag} predict #{self._predict_counter}"]
+        for func in self.ap.evalFuncs:
+            key = f"{self.ap.name}_{func}"
+            if key in pred_funcs:
+                msg.append(f"{func}:d={pred_funcs[key]:+.6e}")
+        return " | ".join(msg)
+
+    def consume_predict_grad_message(self, pred_sens: Optional[Dict[str, Dict[str, Any]]], tag: str = "GEK") -> Optional[str]:
+        if pred_sens is None:
+            return None
+        self._predict_counter += 1
+        if self._predict_counter % self.log_interval != 0:
+            return None
+        norms = []
+        for func in self.ap.evalFuncs:
+            key = f"{self.ap.name}_{func}"
+            if key in pred_sens:
+                norm_val = 0.0
+                for _, g in pred_sens[key].items():
+                    norm_val += float(np.linalg.norm(np.asarray(g, dtype=float)))
+                norms.append(f"{func}:|dg|={norm_val:.3e}")
+        return f"{tag} grad predict | " + " | ".join(norms)
+
+    def predict(self, x: Dict[str, Any], log_kind: Optional[str] = None, tag: str = "GEK"):
         if not self.has_model():
+            if self._is_rank0() and log_kind is not None:
+                msg = self.consume_not_ready_message(tag=tag)
+                if msg:
+                    print(msg)
             return None, None
 
         xq_raw = self._flatten_x(x)
@@ -849,6 +947,7 @@ class _OnlineGEKDeltaModel:
         X = self._Xmat
         ell = self._ell
         n, d = X.shape
+        # Predict in active coordinates z when active subspace is enabled.
         x_use = xq @ self._W
         diff = X - x_use[None, :]
         inv_l2 = 1.0 / np.maximum(ell * ell, 1e-16)
@@ -870,6 +969,7 @@ class _OnlineGEKDeltaModel:
             alpha = self._alpha[key]
             pred_z = float(np.dot(ks_f, alpha))
             if self.stable_norm:
+                # Undo output normalization back to physical CFD-ML delta.
                 pred_f[key] = pred_z * self._y_scale[key] + self._y_mu[key]
             else:
                 pred_f[key] = pred_z
@@ -886,10 +986,20 @@ class _OnlineGEKDeltaModel:
             # Back-map: dy/dx_norm = dy/dz * W^T
             grad_x_norm = grad_z @ self._W.T
             if self.stable_norm:
+                # Undo x/y normalization to recover dy/dx in original DV space.
                 grad_red = (grad_x_norm * self._y_scale[key]) / self._x_scale
             else:
                 grad_red = grad_x_norm
             pred_g[key] = self._unflatten_grad(grad_red)
+
+        if self._is_rank0() and log_kind == "func":
+            msg = self.consume_predict_func_message(pred_f, tag=tag)
+            if msg:
+                print(msg)
+        elif self._is_rank0() and log_kind == "grad":
+            msg = self.consume_predict_grad_message(pred_g, tag=tag)
+            if msg:
+                print(msg)
 
         return pred_f, pred_g
 
@@ -911,14 +1021,23 @@ class SolverCombined():
         11: "online GEK correction with stable normalization (x/y normalization + safe kernel)",
         12: "active-subspace + normalized GEK correction",
     }
+    # Default options for GEK modes (10/11/12). Pass `gek_options={...}` to override.
+    gek_default_options = {
+        "max_points": 100,        # GEK sample window length
+        "max_dims": 40,           # Max DV dims passed into GEK before fitting
+        "nugget": 1e-8,           # Covariance diagonal regularization
+        "log_interval": 1,        # Print GEK prediction logs every N calls
+        "xscale_floor": 1e-3,     # Mode11/12 x-normalization minimum scale
+        "yscale_floor": 1e-8,     # Mode11/12 y-normalization minimum scale
+        "ell_floor": 0.2,         # Mode11/12 minimum GP length scale
+        "exp_clip": 60.0,         # Mode11/12 RBF exponent clipping magnitude
+        "active_rank": 8,         # Mode12 max active-subspace rank
+        "active_energy": 0.95,    # Mode12 target eig-energy for rank selection
+    }
 
     def __init__(self, opt: OPT, ap: AeroProblem, comm=None, output_dir: str = "output",
                  cfd_frequency: int = 10, cfd_include_mode: int = 1, cfd_iter: int = 1,
-                 gek_max_points: int = 100, gek_max_dims: int = 40, gek_nugget: float = 1e-8,
-                 gek_log_interval: int = 1,
-                 gek11_xscale_floor: float = 1e-3, gek11_yscale_floor: float = 1e-8,
-                 gek11_ell_floor: float = 0.2, gek11_exp_clip: float = 60.0,
-                 gek12_active_rank: int = 8, gek12_active_energy: float = 0.95):
+                 gek_options: Optional[Dict[str, Any]] = None):
         '''
 
         majorIter updated at end of iteration
@@ -938,30 +1057,26 @@ class SolverCombined():
         # First-order correction model (CFD - ML) updated at each CFD run
         self._correction: dict = None
         # online GEK correction
+        self.gek_options = dict(SolverCombined.gek_default_options)
+        if gek_options is not None:
+            unknown = set(gek_options.keys()) - set(self.gek_options.keys())
+            if unknown:
+                raise ValueError(f"Unknown GEK options: {sorted(unknown)}")
+            self.gek_options.update(gek_options)
         if self.cfd_include_mode == 12:
-            self._gek_tag = "GEK12"
+            self._gek_tag = "GEK(AS)"
         elif self.cfd_include_mode == 11:
-            self._gek_tag = "GEK11"
+            self._gek_tag = "GEK(norm)"
         else:
             self._gek_tag = "GEK"
         self._gek = _OnlineGEKDeltaModel(
             ap=self.ap,
-            max_points=gek_max_points,
-            max_dims=gek_max_dims,
-            nugget=gek_nugget,
+            comm=self.comm,
             stable_norm=(self.cfd_include_mode in [11, 12]),
-            xscale_floor=gek11_xscale_floor,
-            yscale_floor=gek11_yscale_floor,
-            ell_floor=gek11_ell_floor,
-            exp_clip=gek11_exp_clip,
             use_active_subspace=(self.cfd_include_mode == 12),
-            active_rank=gek12_active_rank,
-            active_energy=gek12_active_energy,
+            **self.gek_options,
         )
         self._pending_gek = None
-        self._gek_log_interval = max(1, int(gek_log_interval))
-        self._gek_predict_counter = 0
-        self._gek_not_ready_warned = False
 
         if self.comm.rank == 0:
             print("==============================")
@@ -970,14 +1085,24 @@ class SolverCombined():
             print(f"    -> {SolverCombined.include_modes.get(cfd_include_mode, 'unknown mode')}")
             print(f"ML every {cfd_frequency:d} / {(cfd_frequency + cfd_iter):d}; CFD every {cfd_iter:d} / {(cfd_frequency + cfd_iter):d}")
             if cfd_include_mode in [10, 11, 12]:
-                print(f"{self._gek_tag} settings: max_points={gek_max_points}, max_dims={gek_max_dims}, nugget={gek_nugget:.1e}, log_interval={self._gek_log_interval}")
+                print(
+                    f"{self._gek_tag} settings: "
+                    f"max_points={self.gek_options['max_points']}, "
+                    f"max_dims={self.gek_options['max_dims']}, "
+                    f"nugget={self.gek_options['nugget']:.1e}, "
+                    f"log_interval={self.gek_options['log_interval']}"
+                )
                 if cfd_include_mode in [11, 12]:
                     print(
-                        f"{self._gek_tag} stable norm: xscale_floor={gek11_xscale_floor:.1e}, "
-                        f"yscale_floor={gek11_yscale_floor:.1e}, ell_floor={gek11_ell_floor:.2f}, exp_clip={gek11_exp_clip:.1f}"
+                        f"{self._gek_tag} stable norm: xscale_floor={self.gek_options['xscale_floor']:.1e}, "
+                        f"yscale_floor={self.gek_options['yscale_floor']:.1e}, "
+                        f"ell_floor={self.gek_options['ell_floor']:.2f}, exp_clip={self.gek_options['exp_clip']:.1f}"
                     )
                 if cfd_include_mode == 12:
-                    print(f"{self._gek_tag} active subspace: rank={gek12_active_rank}, energy={gek12_active_energy:.2f}")
+                    print(
+                        f"{self._gek_tag} active subspace: "
+                        f"rank={self.gek_options['active_rank']}, energy={self.gek_options['active_energy']:.2f}"
+                    )
             print("==============================")
 
     @staticmethod
@@ -1040,7 +1165,7 @@ class SolverCombined():
 
                 with _rank0_guard(self.comm) as is_rank0:
                     if is_rank0:
-                        row = {"iter": opt_iter, "major_iter": major_opt_iter, "ml_fail": funcs.get("fail", 0.0), "cfd_fail": cfd_funcs.get("fail", 0.0)}
+                        row = {"iter": opt_iter, "time": time.time() - self.opt.startTime, "major_iter": major_opt_iter, "ml_fail": funcs.get("fail", 0.0), "cfd_fail": cfd_funcs.get("fail", 0.0)}
                         # update ML and CFD predictions to the writting row
                         for func in self.ap.evalFuncs:
                             row[f"ml_{self.ap.name}_{func}"] = funcs[f"{self.ap.name}_{func}"]
@@ -1064,6 +1189,8 @@ class SolverCombined():
                     # print(f"rank {self.comm.rank} enter 2")
                     funcs = self.update_funcs(self.ap, funcs, cfd_funcs)
                 elif self.cfd_include_mode in [10, 11, 12]:
+                    # GEK modes: keep ML and CFD function values at the same CFD point.
+                    # The paired sensitivities are added in wrap_cruiseFuncsSens.
                     # For GEK training, keep both ML and CFD values at the CFD point.
                     self._pending_gek = {
                         "x": self._copy_design_vars(x),
@@ -1100,27 +1227,18 @@ class SolverCombined():
                                     contrib = float(contrib.reshape(-1)[0])
                                 funcs[key] += contrib
                 elif self.cfd_include_mode in [10, 11, 12]:
-                    pred_funcs, _ = self._gek.predict(x)
+                    # Non-CFD iteration: use GEK to predict correction delta and add it to ML output.
+                    if self.comm is None or self.comm.rank == 0:
+                        pred_funcs, _ = self._gek.predict(x, log_kind="func", tag=self._gek_tag)
+                    else:
+                        pred_funcs = None
+                    if self.comm is not None:
+                        pred_funcs = self.comm.bcast(pred_funcs, root=0)
                     if pred_funcs is not None:
-                        self._gek_predict_counter += 1
-                        with _rank0_guard(self.comm) as is_rank0:
-                            if is_rank0 and (self._gek_predict_counter % self._gek_log_interval == 0):
-                                msg = [f"{self._gek_tag} predict #{self._gek_predict_counter}"]
-                                for func in self.ap.evalFuncs:
-                                    key = f"{self.ap.name}_{func}"
-                                    if key in pred_funcs:
-                                        msg.append(f"{func}:d={pred_funcs[key]:+.6e}")
-                                print(" | ".join(msg))
                         for func in self.ap.evalFuncs:
                             key = f"{self.ap.name}_{func}"
                             if key in pred_funcs and key in funcs:
                                 funcs[key] += pred_funcs[key]
-                    else:
-                        with _rank0_guard(self.comm) as is_rank0:
-                            if is_rank0 and not self._gek_not_ready_warned:
-                                info = self._gek.model_info()
-                                print(f"{self._gek_tag} predict skipped: model not ready (samples={info['n_train']}, need >=2).")
-                                self._gek_not_ready_warned = True
 
             # input()
             return funcs
@@ -1168,28 +1286,18 @@ class SolverCombined():
                         # Update funcsSens with CFD sensitivities
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
                     elif self.cfd_include_mode in [10, 11, 12]:
+                        # CFD iteration: build one GEK sample from (CFD-ML) value and gradient deltas.
                         if self._pending_gek is not None:
-                            func_delta = OrderedDict()
-                            sens_delta = OrderedDict()
-                            for func in self.ap.evalFuncs:
-                                key = f"{self.ap.name}_{func}"
-                                func_delta[key] = self._pending_gek["cfd_funcs"][key] - self._pending_gek["ml_funcs"][key]
-                                sens_delta[key] = OrderedDict()
-                                for dv, cfd_val in cfd_funcsSens[key].items():
-                                    sens_delta[key][dv] = cfd_val - funcsSens[key][dv]
-                            self._gek.add_sample(self._pending_gek["x"], func_delta, sens_delta)
-                            with _rank0_guard(self.comm) as is_rank0:
-                                if is_rank0:
-                                    info = self._gek.model_info()
-                                    if self._gek.consume_layout_init_flag():
-                                        print(f"{self._gek_tag} layout initialized: full_dim={info['full_dim']}, reduced_dim={info['red_dim']}.")
-                                    print(
-                                        f"{self._gek_tag} correction updated: "
-                                        f"samples={info['n_train']}, obs={info['n_obs']}, "
-                                        f"fitted_funcs={info['fitted_funcs']}/{len(self.ap.evalFuncs)}, "
-                                        f"as_dim={info['as_dim']}"
-                                    )
-                                    self._gek_not_ready_warned = False
+                            if self.comm is None or self.comm.rank == 0:
+                                func_delta = OrderedDict()
+                                sens_delta = OrderedDict()
+                                for func in self.ap.evalFuncs:
+                                    key = f"{self.ap.name}_{func}"
+                                    func_delta[key] = self._pending_gek["cfd_funcs"][key] - self._pending_gek["ml_funcs"][key]
+                                    sens_delta[key] = OrderedDict()
+                                    for dv, cfd_val in cfd_funcsSens[key].items():
+                                        sens_delta[key][dv] = cfd_val - funcsSens[key][dv]
+                                self._gek.add_sample_logged(self._pending_gek["x"], func_delta, sens_delta, tag=self._gek_tag)
                         self._pending_gek = None
                         funcsSens = self.update_funcs(self.ap, funcsSens, cfd_funcsSens)
 
@@ -1212,20 +1320,14 @@ class SolverCombined():
                             for dv, delta in self._correction["funcSens"][key].items():
                                 funcsSens[key][dv] += delta
                     elif self.cfd_include_mode in [10, 11, 12]:
-                        _, pred_sens = self._gek.predict(x)
+                        # Non-CFD iteration: correct ML sensitivities with GEK-predicted gradient deltas.
+                        if self.comm is None or self.comm.rank == 0:
+                            _, pred_sens = self._gek.predict(x, log_kind="grad", tag=self._gek_tag)
+                        else:
+                            pred_sens = None
+                        if self.comm is not None:
+                            pred_sens = self.comm.bcast(pred_sens, root=0)
                         if pred_sens is not None:
-                            self._gek_predict_counter += 1
-                            with _rank0_guard(self.comm) as is_rank0:
-                                if is_rank0 and (self._gek_predict_counter % self._gek_log_interval == 0):
-                                    norms = []
-                                    for func in self.ap.evalFuncs:
-                                        key = f"{self.ap.name}_{func}"
-                                        if key in pred_sens:
-                                            norm_val = 0.0
-                                            for _, g in pred_sens[key].items():
-                                                norm_val += float(np.linalg.norm(np.asarray(g, dtype=float)))
-                                            norms.append(f"{func}:|dg|={norm_val:.3e}")
-                                    print(f"{self._gek_tag} grad predict | " + " | ".join(norms))
                             for func in self.ap.evalFuncs:
                                 key = f"{self.ap.name}_{func}"
                                 if key not in pred_sens or key not in funcsSens:
