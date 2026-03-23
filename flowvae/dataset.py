@@ -639,19 +639,46 @@ class MCFlowDataset(FlowDataset):
     def get_origin_igroup(self, i_f, i_c):
         return self.original_igroup[int(self.condis_st[i_f] + i_c)]
 
-    def subset(self, indices: Sequence[int], shapewise: bool = True) -> Subset:
+    def subset(self, indices: Sequence[int], shapewise: bool = True, 
+               n_flow_per_shape: Optional[int] = None, rng: Optional[int] = None) -> Subset:
+        '''
+        This method returns a torch.utils.data.Subset of the dataset for the given indices.
+        If shapewise is True, indices are interpreted as shape indices, and all conditions/flowfields under each shape are included,
+        possibly further subsampled to at most n_flow_per_shape flows per shape (randomly if rng is provided).
+        If shapewise is False, indices are interpreted as actual data sample indices.
+        
+        Args:
+          indices (Sequence[int]): Either shape indices (if shapewise) or sample indices (if not).
+          shapewise (bool): If True, treat indices as shape indices; else, as sample indices. Default True.
+          n_flow_per_shape (int, optional): Max number of flows per shape to include. If None, include all.
+          rng (Optional[np.random.Generator/int]): RNG or seed for reproducible random draws.
+        Returns:
+          Subset: Subset of this dataset containing the selected indices.
 
+        '''
         if not self._split_paras['method'] == 'base':
             raise NotImplementedError('subset for MC flow dataset only can be used for non-selected (`base`)')
 
         if not shapewise:
             data_indices = indices
         else:
+            if rng is None:
+                rng = np.random.default_rng()
+            elif isinstance(rng, (int, np.integer)):
+                rng = np.random.default_rng(int(rng))
+
             data_indices = []
             for shape_indice in indices:
                 if shape_indice >= self.n_shape:
                     raise RuntimeError('Indice number larger than shape amount, maybe using shapewise = False?')
-                data_indices += list(range(self.condis_st[shape_indice], self.condis_st[shape_indice] + self.condis_all_num[shape_indice]))
+
+                st = self.condis_st[shape_indice]
+                n_cond = int(self.condis_all_num[shape_indice])
+                if n_flow_per_shape is None or n_flow_per_shape >= n_cond:
+                    data_indices += list(range(st, st + n_cond))
+                else:
+                    chosen = rng.choice(n_cond, size=n_flow_per_shape, replace=False)
+                    data_indices.extend([st + int(c) for c in chosen])
 
         return Subset(self, data_indices)
 
