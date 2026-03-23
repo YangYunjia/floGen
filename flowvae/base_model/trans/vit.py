@@ -44,10 +44,10 @@ class ViT_block(nn.Module):
         else:
             act_layer = nn.LeakyReLU
         
-        self.ln_1 = nn.LayerNorm(hidden_dim + is_add_mesh)
-        self.Attn = self.fetch_attention_layer(num_heads, hidden_dim)
         self.is_add_mesh = is_add_mesh
         self.dropout = dropout
+        self.ln_1 = nn.LayerNorm(hidden_dim + is_add_mesh)
+        self.Attn = self.fetch_attention_layer(num_heads, hidden_dim)
 
         self.ln_2 = nn.LayerNorm(hidden_dim)
         self.mlp = mlp(in_features=hidden_dim, out_features=hidden_dim, hidden_dims=[hidden_dim * mlp_ratio], last_actv=False,
@@ -79,7 +79,6 @@ class ViT(nn.Module):
                  dropout=0.0,
                  pos_embedding='sincos',
                  act='gelu',
-                 device: str = 'cuda:0'
                  ):
 
         super().__init__()
@@ -114,7 +113,6 @@ class ViT(nn.Module):
         
         self.last_layer = nn.Sequential(nn.LayerNorm(n_hidden), nn.Linear(n_hidden, self.ph * self.pw * out_dim))
         self.out_dim = out_dim
-        self.device = device
 
     def forward(self, img: torch.Tensor):
         
@@ -122,7 +120,7 @@ class ViT(nn.Module):
         img = img.reshape(-1, C0_, self.nh, self.ph, self.nw, self.pw).permute(0, 2, 4, 3, 5, 1).reshape(-1, self.nh * self.nw, self.ph * self.pw * C0_)
 
         fx = self.to_patch_embedding(img)
-        fx += self.pos_embedding.to(self.device, dtype=fx.dtype)
+        fx += self.pos_embedding.to(fx.device, dtype=fx.dtype)
 
         for block in self.blocks:
             fx = block(fx)
