@@ -1,8 +1,35 @@
-import random, time, os
+import random, time, os, shutil
 from .operator import load_model_from_checkpoint, _check_existance_checkpoint
 import torch
 
-from typing import Callable
+from typing import Any, Callable
+
+def _remove_partial_run_folders(history_file_name: str, krun: int, completed_runs: int):
+
+    # get run directory prefix from history file name
+    idx = history_file_name.find('_history')
+    assert idx >= 0, f'History file name {history_file_name} does not contain _history'
+    run_dir_prefix = history_file_name[:idx]
+
+    for run_id in range(krun):
+        run_dir = f'{run_dir_prefix}{run_id}'
+        if not os.path.exists(run_dir) and run_id < completed_runs:
+            raise FileNotFoundError(f'Run folder {run_dir} not found, but it should be completed')
+        if os.path.exists(run_dir) and run_id >= completed_runs:
+            try:
+                shutil.rmtree(run_dir)
+                print(f'> Removed partial run folder: {run_dir}')
+            except Exception as exc:
+                print(f'> Warning: failed to remove partial run folder {run_dir}: {exc}')
+
+def _backup_history_file(history_file_name: str):
+    if history_file_name is None or (not os.path.exists(history_file_name)):
+        return None
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    backup_path = f'{history_file_name}.bak.{ts}'
+    shutil.copy2(history_file_name, backup_path)
+    print(f'> Backup history file to: {backup_path}')
+    return backup_path
 
 
 def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k=10, krun=-1, num_train=-1, history_file_name=None):
@@ -62,9 +89,6 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
     
     avg = int(dataset_len / k)
     fold_data_number = [avg+(1, 0)[i > dataset_len - avg * k] for i in range(k)]
-    
-    print(f'make {dataset_len} indexs random ')
-    all_dataset_indexs = random.sample(range(dataset_len), dataset_len)
 
     if krun <= 0:   krun = k
 
@@ -77,8 +101,43 @@ def K_fold(dataset_len: int, func_train: Callable, func_eval: Callable = None, k
                'errstats': [], 
                'train_time': []}
 
-    for irun in range(krun):
+    if history_file_name is not None and os.path.exists(history_file_name):
+        _backup_history_file(history_file_name)
+        history = torch.load(history_file_name, weights_only=False)
+        print(f'> Resume from existing history file: {history_file_name}')
 
+    completed_runs = min(len(history['train_index']), len(history['test_index']))
+    if completed_runs >= krun:
+        print(f'> Found {completed_runs} completed runs, no remaining runs to train.')
+        return history
+        
+    # roll back a potentially interrupted fold at the tail of history
+    # _remove_partial_run_folders(history_file_name, krun, completed_runs)
+    
+    # Fresh run: keep old behavior
+    if completed_runs == 0:
+        print(f'make {dataset_len} indexs random ')
+        all_dataset_indexs = random.sample(range(dataset_len), dataset_len)
+    else:
+        # Resume with non-overlap test sets
+        all_dataset_indexs = []
+
+        for old_irun, old_test in enumerate(history['test_index'][:completed_runs]):
+            assert len(old_test) == fold_data_number[old_irun], \
+                'Resume run has different number of test samples than previous runs.'
+            all_dataset_indexs.extend(old_test)
+        
+        assert len(all_dataset_indexs) == len(set(all_dataset_indexs)), \
+            'Resume run has duplicate test samples.'
+
+        remaining_ids = [idx for idx in range(dataset_len) if idx not in all_dataset_indexs]
+        random.shuffle(remaining_ids)
+        all_dataset_indexs.extend(remaining_ids)
+
+        print(f'> Resume mode, completed runs = {completed_runs}, remaining runs = {krun - completed_runs}')
+        print(f'> remaining samples = {len(remaining_ids)}')
+    
+    for irun in range(completed_runs, krun):
         print('---------------------------------------')
         print('')
         print('K-fold Run %d' % irun)
