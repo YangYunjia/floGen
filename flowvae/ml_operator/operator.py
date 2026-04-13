@@ -146,7 +146,7 @@ class ModelOperator():
 
         else:
             if isinstance(model, ModelConfig):
-                model.save(model_config_path)
+                model.save(model_config_path, exist_ok=True)
                 model = model.create()
 
         # we recommand to set `device` here, rather than with the model

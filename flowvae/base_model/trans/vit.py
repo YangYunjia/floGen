@@ -8,7 +8,7 @@ from flowvae.base_model.mlp import mlp
 
 
 def pair(t):
-    return t if isinstance(t, tuple) else (t, t)
+    return t if isinstance(t, (tuple, list)) else (t, t)
 
 def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32):
     
