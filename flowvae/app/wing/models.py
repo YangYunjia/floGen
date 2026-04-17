@@ -286,7 +286,7 @@ class cat_mlpconv_encoder(nn.Module):
         return self.cat_encoder(encoded)
     
 ###############
-#    500
+#    AeroTransformer Paper
 ###############
 
 class basiconetmodel(nn.Module):
@@ -315,7 +315,7 @@ class basiconetmodel(nn.Module):
             self.lstm = None
             
     def forward(self, inputs, code):
-#         print(inputs.size(), code.size())
+        # print(inputs.size(), code.size())
         mu = self.encode(inputs)
         if self.coder_type == 'onlywing':
             mach = code[:, :, -1]
@@ -328,7 +328,7 @@ class basiconetmodel(nn.Module):
             c  = self.coder(code.transpose(1,2)).reshape(self.last_size).permute((0, 3, 1, 2))
 
         decoder_input = self.code_func(mu, c)
-#         print(decoder_input.size(), mu.size(), c.size())
+        # print(decoder_input.size(), mu.size(), c.size())
 
         if self.coder_type == 'onlywing':
             # product with mach number of wing
@@ -336,7 +336,7 @@ class basiconetmodel(nn.Module):
                 decoder_input = decoder_input * mach.reshape(-1, 1, decoder_input.size(2), 1).repeat(1, decoder_input.size(1), 1, decoder_input.size(3))
             else:
                 decoder_input = torch.cat((decoder_input, mach.reshape(-1, 1, decoder_input.size(2), 1).repeat(1, 1, 1, decoder_input.size(3))), dim=1)
-#         print(decoder_input.size())
+        # print(decoder_input.size())
                 
         if self.lstm is not None:
             decoder_input = torch.flatten(decoder_input.permute((0, 2, 1, 3)), start_dim=2)
@@ -401,7 +401,7 @@ class WingViT(ViT):
         cat_inputs = torch.concatenate((inputs, code[:, :2, None, None].repeat((1, 1, H_, W_))), axis=1)
         return [super().forward(cat_inputs)]
 
-class WingTransformer(Transolver):
+class WingTransolver(Transolver):
     
     def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False, dual_slices=False) -> None:
         
@@ -420,7 +420,7 @@ class WingTransformer(Transolver):
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
 
-class WingTokenTransformer(TokenSpaceTransolver):
+class WingTokenTransolver(TokenSpaceTransolver):
     
     def __init__(self, n_layers=5, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
@@ -458,7 +458,7 @@ class WingUTransolver(UTransolver):
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
     
-class WingPlainTransformer(Transolver):
+class WingPlainTransolver(Transolver):
     '''
     concatenate the code to the input before processing, fx to be sinusoidal position encoding
     '''
@@ -479,7 +479,7 @@ class WingPlainTransformer(Transolver):
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
  
-class WingEDTransformer(EncoderDecoderTransolver):
+class WingEDTransolver(EncoderDecoderTransolver):
     
     def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
@@ -499,7 +499,7 @@ class WingEDTransformer(EncoderDecoderTransolver):
         B_, C_, H_, W_ = inputs.shape
         return [super().forward(inputs, code).permute(0, 3, 1, 2)]
 
-class WingEDTransformer_Mesh(EncoderDecoderTransolver):
+class WingEDTransolver_Mesh(EncoderDecoderTransolver):
     
     def __init__(self, n_layers_enc, n_layers_dec, n_hidden=256, n_head=8, slice_num=32, mlp_ratio=4, h_in=5, h_out=3, is_flatten=False) -> None:
         
@@ -520,7 +520,7 @@ class WingEDTransformer_Mesh(EncoderDecoderTransolver):
         mesh = inputs[:, :3].permute(0, 2, 3, 1)
         return [super().forward(inputs, code, mesh=mesh, ref_mesh=mesh).permute(0, 3, 1, 2)]
     
-class WingPDETransformer(PDEImpl):
+class AeroTransformer(PDEImpl):
 
     def __init__(self, patch_size, window_size=(8,8), fun_dim = 3, out_dim = 1, n_layers = 5, n_hidden = 256, n_head = 8, mlp_ratio = 4, depth=[2, 5, 8, 5, 2],
                  type_cond: str = 'cat', ct_active: bool = False, dropout=0, output_type=None, is_final_adp=False, sampler = 1):
