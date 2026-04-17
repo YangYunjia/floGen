@@ -12,6 +12,7 @@ import torch.optim as opt
 
 import sys, os
 import numpy as np
+import time
 from tqdm import tqdm
 from typing import List, Union, Any, NewType, Tuple, Optional, Dict
 
@@ -145,7 +146,7 @@ class ModelOperator():
 
         else:
             if isinstance(model, ModelConfig):
-                model.save(model_config_path)
+                model.save(model_config_path, exist_ok=True)
                 model = model.create()
 
         # we recommand to set `device` here, rather than with the model
@@ -186,7 +187,7 @@ class ModelOperator():
                 self.dataset = split_dataset
                 self.phases = ['train', 'val']
                 print("Dataset split based on input: (Train: %d, Val: %d)" % (len(self.dataset['train']), len(self.dataset['val'])))
-                
+                # indices saved later: in set_transfer_model (transfer folder) or at train_model start (non-transfer)
             else:
                 if restart is not None: recover_split = self.optname    # load original data split
 
@@ -378,27 +379,44 @@ class ModelOperator():
                 self.dataset['train'], self.dataset['val'], _ = random_split(self.all_dataset, [train_size, val_size, rest_size])
                 print("Random Split Dataset length: (Train: %d, Val: %d)" % (train_size, val_size))
 
-            path = os.path.join(self.output_folder, self.optname, 'dataset_indice')
-            torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val']}, path)
-            # torch.save({'train': self.train_dataset.indices, 'val': self.val_dataset.indices, 'test': self.test_dataset.indices}, path)
+            # indices saved at train_model start (single place for all code paths)
         return self.dataset.keys()
 
     def train_model(self, save_check, save_best=True, v_tqdm=True, update_lr_batch=False):
 
+        print('Starting training.... below are critical settings:')
+        print(f'  - num_epochs: {self.paras["num_epochs"]}')
+        print(f'  - batch_size: {self.paras["batch_size"]}')
+        print(f'  - shuffle: {self.paras["shuffle"]}')
+        print(f'  - num_workers: {self.paras["num_workers"]}')
+        print(f'  - device: {self.device}')
+        print(f'  - optimizer: {self._optimizer_setting}')
+        print(f'  - scheduler: {self._scheduler_setting}')
+        print(f'  - loss_parameters: {self.paras["loss_parameters"]}')
+
+
         if self.restart is not None:
             self.load_checkpoint(self.restart, load_opt=True)
-            
-        ## pre test for training 
+
+        run_t0 = time.time()
+        use_tqdm, log_interval = self._parse_verbose(v_tqdm)
+        using_cuda = torch.cuda.is_available() and ('cuda' in str(self.device))
+        if using_cuda:
+            torch.cuda.reset_peak_memory_stats(self.device)
+            torch.cuda.synchronize(self.device)
+
+        # save train/val indices to current output_path
+        if self.dataset and set(self.dataset.keys()) >= {'train', 'val'}:
+            path = os.path.join(self.output_path, 'dataset_indice')
+            torch.save({phase: self.dataset[phase].indices for phase in ['train', 'val']}, path)
+
         assert self._optimizer is not None and self._scheduler is not None, 'Optimizer or scheduler not set'
         assert self.model is not None, 'Model not load'
 
         load_kwargs, forward_kwargs, loss_kwargs = self._init_training()
-        #* *** Training section ***
         print(' === ========Training begin========= ===')
 
         while self.epoch < self.paras['num_epochs']:
-
-            print('Epoch %d/%d   lr = %.4e' % (self.epoch, self.paras['num_epochs'] - 1, self._optimizer.param_groups[0]['lr']))
             load_kwargs, forward_kwargs, loss_kwargs = self._start_of_epoch(load_kwargs, forward_kwargs, loss_kwargs)
             # torch.autograd.set_detect_anomaly(True)
             for phase in self.phases:
@@ -408,68 +426,55 @@ class ModelOperator():
                     self._model.eval()   # Set model to evaluate mode
 
                 running_loss = MDCounter()
-                # Iteration of dataset
                 sys.stdout.flush()
-                with tqdm(self.dataloaders[phase], ncols = 100) as tbar:
-                    if not v_tqdm:
-                        tbar = self.dataloaders[phase]
-                    
-                    for batch_data in tbar:
+                dataloader = self.dataloaders[phase]
+                iterator = tqdm(dataloader, ncols=100) if use_tqdm else dataloader
 
-                        data, batch_size = self._load_batch_data(batch_data, load_kwargs)
+                for batch_data in iterator:
+                    data, batch_size = self._load_batch_data(batch_data, load_kwargs)
 
-                        # forward, track history if only in train
-                        with torch.set_grad_enabled(phase == 'train'):
+                    with torch.set_grad_enabled(phase == 'train'):
+                        input_args, input_kwargs = self._forward_model(data, forward_kwargs)
+                        output = self._model(*input_args, **input_kwargs)
+                        output = self._apply_transfer_output_bias(output)
 
-                            input_args, input_kwargs = self._forward_model(data, forward_kwargs)
-                            output = self._model(*input_args, **input_kwargs)
-                            output = self._apply_transfer_output_bias(output)
-                            
-                            # print(output.size(), data['label'].size())
-                            loss_dict = self._calculate_loss(data, output, loss_kwargs)
+                        loss_dict = self._calculate_loss(data, output, loss_kwargs)
+                        if 'loss' not in loss_dict.keys():
+                            loss_values = list(loss_dict.values())
+                            total_loss = sum(loss_values)
+                        else:
+                            loss_values = [loss_dict['loss']]
+                            total_loss = loss_dict['loss']
 
-                            if 'loss' not in loss_dict.keys():
-                                loss_values = list(loss_dict.values())
-                                total_loss = sum(loss_values)
-                            else:
-                                total_loss = loss_dict['loss']
-                            
-                            loss_dict['loss'] = total_loss.item()
+                        loss_dict['loss'] = total_loss.item()
 
-                            if not torch.isnan(total_loss).sum() == 0:
-                                print("NAN")
-                                raise Exception()
-                            
-                            if v_tqdm:
-                                tbar.set_postfix(loss=loss_dict['loss'])
-                            
-                            # print(self.model.decoder_input._parameters['weight'].requires_grad, self.model.fc_mu._parameters['weight'].requires_grad)
-                            #* model backward process (only in training phase)
-                            if phase == 'train':
+                        if not torch.isnan(total_loss).sum() == 0: raise RuntimeError("NAN loss detected")
+                        if use_tqdm: iterator.set_postfix(loss=loss_dict['loss'])
 
-                                if self.paras['loss_parameters']['conFIG']:# and len(loss_values) > 1:
-                                    grads=[]
-                                    n_loss = len(loss_values)
-                                    for i, loss_i in enumerate(loss_values):
-                                        self._optimizer.zero_grad()
-                                        loss_i.backward(retain_graph = (i < n_loss - 1))
-                                        grads.append(get_gradient_vector(self._model)) # get loss-specfic gradient
-                                    g_config = ConFIG_update(grads) # calculate the conflict-free direction
-                                    apply_gradient_vector(self._model, g_config) # set the conflict-free direction to the network
-                                else:
+                        if phase == 'train':
+
+                            if self.paras['loss_parameters']['conFIG']:# and len(loss_values) > 1:
+                                grads=[]
+                                n_loss = len(loss_values)
+                                for i, loss_i in enumerate(loss_values):
                                     self._optimizer.zero_grad()
-                                    total_loss.backward()
+                                    loss_i.backward(retain_graph = (i < n_loss - 1))
+                                    grads.append(get_gradient_vector(self._model)) # get loss-specfic gradient
+                                g_config = ConFIG_update(grads) # calculate the conflict-free direction
+                                apply_gradient_vector(self._model, g_config) # set the conflict-free direction to the network
+                            else:
+                                self._optimizer.zero_grad()
+                                total_loss.backward()
 
-                                if self.clip_active == 1:
-                                    self.ema_clip.on_before_optimizer_step(self._model)
-                                elif self.clip_active == 0:
-                                    torch.nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=self.clip_max_norm)
-                                self._optimizer.step()
-                                if update_lr_batch:
-                                    self._scheduler.step()
+                            if self.clip_active == 1:
+                                self.ema_clip.on_before_optimizer_step(self._model)
+                            elif self.clip_active == 0:
+                                torch.nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=self.clip_max_norm)
+                            self._optimizer.step()
+                            if update_lr_batch:
+                                self._scheduler.step()
 
-                        # loss.item() gives the value of the tensor, multiple in the later is for weighted average
-                        running_loss += MDCounter(loss_dict) * batch_size
+                    running_loss += MDCounter(loss_dict) * batch_size
                         
                 epoch_loss = running_loss / self.dataset_size[phase]
                 
@@ -481,11 +486,8 @@ class ModelOperator():
                         else:
                             self._scheduler.step()
 
-                output_str = ''
-                for key in epoch_loss.keys():
-                    output_str += '%s=%.5f ' % (key, epoch_loss[key])
-                print(output_str)
-
+                if use_tqdm or (log_interval is None) or ((self.epoch + 1) % log_interval == 0):
+                    self._print_epoch_loss(phase, epoch_loss, run_t0)
                 self.history['loss'][phase].append(epoch_loss)
 
                 if phase == 'val' and epoch_loss['loss'] < self.best_loss:
@@ -493,12 +495,38 @@ class ModelOperator():
                     if save_best:
                         self.save_checkpoint(epoch=self.epoch, name='best_model')
 
+            if self.epoch == 0 and using_cuda:
+                torch.cuda.synchronize(self.device)
+                peak_alloc_gib = torch.cuda.max_memory_allocated(self.device) / (1024**3)
+                peak_reserved_gib = torch.cuda.max_memory_reserved(self.device) / (1024**3)
+                print(f'[Memory] Peak at epoch 0: alloc={peak_alloc_gib:.3f} GiB, reserved={peak_reserved_gib:.3f} GiB')
+
             self._end_of_epoch()
             if (self.epoch + 1) % save_check == 0:
                 self.save_checkpoint(epoch=self.epoch, name='checkpoint_epoch_' + str(self.epoch))
             self.epoch += 1
 
         print('Best val Loss: {:4f}'.format(self.best_loss))
+        print(f'[Timing] Total run time for "{self.optname}": {(time.time() - run_t0):.2f} s')
+
+    def _parse_verbose(self, v_tqdm):
+        if isinstance(v_tqdm, bool):
+            return v_tqdm, None
+        if isinstance(v_tqdm, (int, float)):
+            interval = int(v_tqdm)
+            return False, interval if interval > 0 else None
+        return False, None
+
+    def _print_epoch_loss(self, phase, epoch_loss, run_t0):
+        
+        output_str = '[Epoch][%d/%d][%s] ' % (self.epoch + 1, self.paras['num_epochs'], phase)
+        for key in epoch_loss.keys():
+            output_str += '%s=%.5f ' % (key, epoch_loss[key])
+        if phase == 'train':
+            output_str += 'lr=%.4e ' % self._optimizer.param_groups[0]['lr']
+        else:
+            output_str += 'Avg. Time/Batch: %.2f s' % ((time.time() - run_t0) / (self.epoch + 1))
+        print(output_str)
 
     def _init_training(self):
         load_kwargs = {}
