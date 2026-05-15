@@ -40,10 +40,10 @@ class convEncoder(Encoder):
         # ** for old version **
         # layers = []
         # for h, k, s, p, kp, sp in zip(hidden_dims, kernel_sizes, strides, paddings, pool_kernels, pool_strides):
-        #     layers.append(basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
-        #     if basic_layers['bn'] != nn.Identity:  layers.append(basic_layers['bn'](h))
-        #     layers.append(basic_layers['actv']())
-        #     if kp > 0: layers.append(basic_layers['pool'](kernel_size=kp, stride=sp))
+        #     layers.append(self.basic_layers['conv'](in_channels=h0, out_channels=h, kernel_size=k, stride=s, padding=p, bias=True))
+        #     if self.basic_layers['_bn'] != nn.Identity:  layers.append(self.basic_layers['_bn'](h))
+        #     layers.append(self.basic_layers['actv']())
+        #     if kp > 0: layers.append(self.basic_layers['pool'](kernel_size=kp, stride=sp))
         #     h0 = h
         # # DO NOT change to Modular list, otherwise old saves will fails
         # self.convs = nn.Sequential(*layers)

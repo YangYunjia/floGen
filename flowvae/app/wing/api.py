@@ -199,7 +199,7 @@ class SimpleWingAPI(WingAPI):
     hf_repo_id = 'yunplus/PI_Trans_Wings'
     
     version_folder = {
-        'aoa':  ['model_2d', 'model_sld', 'model_3d'],  
+        'default':  ['model_2d', 'model_sld', 'model_3d'],  
         'cl':   ['model_2d', '0420_1082_Run2', '0328_589_Run1']
     }
     

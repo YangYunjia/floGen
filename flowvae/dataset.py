@@ -974,8 +974,7 @@ class ConditionDataset(Dataset):
 
         if c_mtd == 'load':
             
-            if fname is None:
-                fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
+            fname = os.path.join(self.data_base, self.fname + '_%ddataindex.txt' % no)
             
             assert os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' not exist, use random instead!' % fname
             self.data_idx = np.loadtxt(fname, dtype=np.int32)
@@ -1029,11 +1028,12 @@ class ConditionDataset(Dataset):
         print(f'---------------------------------------')
 
     def save_data_idx(self, no):
-        fname = self.data_base + self.fname + '_%ddataindex.txt' % no
-        assert not os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' exist' % fname
-        
-        print(f'> save flow field index from {fname}')
-        np.savetxt(fname, self.data_idx, fmt='%d')
+        if no > -1:
+            fname = self.data_base + self.fname + '_%ddataindex.txt' % no
+            assert not os.path.exists(fname), ' *** ERROR *** Data index file \'%s\' exist' % fname
+            
+            print(f'> save flow field index from {fname}')
+            np.savetxt(fname, self.data_idx, fmt='%d')
 
     def __len__(self):
         return self.dataset_size

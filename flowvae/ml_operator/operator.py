@@ -42,6 +42,25 @@ def _check_existance_checkpoint(epoch, folder):
         raise IOError("checkpoint not exist in {}".format(paths))
     return paths
 
+def load_old_model(old_sd, model):
+
+    mapped_sd = {}
+    new_sd = model.state_dict()
+
+    for k, v in old_sd.items():
+        new_k = k
+
+        if k == "fc_mu.weight":
+            new_k = "fc_mu.1.weight"
+            print("Modify:", k, "->", new_k, v.shape)
+        elif k == "fc_mu.bias":
+            new_k = "fc_mu.1.bias"
+            print("Modify:", k, "->", new_k, v.shape)
+            
+        mapped_sd[new_k] = v
+    
+    return mapped_sd
+
 def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device: str, set_to_eval: bool = True):
     '''
     loading trained model from saved checkpoints
@@ -62,6 +81,11 @@ def load_model_from_checkpoint(model: nn.Module, epoch: int, folder: str, device
     path = _check_existance_checkpoint(epoch=epoch, folder=folder)
     save_dict = torch.load(path, map_location=device, weights_only=False)
     
+    # print('model', model.state_dict().keys())
+    # print('loaded', save_dict['model_state_dict'].keys())
+
+    save_dict['model_state_dict'] = load_old_model(save_dict['model_state_dict'], model)
+
     if 'history' not in save_dict.keys():
         model.load_state_dict(save_dict, strict=True)
         last_error = None
@@ -310,7 +334,7 @@ class ModelOperator():
             raise AttributeError(optimizer_name + ' not a vaild optimizer name!')
 
         opt_class = getattr(opt, optimizer_name)
-        self.clip_active = False
+        self.clip_active = -1
         if isinstance(ema_optimizer, bool):
             if ema_optimizer:
                 self.clip_active = 1
@@ -481,7 +505,7 @@ class ModelOperator():
                 if phase == 'train':
                     self.history['lr'].append(self._optimizer.param_groups[0]['lr'])
                     if not update_lr_batch:
-                        if self._scheduler_name in ['ReduceLROnPlateau']:
+                        if self._scheduler_setting['scheduler_name'] in ['ReduceLROnPlateau']:
                             self._scheduler.step(epoch_loss['loss'])
                         else:
                             self._scheduler.step()
@@ -655,8 +679,8 @@ class ModelOperator():
                 add_lora_to_model(self._model, grad_require_layers, grad_require_parents, **default_lora_params)
 
                 # set optimizer and scheduler again to register the lora parameters
-                self.set_optimizer(self._optimizer_name, **self._optimizer_setting)
-                self.set_scheduler(self._scheduler_name, **self._scheduler_setting)
+                self.set_optimizer(**self._optimizer_setting)
+                self.set_scheduler(**self._scheduler_setting)
 
                 for n, p in self._model.named_parameters():
                     if p.requires_grad:
@@ -826,7 +850,7 @@ class AEOperator(ModelOperator):
         self.paras['loss_parameters'] = {'conFIG': False,
                                          'sm_mode':     'NS',
                                          'sm_epoch':        1, 
-                                         'sm_weight':       1, 
+                                         'sm_weight':       0.0, 
                                          'sm_offset':       2,
                                          'moment_weight':   0.0,
                                          'code_weight':     0.1,

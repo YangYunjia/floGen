@@ -276,7 +276,7 @@ def get_dxyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     # print(torch.cat((dfv_t, -dfp_n), dim=1).shape, dr.shape)
     return torch.einsum('blj,lpk,bjk->bjp', torch.cat((dfv_t, -dfp_n), dim=1), _rot_metrix.to(dfv_t.device), dr)
 
-def get_xyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
+def get_xyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None, tail: bool = True) -> Tensor:
     '''
     integrate the force on x and y direction
 
@@ -297,15 +297,17 @@ def get_xyforce_1d_t(geom: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     ===
     Tensor: (B, 2) -> (Fx, Fy)
     '''
-
-    dr_tail = geom[:, 0] - geom[:, -1]
-    dfp_n_tail = 0.5 * (cp[:, 0] + cp[:, -1]).unsqueeze(1)
-    dfv_t_tail = torch.zeros_like(dfp_n_tail)
     
     force_surface = torch.sum(get_dxyforce_1d_t(geom, cp, cf), dim=1)
-    force_tail = torch.einsum('bl,lpk,bk->bp', torch.cat((dfv_t_tail, -dfp_n_tail), dim=1), _rot_metrix.to(dfp_n_tail.device), dr_tail)
+
+    if tail:
+        dr_tail = geom[:, 0] - geom[:, -1]
+        dfp_n_tail = 0.5 * (cp[:, 0] + cp[:, -1]).unsqueeze(1)
+        dfv_t_tail = torch.zeros_like(dfp_n_tail)
+        force_tail = torch.einsum('bl,lpk,bk->bp', torch.cat((dfv_t_tail, -dfp_n_tail), dim=1), _rot_metrix.to(dfp_n_tail.device), dr_tail)
+        force_surface = force_surface + force_tail
     
-    return force_surface + force_tail
+    return force_surface
 
 def get_force_1d_t(geom: Tensor, aoa: Tensor, cp: Tensor, cf: Tensor=None) -> Tensor:
     '''

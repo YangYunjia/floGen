@@ -278,15 +278,16 @@ class EncoderDecoder(AutoEncoder):
                  decoder_input_layer: int = 0,
                  code_dim: int = 1,
                  code_layer = [],
-                 device = 'cuda:0',
+                 preprocess_mode: str = 'none',
                  **kwargs) -> None:
 
 
-        super().__init__(latent_dim, encoder, decoder, decoder_input_layer, 0., **kwargs)
+        super().__init__(latent_dim=latent_dim, encoder=encoder, decoder=decoder, decoder_input_layer=decoder_input_layer, decoder_input_dropout=0., **kwargs)
         
         self.code_dim = code_dim
         self.cm = code_mode
         self.series_data = {}
+        self.preprocess_mode = preprocess_mode
 
         if code_mode in ['semi', 'im', 'ex', 'ae']:
             self.set_aux_data(dataset_size)
@@ -355,32 +356,33 @@ class EncoderDecoder(AutoEncoder):
         self.geom_data = {}
         # print(' === Warning:  preprocess_data is not implemented. If auxilary geometry data is needed, please rewrite vae.preprocess_data')
         # return
-        '''
-        produce geometry data
-        - x01, x0p: the x coordinate data for smooth calculation
-        '''
-        from cfdpost.utils import clustcos
-        
-        nn = 201
-        xx = [clustcos(i, nn) for i in range(nn)]
-        all_x = torch.from_numpy(np.concatenate((xx[::-1], xx[1:]), axis=0)).to(self.device).float()
-        self.geom_data['xx']  = all_x
-        self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
-        self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
-        self.geom_data['dx'] = all_x[1:] - all_x[:-1]
-        self.geom_data['avgdx'] = torch.mean(self.geom_data['dx']**2)
+        if self.preprocess_mode == '1dairfoil':
+            '''
+            produce geometry data
+            - x01, x0p: the x coordinate data for smooth calculation
+            '''
+            from cfdpost.utils import clustcos
+            
+            nn = 201
+            xx = [clustcos(i, nn) for i in range(nn)]
+            all_x = torch.from_numpy(np.concatenate((xx[::-1], xx[1:]), axis=0)).to(self.device).float()
+            self.geom_data['xx']  = all_x
+            self.geom_data['x01'] = all_x[2:] - all_x[1: -1]
+            self.geom_data['x0p'] = all_x[1: -1] - all_x[:-2]
+            self.geom_data['dx'] = all_x[1:] - all_x[:-1]
+            self.geom_data['avgdx'] = torch.mean(self.geom_data['dx']**2)
 
-        # if fldata is not None:
+        if self.preprocess_mode == '1dairfoil' and fldata is not None:
 
-        #     geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
-        #     profile = fldata.data[:, 1]
-        #     self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze())
-        #     print('all_clcd size:',  self.geom_data['all_clcd'].size())
+            geom = torch.cat((all_x.repeat(fldata.data.size(0), 1).unsqueeze(1), fldata.data[:, 0].unsqueeze(1)), dim=1)
+            profile = fldata.data[:, 1]
+            self.geom_data['all_clcd'] = get_force_1dc(geom, profile, fldata.cond.squeeze())
+            print('all_clcd size:',  self.geom_data['all_clcd'].size())
 
-        #     geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
-        #     profile = fldata.refr[:, 1]
-        #     self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze())
-        #     print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
+            geom = torch.cat((all_x.repeat(fldata.refr.size(0), 1).unsqueeze(1), fldata.refr[:, 0].unsqueeze(1)), dim=1)
+            profile = fldata.refr[:, 1]
+            self.geom_data['ref_clcd'] = get_force_1dc(geom, profile, fldata.ref_condis.squeeze())
+            print('ref_clcd size:',  self.geom_data['ref_clcd'].size())
 
     def encode(self, input: Tensor, **kwargs) -> List[Tensor]:
         """
@@ -499,9 +501,9 @@ class EncoderDecoder(AutoEncoder):
         sm_weight = kwargs['sm_weight']
         ge_weight = kwargs['ge_weight']
 
-        loss = torch.FloatTensor([0.0]).to(self.device)
-        sm_loss = torch.FloatTensor([0.0]).to(self.device)
-        ge_loss = torch.FloatTensor([0.0]).to(self.device)
+        loss = torch.FloatTensor([0.0]).to(recons.device)
+        sm_loss = torch.FloatTensor([0.0]).to(recons.device)
+        ge_loss = torch.FloatTensor([0.0]).to(recons.device)
 
         # print(recons.size(), ref.size(), real.size())
         # input()
@@ -738,11 +740,11 @@ class EncoderDecoder(AutoEncoder):
         if cmode == 'no':
             samples = self.decode(zf)
         else:
-            tcode = torch.Tensor(code).to(self.device).unsqueeze(0).repeat(num_samples, 1)
+            tcode = torch.Tensor(code).to(zf.device).unsqueeze(0).repeat(num_samples, 1)
             if cmode == 'i':
                 zc = tcode
             elif cmode == 'ir':
-                zc = self.reparameterize(tcode, torch.zeros_like(tcode, device=self.device))
+                zc = self.reparameterize(tcode, torch.zeros_like(tcode, device=zf.device))
             z = torch.cat([self.fc_code(zc), zf], dim=1)
             samples = self.decode(z)
 
@@ -821,14 +823,21 @@ class Unet(CondAutoEncoder):
                  decoder_input_layer: int = 0, decoder_input_dropout: float = 0, **kwargs) -> None:
         
         super().__init__(latent_dim, encoder, decoder, code_mode, coder, code_dim, decoder_input_layer, decoder_input_dropout, **kwargs)
+        self.check_encoder_decoder()
 
-        if isinstance(decoder, Decoder):
-            if not (self.encoder.is_unet and self.decoder.is_unet):
-                raise Exception('Encoder or Decoder does not support U-Net')
-        elif isinstance(decoder, list):
+                
+    def check_encoder_decoder(self):
+
+        if not self.encoder.is_unet:
+            raise Exception('Encoderdoes not support U-Net')
+
+        if isinstance(self.decoder, Decoder):
+            if not self.decoder.is_unet:
+                raise Exception('Decoder does not support U-Net')
+        elif isinstance(self.decoder, list):
             for decoder in self.decoders:
-                if not (self.encoder.is_unet and decoder.is_unet):
-                    raise Exception('Encoder or Decoder does not support U-Net')
+                if not decoder.is_unet:
+                    raise Exception('Decoder does not support U-Net')
 
     def repeat_feature_maps(self, n):
         for idx in range(len(self.encoder.feature_maps)):
@@ -855,6 +864,12 @@ class BranchUnet(Unet):
         cat_results = torch.cat(results, dim=1)
         # print(cat_results.size())
         return cat_results
+
+class UEncoderDecoder(EncoderDecoder, Unet):
+
+    def __init__(self, latent_dim, encoder, decoder, code_mode, dataset_size = None, decoder_input_layer = 0, code_dim = 1, code_layer=[]):
+        super().__init__(latent_dim, encoder, decoder, code_mode, dataset_size, decoder_input_layer, code_dim, code_layer)
+        self.check_encoder_decoder()
 
 class DecoderModel(AutoEncoder):
     '''
