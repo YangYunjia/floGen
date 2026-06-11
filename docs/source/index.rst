@@ -50,9 +50,8 @@ This section describe the model.
    airfoildataset
    wingdataset
 
-This section presents several flowfield datasets. Most of them are of airfoils and wings. 
-They are available under reasonable requests. Please contact Yunjia Yang (yyj980401@126.com) 
-for the datasets.
+This section presents several flowfield datasets. Most of them are of airfoils and wings. Please see our [THIS HUGGINGFACE REPO](https://huggingface.co/datasets/yunplus/SuperFoil) for airfoil datasets and [THIS HUGGINGFACE REPO](https://huggingface.co/datasets/yunplus/SuperWing) for wing datasets.
+
 
 .. toctree::
    :maxdepth: 2
