@@ -24,11 +24,25 @@ import json
 from cfdpost.wing.single_section_wing import Wing, plot_frame
 from cfdpost.wing.multi_section_wing import MultiSecWing
 from cst_modeling.section import cst_foil, cst_foil_fit, clustcos
-from cst_modeling.io import read_plot3d, output_plot3d_concat
+from cst_modeling.io import  output_plot3d_concat
 from typing import Optional, Tuple
 from abc import abstractmethod
 
 absolute_file_path = os.path.dirname(os.path.abspath(__file__))
+
+# ------------------------------------------------------------
+# Structured ML mesh generation API
+# ------------------------------------------------------------
+
+class SurfaceMeshingParams_ML():
+
+    def __init__(self, twists0: float = None, mesh_point_numbers: dict = None):
+        self.mesh_generation_index = 0
+        self.twists0 = twists0 if twists0 is not None else 6.7166
+        self.mesh_point_numbers = mesh_point_numbers if mesh_point_numbers is not None else {
+            'nX':    129,
+            'nY':    [129],
+        }
 
 def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
     
@@ -41,16 +55,17 @@ def linear_interpolation(data: torch.Tensor, x: torch.Tensor, x_new: torch.Tenso
     
     return data_new
 
-def surface_meshing_ML(wingCoefs: dict, config=None, save_surface=False):
+def surface_meshing_ML(wingCoefs: dict, generator_config: SurfaceMeshingParams_ML = None, config=None, save_surface=False, folder: str = 'output'):
     '''
     only for mdolab API use
     
     '''
     
     #* surface meshing
-    block = MultiSecWing._reconstruct_surface_grids(wingCoefs, 129, [129], zaxis=0.25, lower_cst_constraints=True, twists0=6.7166)
+    block = MultiSecWing._reconstruct_surface_grids(
+        wingCoefs, generator_config.mesh_point_numbers['nX'], generator_config.mesh_point_numbers['nY'], zaxis=0.25, 
+        lower_cst_constraints=True, twists0=generator_config.twists0)
     
-    global mesh_generation_index
     if save_surface:
         output_dict = {}
         for k in wingCoefs.keys():
@@ -58,19 +73,18 @@ def surface_meshing_ML(wingCoefs: dict, config=None, save_surface=False):
                 output_dict[k] = wingCoefs[k].tolist()
             else:
                 output_dict[k] = wingCoefs[k]
-        with open(f'output/input_{mesh_generation_index:d}.json', 'w') as f:
+        with open(os.path.join(folder, f'input_{generator_config.mesh_generation_index:d}.json'), 'w') as f:
             json.dump(output_dict, f)
             
-        output_plot3d_concat([copy.deepcopy(block)[None, ...].transpose(2, 3, 0, 1)], fname=f'output/wing_{mesh_generation_index:d}.xyz', order='ij', verbose=0)
-        mesh_generation_index += 1
+        output_plot3d_concat([copy.deepcopy(block)[None, ...].transpose(2, 3, 0, 1)], fname=os.path.join(folder, f'wing_{generator_config.mesh_generation_index:d}.xyz'), order='ij', verbose=0)
+        generator_config.mesh_generation_index += 1
 
 
     return block
 
-'''
-api to transfer learning model
-
-'''
+# ------------------------------------------------------------
+# API to transfer learning model
+# ------------------------------------------------------------
 
 class WingAPI():
 
